@@ -59,7 +59,33 @@ def test_score_run_recovers_offset_and_sign(tmp_path: Path) -> None:
         out = score.score_run(A, traces, h, w, meta, setup.shifts + c)
         assert out["n_matched"] == len(keep) and out["n_units"] == len(keep)
         assert out["offset_sign_used"] == s
+        assert out["alignment_ok"] is True
         assert out["median_match_dist_px"] < 0.5
         assert out["trace_corr_median"] > 0.999
         assert out["recall"] == len(keep) / out["n_true"]
         assert out["precision"] == 1.0
+
+
+def test_alignment_not_ok_when_both_signs_bad(tmp_path: Path, capsys) -> None:
+    h = w = 64
+    setup = synth.synth_setup(h, w, 300, 0)
+    meta = _meta(tmp_path, h, w, 300)
+    # units 3 px off every true cell and shifts that give c = 0: neither sign can fix it
+    A, keep = _pixel_units(setup, np.array([3, 0]), h, w)
+    traces = (setup.C[keep] - 20.0).astype(np.float32)
+    out = score.score_run(A, traces, h, w, meta, setup.shifts)
+    assert out["alignment_ok"] is False
+    assert out["median_match_dist_px"] >= score.SELF_CHECK_PX
+    assert np.isfinite(out["f1"]) and np.isfinite(out["trace_corr_median"])
+    assert "alignment self-check failed" in capsys.readouterr().err
+
+
+def test_alignment_not_ok_with_zero_matches(tmp_path: Path) -> None:
+    h = w = 2000  # bigger than the session so the unit sits far from every true cell
+    setup = synth.synth_setup(64, 64, 300, 0)
+    meta = _meta(tmp_path, 64, 64, 300)
+    A = sparse.csr_matrix(([1.0], ([0], [1500 * w + 1500])), shape=(1, h * w), dtype=np.float32)
+    out = score.score_run(A, np.zeros((1, 300), np.float32), h, w, meta, setup.shifts)
+    assert out["alignment_ok"] is False and out["n_matched"] == 0
+    assert out["f1"] == 0.0 and out["median_match_dist_px"] is None
+    assert out["trace_corr_median"] is None

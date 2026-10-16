@@ -21,11 +21,17 @@ v2.0.2, `pipeline.ipynb` defaults, ks_refine and temporal update skipped; 4 work
 4 GB each). The final `update_background_2` stage was killed after the `A_new` / `C_new` save.
 Full earlier run: **471 s, 24.9 GB peak disk** (`results/BASELINE_5min.md`).
 
-Caveat: the script saved the normalised `A_new` over the stored `A_new.zarr` while reading it, so
-the stored `A_new` was all NaN (`C_new` was fine). `update_spatial` was re-run on the kept
-`Y_hw_chk`, `A`, `C`, `sn_spatial` (same parameters, 105 s, 508 of 508 units kept, same unit ids
-as `C_new`) and its un-normalised `A_new` exported; normalisation does not change centroids.
-`consolidated=False` is needed when opening these stores (stale consolidated metadata).
+Caveat (A_new recompute): `run_minian_baseline.py` runs
+`A_new = save_minian(A_new.rename("A_new"), intpath, overwrite=True)` on the normalised
+`A_new` that `update_spatial` returns. That array lazily reads `A_new.zarr`, which the save
+overwrites, so the stored `A_new` is all NaN (`C_new` is fine). The reference numbers below
+come from a recompute with `bench/minian_redo_spatial.py`: `update_spatial(Y_hw_chk, A, C,
+sn_spatial, dl_wnd=10, sparse_penal=0.01, size_thres=(25, None))` with `Y_hw_chk`, `A`, `C`,
+`sn_spatial` read from the kept intermediates (105 s, 508 of 508 units kept, unit ids identical
+to `C_new`). The result is un-normalised, which does not change centroids. The kept
+`minian_intermediate/` was deleted afterwards, so reproducing needs a full Minian re-run
+(about 8 min, 25 GB disk) followed by the recompute. Open these zarr stores with
+`consolidated=False` (stale consolidated metadata after rechunker).
 
 Minian's accuracy (508 units, 421 true cells):
 
@@ -37,17 +43,24 @@ Offset between frame and template coordinates: (-7.47, -7.88) px, sign +1. Trace
 `C_new` (trace after the spatial update).
 
 ## Commands
+Order matters: baseline `--keep` -> redo spatial -> export -> score.
 ```bash
-MINIAN_PY=/Users/mbrosch/Documents/GitKraken_mac/03_analysis-tools/minian_v2.0/.venv/bin/python
+MINIAN_DIR=/Users/mbrosch/Documents/GitKraken_mac/03_analysis-tools/minian_v2.0
+MINIAN_PY=$MINIAN_DIR/.venv/bin/python
 OUT=/Users/mbrosch/minian_testing_local/synth_v4_5min/processed/minian_baseline_keep
 RAW=/Users/mbrosch/minian_testing_local/synth_v4_5min/raw
-# re-run Minian keeping intermediates (in minian_v2.0)
-$MINIAN_PY scripts/bench_browser/run_minian_baseline.py --keep
-# export under the Minian venv (writes $OUT/minian_units.npz), then score under ours
-$MINIAN_PY bench/minian_export.py $OUT
-.venv/bin/fastminian score --minian $OUT/minian_units.npz --raw $RAW   # -> $OUT/score.json
+SCRATCH=/tmp/minian_respatial        # receives the recomputed A_new.zarr
+# 1. Minian baseline keeping intermediates (its stored A_new is NaN, see above)
+$MINIAN_PY $MINIAN_DIR/scripts/bench_browser/run_minian_baseline.py --keep
+# 2. recompute A_new from the kept intermediates (read-only on them)
+$MINIAN_PY bench/minian_redo_spatial.py $OUT --scratch $SCRATCH
+# 3. export (A_new from SCRATCH, C_new and motion from the run) -> $OUT/minian_units.npz
+$MINIAN_PY bench/minian_export.py $OUT A_new C_new $SCRATCH
+# 4. score under our venv -> $OUT/score.json
+.venv/bin/fastminian score --minian $OUT/minian_units.npz --raw $RAW
 # score a fastminian run (--raw only needed if RUN_DIR/params.json is missing)
 .venv/bin/fastminian score RUN_DIR [--raw $RAW]                         # -> RUN_DIR/score.json
 ```
-`bench/minian_export.py` prints an error instead of exporting if `A_new` contains NaN; the
-clobbered store then needs the `update_spatial` re-run described above.
+`bench/minian_export.py` refuses to export if `A_new` contains NaN. Score dicts carry
+`alignment_ok`: False (plus a stderr warning) when neither offset sign gives a median matched
+distance below 1.5 px, i.e. the motion offset could not be verified.

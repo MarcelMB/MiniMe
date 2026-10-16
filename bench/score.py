@@ -7,6 +7,7 @@ numpy, scipy and pandas (plus the synthetic ground truth in ``fastminian.testing
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -126,9 +127,11 @@ def score_run(
     Units live in template coordinates = frame coordinates + a constant. With the fit
     ``shifts = c + sign * true_shifts`` and a pipeline that aligns frames by ``shifts``,
     that constant is ``sign * c``. The sign of the warp convention is verified with the
-    units themselves: if the median matched distance is >= 1.5 px, the opposite sign is
-    tried and the better one kept. ``offset_sign_used`` is the multiplier applied to the
-    fitted ``c`` (so the offset actually added to the true centroids is
+    units themselves: both signs are evaluated and the one with the smaller median matched
+    distance kept. ``alignment_ok`` is False when even the better one is >= 1.5 px (or there
+    are no matches), i.e. the offset could not be verified; a warning goes to stderr.
+    ``offset_sign_used`` is the multiplier applied to the fitted ``c`` (so the offset actually
+    added to the true centroids is
     ``offset_sign_used * c``, reported as ``align_offset_px``).
     """
     meta = json.loads(Path(meta_path).read_text())
@@ -141,13 +144,9 @@ def score_run(
     c, _, sign = motion_fit(np.asarray(shifts, float), setup.shifts.astype(float))
     unit_c = footprint_centroids(A, H, W)
     best: tuple[float, int, np.ndarray, np.ndarray] | None = None
-    for mult in (sign, -sign):
+    for mult in (sign, -sign):  # always evaluate both; ties keep the derived sign
         med, ui, ti = _median_dist(unit_c, true_c + mult * c)
-        if best is None:
-            best = (med, mult, ui, ti)
-            if med < SELF_CHECK_PX:
-                break
-        elif med < best[0]:
+        if best is None or med < best[0]:
             best = (med, mult, ui, ti)
     assert best is not None
     med, mult, ui, ti = best
@@ -163,7 +162,14 @@ def score_run(
         align_offset_px=[float(v) for v in mult * c],
         offset_sign_used=int(mult),
         median_match_dist_px=None if not np.isfinite(med) else med,
+        alignment_ok=bool(med < SELF_CHECK_PX),
     )
+    if not out["alignment_ok"]:
+        print(
+            f"WARNING: alignment self-check failed (median matched distance {med:.2f} px, "
+            f"{len(ui)} matches); scores may be unreliable",
+            file=sys.stderr,
+        )
     return out
 
 
