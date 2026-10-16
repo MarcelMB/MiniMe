@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from fastminian import io, pass1, tiles
 from fastminian.params import Params
@@ -43,7 +44,7 @@ def test_pass1_single_and_parallel_agree(tiny_session, tmp_path):
     grid = tiles.tile_grid(64, 64, 32)
     outs = []
     for workers in (1, 2):
-        store = tiles.TileStore(tmp_path / f"s{workers}", grid, n_parts=workers)
+        store = tiles.TileStore(tmp_path / f"s{workers}", grid, pass1.n_parts_for(info, workers))
         outs.append((store, pass1.run_pass1(info, store, tmpl, p, workers)))
     (s1, r1), (s2, r2) = outs
     assert r1.frames == r2.frames == 300 and r1.shifts.shape == (300, 2)
@@ -80,10 +81,14 @@ def test_pass1_ragged_last_segment(tmp_path):
     assert info.segment_frames == [100, 100, 50]
     p = Params(seeds_wnd=100, seeds_stp=50, template_frames=50)
     grid = tiles.tile_grid(64, 64, 32)
-    store = tiles.TileStore(tmp_path / "s", grid, n_parts=2)
+    store = tiles.TileStore(tmp_path / "s", grid, pass1.n_parts_for(info, 2))
     r = pass1.run_pass1(info, store, pass1.build_template(info, p), p, workers=2)
     assert r.frames == 250 and r.block_edges[-1] == 250
-    assert store.read_tile(0).shape[0] == 250
+    full = store.read_tile(0)
+    assert full.shape[0] == 250
+    e = r.block_edges
+    for bi in range(len(e) - 1):
+        assert np.array_equal(r.block_max[bi, :32, :32], full[e[bi] : e[bi + 1]].max(0))
 
 
 def test_pass1_sub_batches_straddling_block_edges(tiny_session, tmp_path):
@@ -91,9 +96,33 @@ def test_pass1_sub_batches_straddling_block_edges(tiny_session, tmp_path):
     p = Params(seeds_wnd=100, seeds_stp=50, template_frames=50, sub_batch=30)
     tmpl = pass1.build_template(info, p)
     grid = tiles.tile_grid(64, 64, 32)
-    store = tiles.TileStore(tmp_path / "s", grid, n_parts=1)
+    store = tiles.TileStore(tmp_path / "s", grid, pass1.n_parts_for(info, 1))
     r = pass1.run_pass1(info, store, tmpl, p, workers=1)
     e = r.block_edges
     full = store.read_tile(3)  # bottom-right tile
     for bi in range(len(e) - 1):
         assert np.array_equal(r.block_max[bi, 32:, 32:], full[e[bi] : e[bi + 1]].max(0))
+
+
+def test_pass1_worker_starting_mid_block(tiny_session, tmp_path):
+    info = io.probe(tiny_session["raw_dir"])
+    p = Params(seeds_wnd=120, seeds_stp=40, template_frames=50)
+    e = pass1.seed_block_edges(info.frames, p.seeds_wnd, p.seeds_stp)
+    t_starts = np.cumsum([0, *info.segment_frames])[:-1]  # one segment per worker
+    assert not {100, 200} & set(e.tolist()) and t_starts.tolist() == [0, 100, 200]
+    grid = tiles.tile_grid(64, 64, 32)
+    store = tiles.TileStore(tmp_path / "s", grid, pass1.n_parts_for(info, 3))
+    assert store.n_parts == 3
+    r = pass1.run_pass1(info, store, pass1.build_template(info, p), p, workers=3)
+    full = store.read_tile(1)  # top-right tile
+    for bi in range(len(e) - 1):
+        assert np.array_equal(r.block_max[bi, :32, 32:], full[e[bi] : e[bi + 1]].max(0))
+
+
+def test_pass1_part_count_mismatch_names_helper(tiny_session, tmp_path):
+    info = io.probe(tiny_session["raw_dir"])
+    p = Params(seeds_wnd=100, seeds_stp=50, template_frames=50)
+    assert pass1.n_parts_for(info, 8) == 3
+    store = tiles.TileStore(tmp_path / "s", tiles.tile_grid(64, 64, 32), n_parts=8)
+    with pytest.raises(ValueError, match="n_parts_for"):
+        pass1.run_pass1(info, store, pass1.build_template(info, p), p, workers=8)
