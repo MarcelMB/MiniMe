@@ -148,7 +148,7 @@ def compress_tile(
     Y = TileMatrix(raw, chunk)
     sigma = Y.noise()
     rng = np.random.default_rng(seed)
-    k_cap = min(MAX_RANK, Y.P - 1, Y.T - 1)
+    k_cap = max(1, min(MAX_RANK, Y.P - 1, Y.T - 1))
     k = min(k0, k_cap)
     while True:
         U, s, Vt = rsvd_streamed(Y, k, n_iter, rng)
