@@ -216,7 +216,13 @@ def gmm_refine(
     valid_components: int = 1,
     mean_mask: bool = True,
 ) -> pd.DataFrame:
-    """Add ``mask_gmm``: keep seeds in the top ``valid_components`` GMM components of the ptp."""
+    """Add ``mask_gmm``: keep seeds in the top ``valid_components`` GMM components of the ptp.
+
+    ``mean_mask`` additionally requires ptp above the mean of the lowest component. Minian writes
+    ``dat > np.sort(gmm.means_)[0]``, which sorts a length-1 axis of the (n, 1) ``means_`` and so
+    compares against whichever component sklearn labelled first; we use the true lowest mean,
+    which is the documented intent and independent of component labelling.
+    """
     ptp = ptp_q(f.traces(seed_pixels(f, seeds)), q)
     dat = ptp.reshape(-1, 1)
     gmm = GaussianMixture(n_components=n_components, random_state=0).fit(dat)
