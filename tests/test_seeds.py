@@ -81,3 +81,24 @@ def test_label_medians_match_np_median():
     for lb in range(1, nlab):
         crd = np.where(lab == lb)
         assert (r[lb - 1], c[lb - 1]) == tuple(int(np.median(x)) for x in crd)
+
+
+def test_gmm_mean_mask_uses_lowest_component_mean():
+    from sklearn.mixture import GaussianMixture
+
+    _, f = _session()
+    setup = synth.synth_setup(64, 64, 600, 0)
+    cents = np.rint(synth.true_centroids(setup)).astype(int)
+    cents = cents[(cents >= 0).all(1) & (cents < 64).all(1)]
+    rng = np.random.default_rng(0)
+    noise = np.stack([rng.integers(0, 64, 30), rng.integers(0, 64, 30)], 1)
+    seeds = pd.DataFrame(
+        {"height": np.r_[cents[:, 0], noise[:, 0]], "width": np.r_[cents[:, 1], noise[:, 1]]}
+    )
+    ptp = sd.ptp_q(f.traces(sd.seed_pixels(f, seeds)), (0.1, 99.9))
+    low_mean = GaussianMixture(n_components=2, random_state=0).fit(ptp[:, None]).means_.min()
+    on = sd.gmm_refine(f, seeds, mean_mask=True)["mask_gmm"].to_numpy()
+    off = sd.gmm_refine(f, seeds, mean_mask=False)["mask_gmm"].to_numpy()
+    assert on.any()
+    assert (ptp[on] > low_mean).all()
+    assert (off | ~on).all()  # mean_mask=False keeps a superset
