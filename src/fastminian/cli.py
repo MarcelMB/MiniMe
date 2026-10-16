@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
@@ -18,3 +19,35 @@ def synth(
     from fastminian.testing.synth import write_session
 
     typer.echo(write_session(out, minutes, fps, segment, seed))
+
+
+@app.command()
+def score(
+    run_dir: Annotated[Path | None, typer.Argument(help="Pipeline run directory.")] = None,
+    raw: Annotated[Path | None, typer.Option(help="Raw dir (meta.json is in its parent).")] = None,
+    minian: Annotated[Path | None, typer.Option(help="minian_units.npz to score.")] = None,
+) -> None:
+    """Score a pipeline run (or a Minian export) against the synthetic ground truth."""
+    import json
+    import sys
+
+    sys.path.insert(
+        0, str(Path(__file__).resolve().parents[2])
+    )  # repo root: bench/ is not packaged
+    from bench import score as bench_score
+
+    if minian is not None:
+        if raw is None:
+            raise typer.BadParameter("--minian needs --raw")
+        result = bench_score.score_minian_npz(minian, raw)
+        dest = minian.parent / (
+            "score.json" if minian.stem == "minian_units" else f"score_{minian.stem}.json"
+        )
+    elif run_dir is not None:
+        result = bench_score.score_pipeline_dir(run_dir, raw)
+        dest = run_dir / "score.json"
+    else:
+        raise typer.BadParameter("give RUN_DIR or --minian")
+    text = json.dumps(result, indent=2)
+    dest.write_text(text + "\n")
+    typer.echo(text)
