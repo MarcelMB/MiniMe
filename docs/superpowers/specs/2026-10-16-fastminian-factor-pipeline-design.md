@@ -180,7 +180,7 @@ previous iteration is reused. Nothing written.
 zero), `lam = T · sparse_penal · sn_p`. Per pixel a non-negative quadratic program over its
 allowed units solved by cyclic coordinate descent in numba with a duality-gap stop
 (`bench_spatial/candidates/numba_cd.py`, float32 B). Then Minian's post-processing:
-normalise footprints to unit sum, scale C by the norm factor, drop units smaller than
+normalise each footprint by its maximum (Minian `norm_fac = A.max`), scale C by the same factor, drop units smaller than
 `size_thres` (25, None) px. Background footprint is not updated (`update_background=False`,
 notebook default).
 
