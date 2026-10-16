@@ -93,7 +93,8 @@ def _solve_normal(G: np.ndarray, B: np.ndarray) -> np.ndarray:
 def initC(f: Factors, A: sps.csr_matrix) -> np.ndarray:
     """(K, T) float32 least-squares traces of footprints ``A`` (K, P), no sign constraint."""
     A = sps.csr_matrix(A)
-    G = (A @ A.T).toarray().astype(np.float64)
+    A64 = A.astype(np.float64)
+    G = (A64 @ A64.T).toarray()
     G = 0.5 * (G + G.T)
     return _solve_normal(G, f.AtY(A)).astype(np.float32)
 
