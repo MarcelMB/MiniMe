@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import scipy.sparse as sps
 
@@ -30,6 +32,14 @@ def test_compress_tile_pure_noise_returns_rank_one():
     raw = np.clip(50 + 4 * rng.standard_normal((300, 16, 16)), 0, 255).astype(np.uint8)
     tf = compress.compress_tile(raw, k0=8)
     assert tf.rank == 1
+
+
+def test_compress_tile_single_pixel_tile():
+    rng = np.random.default_rng(0)
+    raw = np.clip(50 + 4 * rng.standard_normal((200, 1, 1)), 0, 255).astype(np.uint8)
+    tf = compress.compress_tile(raw, k0=8)
+    assert tf.rank == 1 and tf.W.shape == (1, 1) and tf.V.shape == (200, 1)
+    assert tf.mean.shape == tf.sigma.shape == tf.energy.shape == (1,)
 
 
 def test_autocorr_keep():
@@ -122,3 +132,8 @@ def test_run_pass2_parallel_matches_serial_and_builds_factors(tmp_path):
     fac = pass2.build_factors(info, grid, p1, two, p)
     assert fac.H == H and fac.W_ == W and fac.T == T and fac.meta["params"]["tile"] == 16
     assert np.array_equal(fac.block_edges, [0, T])
+    fac.save(tmp_path / "factors")
+    back = fm.Factors.load(tmp_path / "factors")
+    expected = json.loads(json.dumps(p.asdict()))  # tuples become lists in JSON
+    assert back.meta["params"] == expected and back.meta["params"]["size_thres"] == [25, None]
+    assert back.meta["pass1_seconds"] == {"denoise": 1.0} and len(back.tiles) == 4
