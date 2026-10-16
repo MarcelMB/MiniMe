@@ -1,0 +1,108 @@
+import cv2
+import numpy as np
+import pandas as pd
+import scipy.sparse as sps
+
+from fastminian import cnmf, compress, corr, init, tiles
+from fastminian import factors as fm
+from fastminian.params import Params
+from fastminian.testing import synth
+
+
+def _dense(f):
+    Y = np.concatenate([f.reconstruct_chunk(b, 0, f.T) for b in range(len(f.tiles))])
+    perm = np.concatenate([f.tile_rows(b) for b in range(len(f.tiles))])
+    out = np.empty_like(Y)
+    out[perm] = Y
+    return out.astype(np.float64)
+
+
+def _undo_motion(movie, shifts):
+    """Shift each frame back by its known (dy, dx): CNMF runs on motion-corrected data."""
+    T, H, W = movie.shape
+    out = np.empty_like(movie)
+    for i, (dy, dx) in enumerate(shifts):
+        M = np.float32([[1, 0, dx], [0, 1, dy]])
+        out[i] = cv2.warpAffine(movie[i], M, (W, H), borderMode=cv2.BORDER_REPLICATE)
+    return out
+
+
+def _setup(H=48, W=48, T=600):
+    setup = synth.synth_setup(H, W, T, 2)
+    movie = _undo_motion(synth.synth_movie(H, W, T, 2), setup.shifts)
+    grid = tiles.tile_grid(H, W, 24)
+    tf = [
+        compress.compress_tile(np.ascontiguousarray(movie[:, t.y0 : t.y1, t.x0 : t.x1]), k0=16)
+        for t in grid
+    ]
+    f = fm.Factors(H, W, T, grid, tf, movie.max(0), movie.max(0)[None], np.array([0, T]), {})
+    fc = corr.FactorCorr(f, 0.06)
+    cents = np.rint(synth.true_centroids(setup)).astype(int)
+    cents = cents[(cents >= 4).all(1) & (cents < H - 4).all(1)]
+    A = init.initA(fc, pd.DataFrame({"height": cents[:, 0], "width": cents[:, 1]}), 0.6, 8)
+    C = init.initC(f, A)
+    return f, fc, A, C
+
+
+def test_background_and_trace_match_dense_reference():
+    f, fc, A, C = _setup()
+    Y = _dense(f)
+    Ad = A.toarray().astype(np.float64)
+    R = np.clip(Y - Ad.T @ C, 0, None)
+    b_ref = R.mean(1)
+    f_ref = R.T @ b_ref / (b_ref @ b_ref)
+    b, fb = cnmf.update_background(f, A, C, chunk=128)
+    assert np.allclose(b, b_ref, atol=1e-4 * b_ref.max()) and np.allclose(fb, f_ref, rtol=1e-4)
+    b2, fb2 = cnmf.update_background(f, A, C, b=b)
+    assert np.array_equal(b2, b) and np.allclose(fb2, fb)
+    YtA = (Y - np.outer(b_ref, f_ref)).T @ Ad.T
+    An = 1.0 / (Ad**2).sum(1)
+    ref = np.clip(C + ((YtA - C.T @ (Ad @ Ad.T)) * An).T, 0, None)
+    assert np.allclose(cnmf.compute_trace(f, A, b, C, fb), ref, atol=1e-3 * abs(ref).max())
+
+
+def test_dilate_footprints_disk():
+    H = W = 15
+    A = sps.csr_matrix(([1.0], ([0], [7 * W + 7])), shape=(1, H * W), dtype=np.float32)
+    sub = cnmf.dilate_footprints(A, H, W, 3)
+    yy, xx = np.mgrid[0:H, 0:W]
+    disk = ((yy - 7) ** 2 + (xx - 7) ** 2 <= 9).ravel()
+    assert sub.dtype == bool and sub.shape == (1, H * W)
+    assert np.array_equal(sub.toarray()[0], disk)
+
+
+def test_update_spatial_shrinks_outside_cells_and_keeps_units():
+    f, fc, A, C = _setup()
+    sn = f.sigma_flat()
+    A2, mask, nf = cnmf.update_spatial(
+        f, A, C, sn, dl_wnd=5, sparse_penal=0.01, size_thres=(9, None)
+    )
+    assert mask.sum() >= 0.8 * A.shape[0] and A2.shape[1] == f.P
+    assert np.allclose(A2.max(axis=1).toarray().ravel(), 1.0)
+    assert (A2.data >= 0).all()
+    # support stays inside the dilated footprints of the kept units
+    sub = cnmf.dilate_footprints(A, f.H, f.W_, 5)[np.flatnonzero(mask)]
+    assert (A2.astype(bool) > sub).nnz == 0
+    assert nf.shape == (A2.shape[0],) and (nf > 0).all()
+
+
+def test_update_spatial_size_filter_is_strict():
+    f, fc, A, C = _setup()
+    sn = f.sigma_flat()
+    A2, mask, _ = cnmf.update_spatial(f, A, C, sn, 5, 0.01, (None, None))
+    nnz = np.diff(A2.indptr)
+    lo = int(np.sort(nnz)[len(nnz) // 2])
+    A3, mask3, _ = cnmf.update_spatial(f, A, C, sn, 5, 0.01, (lo, None))
+    assert np.array_equal(mask3[mask], nnz > lo)
+    A4, mask4, _ = cnmf.update_spatial(f, A, C, sn, 5, 0.01, (None, lo))
+    assert np.array_equal(mask4[mask], nnz < lo)
+
+
+def test_run_cnmf_two_iterations():
+    f, fc, A, C = _setup()
+    p = Params(dl_wnd=5, size_thres=(9, None), n_iter=2)
+    res = cnmf.run_cnmf(f, A, C, p, fc.traces_corr)
+    assert res.A.shape[0] == res.C.shape[0] == res.YrA.shape[0] >= 0.7 * A.shape[0]
+    assert res.b.shape == (f.P,) and res.f.shape == (f.T,) and res.counts["iter"] == 2
+    assert res.counts["units_after_merge_1"] == res.A.shape[0]
+    assert (res.YrA >= 0).all()
