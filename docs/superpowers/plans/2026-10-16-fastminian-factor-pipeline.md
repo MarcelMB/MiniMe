@@ -516,7 +516,8 @@ def _session(H=64, W=64, T=600, seed=0):
     movie = synth.synth_movie(H, W, T, seed)
     grid = tiles.tile_grid(H, W, 32)
     tf = [compress.compress_tile(np.ascontiguousarray(movie[:, t.y0:t.y1, t.x0:t.x1]), k0=16) for t in grid]
-    edges = np.array([0, 150, 300, 450, 600])
+    from fastminian.pass1 import seed_block_edges
+    edges = seed_block_edges(T, 300, 150)  # the same edges pass 1 would store
     bm = np.stack([movie[a:b].max(0) for a, b in zip(edges[:-1], edges[1:])])
     return movie, fm.Factors(H, W, T, grid, tf, movie.max(0), bm, edges, {})
 
