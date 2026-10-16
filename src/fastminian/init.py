@@ -10,19 +10,17 @@ footprints overlap and whose traces correlate (Minian ``cnmf.unit_merge``).
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 import scipy.sparse as sps
 from scipy.linalg import LinAlgError, cho_factor, cho_solve
 
+from fastminian.corr import FactorCorr, merge_labels
 from fastminian.factors import Factors
 
-if TYPE_CHECKING:
-    from fastminian.corr import FactorCorr
-
 COND_MAX = 1e12  # above this, G is treated as rank-deficient and pinv is used
+PINV_RCOND = 1e-12  # relative cutoff on eigenvalues of G (~1e-6 on singular values of A)
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +85,7 @@ def _solve_normal(G: np.ndarray, B: np.ndarray) -> np.ndarray:
             pass
         else:
             return cho_solve(cf, B, check_finite=False)
-    return np.linalg.pinv(G) @ B
+    return np.linalg.pinv(G, rcond=PINV_RCOND, hermitian=True) @ B
 
 
 def initC(f: Factors, A: sps.csr_matrix) -> np.ndarray:
@@ -133,8 +131,6 @@ def unit_merge(
     ``fc_traces(C)[i, j] > thres_corr``. ``A``, ``C`` and every ``extra`` (K, ...) array
     are averaged over each connected component; output dtypes follow the inputs.
     """
-    from fastminian.corr import merge_labels
-
     A = sps.csr_matrix(A)
     overlap = (A @ A.T).toarray() > 0
     np.fill_diagonal(overlap, False)
