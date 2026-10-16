@@ -5,6 +5,11 @@ import typer
 app = typer.Typer(add_completion=False)
 
 
+@app.callback()
+def main() -> None:
+    """Factor-first CNMF pipeline for one-photon miniscope data."""
+
+
 @app.command()
 def synth(
     out: Path, minutes: float = 10.0, fps: int = 30, segment: int = 1000, seed: int = 0
