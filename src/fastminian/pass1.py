@@ -154,6 +154,11 @@ def _split(n: int, parts: int) -> list[range]:
     return [range(a, b) for a, b in zip(edges[:-1], edges[1:], strict=True) if b > a]
 
 
+def n_parts_for(info: RawInfo, workers: int) -> int:
+    """Number of tile-store parts (non-empty worker ranges) ``run_pass1`` uses."""
+    return len(_split(len(info.segments), workers))
+
+
 def _init_worker() -> None:
     cv2.setNumThreads(1)
 
@@ -203,7 +208,10 @@ def run_pass1(
     starts = np.concatenate([[0], np.cumsum(info.segment_frames)]).astype(int)
     ranges = _split(len(info.segments), workers)
     if len(ranges) != store.n_parts:
-        raise ValueError(f"store has {store.n_parts} parts, pass 1 needs {len(ranges)}")
+        raise ValueError(
+            f"store has {store.n_parts} parts, pass 1 needs {len(ranges)}; "
+            "size it with n_parts_for(info, workers)"
+        )
     jobs = [
         (
             [str(info.segments[j]) for j in r],
