@@ -58,8 +58,19 @@ def read_avi(path: Path, max_frames: int | None = None) -> np.ndarray:
 
 
 def frame_count(path: Path) -> int:
+    """Frame count from the container header (``CAP_PROP_FRAME_COUNT``), not decoded."""
     cap = cv2.VideoCapture(str(path))
     n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    return n
+
+
+def decoded_frame_count(path: Path) -> int:
+    """Number of frames that actually decode: a truncated file has fewer than its header says."""
+    cap = _open(path)
+    n = 0
+    while cap.grab():
+        n += 1
     cap.release()
     return n
 
@@ -69,13 +80,18 @@ class RawInfo:
     height: int
     width: int
     frames: int
-    segment_frames: list[int]
+    segment_frames: list[int]  # header counts; the last segment's is decoded (see probe)
     segments: list[Path]
     fps: float | None
 
 
 def probe(raw_dir: Path) -> RawInfo:
-    """Frame size, per-segment frame counts and fps (from ``raw_dir.parent/meta.json``)."""
+    """Frame size, per-segment frame counts and fps (from ``raw_dir.parent/meta.json``).
+
+    Counts come from the container header, except for the last segment, which is decoded
+    in full: a recording that stops abruptly leaves a truncated last file whose header
+    still claims the full count. Pass 1 checks every other segment's decoded count.
+    """
     segments = list_segments(raw_dir)
     if not segments:
         raise FileNotFoundError(f"no *.avi segments in {raw_dir}")
@@ -85,7 +101,7 @@ def probe(raw_dir: Path) -> RawInfo:
     if not ok:
         raise OSError(f"cannot read a frame from {segments[0]}")
     height, width = _gray(first).shape
-    counts = [frame_count(s) for s in segments]
+    counts = [frame_count(s) for s in segments[:-1]] + [decoded_frame_count(segments[-1])]
     meta = Path(raw_dir).parent / "meta.json"
     fps = float(json.loads(meta.read_text())["fps"]) if meta.exists() else None
     return RawInfo(height, width, sum(counts), counts, segments, fps)
