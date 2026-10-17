@@ -100,3 +100,42 @@ def test_traces_corr_and_merge_labels():
     adj = sps.csr_matrix(R > 0.9)
     lab = corr.merge_labels(adj)
     assert lab[0] == lab[1] and len({lab[0], lab[2], lab[3]}) == 3
+
+
+def _reference_corr(f, noise_freq):
+    """Independent reference: reconstruct the centred traces, low-pass them, and normalise
+    by the low-passed norm plus the passband share of the discarded (white) energy."""
+    P, T = f.P, f.T
+    Yr = np.empty((P, T))
+    cap = np.zeros(P)
+    for b, t in enumerate(f.tiles):
+        Wd = t.W.astype(np.float64)
+        Yr[f.tile_rows(b)] = Wd @ t.V.T.astype(np.float64)
+        cap[f.tile_rows(b)] = (Wd**2).sum(1)
+    Ylp = corr.lowpass(Yr, noise_freq)
+    f_lp = 2 * (int(noise_freq * T) - 1) / T
+    n2 = (Ylp**2).sum(1) + f_lp * np.maximum(f.energy_flat() - cap, 0)
+
+    def ref(s, d):
+        r = np.einsum("ij,ij->i", Ylp[s], Ylp[d]) / np.sqrt(n2[s] * n2[d])
+        r = np.clip(r, -1, 1)
+        r[s == d] = 1.0
+        return r
+
+    return ref
+
+
+def test_cross_tile_correlations_match_reconstruct_then_lowpass():
+    _, _, _, f = _session(T=400)  # 64 x 64, 32-px tiles: (31, 31) is a corner of 4 tiles
+    fc = corr.FactorCorr(f, 0.06)
+    ref = _reference_corr(f, 0.06)
+    seed = 31 * 64 + 31
+    idx, cw = fc.window(seed, 6)
+    assert np.unique(f.tile_of[idx]).tolist() == [0, 1, 2, 3]
+    assert np.abs(cw - ref(np.full(idx.size, seed), idx)).max() < 1e-10
+    rng = np.random.default_rng(1)
+    s, d = rng.integers(0, f.P, 3000), rng.integers(0, f.P, 3000)
+    assert np.mean(f.tile_of[s] != f.tile_of[d]) > 0.5
+    c = fc.pairs(s, d)
+    assert np.abs(c - ref(s, d)).max() < 1e-10
+    assert np.abs(c - fc.pairs(d, s)).max() < 1e-12  # symmetric across tiles
