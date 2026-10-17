@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
+
+# keys a run's params.json carries besides the parameters; ignored when it is read back
+RUN_METADATA_KEYS = frozenset({"raw_dir", "raw_hash", "cafast_version", "fastminian_version"})
 
 
 @dataclass
@@ -66,7 +69,16 @@ class Params:
 
     @classmethod
     def from_json(cls, path: str | Path) -> Params:
-        d = json.loads(Path(path).read_text())
+        """Parameters from a JSON file: a partial set, or a run's ``params.json``.
+
+        Run metadata (``RUN_METADATA_KEYS``) is ignored; any other unknown key raises.
+        """
+        d = dict(json.loads(Path(path).read_text()))
+        for k in RUN_METADATA_KEYS:
+            d.pop(k, None)
+        unknown = sorted(set(d) - {f.name for f in fields(cls)})
+        if unknown:
+            raise ValueError(f"unknown parameter(s) in {path}: {', '.join(unknown)}")
         if "size_thres" in d:
             d["size_thres"] = tuple(d["size_thres"])
         return cls(**d)
