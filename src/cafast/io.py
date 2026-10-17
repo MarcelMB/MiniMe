@@ -17,25 +17,64 @@ def list_segments(raw_dir: Path) -> list[Path]:
     return sorted(Path(raw_dir).glob("*.avi"), key=lambda p: int(p.stem))
 
 
-def _open(path: Path) -> cv2.VideoCapture:
+# a codec whose raw decode differs from its BGR->gray decode by more than this is read via BGR
+CODEC_TOL_MEAN = 0.5
+CODEC_TOL_MAX = 4
+
+
+def _open(path: Path, bgr: bool = False) -> cv2.VideoCapture:
+    """Capture of ``path``: raw decoder output (``CONVERT_RGB=0``), or BGR when ``bgr``."""
     cap = cv2.VideoCapture(str(path))
-    cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
+    if not bgr:
+        cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
     return cap
 
 
-def _gray(frame: np.ndarray) -> np.ndarray:
-    return frame if frame.ndim == 2 else frame[..., 0]
+def _gray(frame: np.ndarray, bgr: bool = False) -> np.ndarray:
+    """2-D uint8 frame: channel 0 of a raw decode, or the BGR->gray conversion when ``bgr``."""
+    if frame.ndim == 2:
+        return frame
+    if bgr:
+        code = cv2.COLOR_BGRA2GRAY if frame.shape[2] == 4 else cv2.COLOR_BGR2GRAY
+        return cv2.cvtColor(frame, code)
+    return frame[..., 0]
 
 
-def read_avi(path: Path, max_frames: int | None = None) -> np.ndarray:
+def needs_bgr(raw: np.ndarray, via_bgr: np.ndarray) -> bool:
+    """True if the raw decode (``CONVERT_RGB=0``, channel 0) of a frame cannot be trusted.
+
+    ``raw`` and ``via_bgr`` are the same frame decoded both ways (2-D gray). GREY, FFV1 and
+    MJPG agree exactly. HuffYUV (bgr0) returns an 8UC1 frame of the right shape holding
+    the wrong pixels (mean |diff| 53-88); XVID and gray-HuffYUV return the limited-range Y
+    plane (mean |diff| ~9 against the full-range BGR->gray). The BGR path is then used.
+    """
+    if raw.shape != via_bgr.shape:
+        return True
+    d = np.abs(raw.astype(np.int16) - via_bgr.astype(np.int16))
+    return bool(d.mean() > CODEC_TOL_MEAN or d.max() > CODEC_TOL_MAX)
+
+
+def first_frame(path: Path, bgr: bool) -> np.ndarray:
+    """Frame 0 of ``path`` as 2-D uint8, decoded raw or via BGR->gray."""
+    cap = _open(path, bgr)
+    ok, frame = cap.read()
+    cap.release()
+    if not ok:
+        raise OSError(f"cannot read a frame from {path}")
+    return _gray(frame, bgr)
+
+
+def read_avi(path: Path, max_frames: int | None = None, bgr: bool = False) -> np.ndarray:
     """The first ``max_frames`` (default all) frames of one AVI as (n, h, w) uint8.
+
+    ``bgr``: decode through BGR->gray (``RawInfo.bgr``, decided by ``probe``).
 
     Frames go straight into one preallocated array sized by the container's frame count
     (frames beyond it are appended): keeping the decoded 3-channel frames alive until a
     final stack cost 4x the segment size (8.4 GB for a 1.6 GB single-file session).
     """
     limit = frame_count(path) if max_frames is None else min(frame_count(path), max_frames)
-    cap = _open(path)
+    cap = _open(path, bgr)
     out: np.ndarray | None = None
     extra: list[np.ndarray] = []
     n = 0
@@ -43,7 +82,7 @@ def read_avi(path: Path, max_frames: int | None = None) -> np.ndarray:
         ok, f = cap.read()
         if not ok:
             break
-        g = _gray(f)
+        g = _gray(f, bgr)
         if out is None:
             out = np.empty((max(limit, 1), *g.shape), dtype=np.uint8)
         if n < out.shape[0]:
@@ -65,9 +104,9 @@ def frame_count(path: Path) -> int:
     return n
 
 
-def decoded_frame_count(path: Path) -> int:
+def decoded_frame_count(path: Path, bgr: bool = False) -> int:
     """Number of frames that actually decode: a truncated file has fewer than its header says."""
-    cap = _open(path)
+    cap = _open(path, bgr)
     n = 0
     while cap.grab():
         n += 1
@@ -83,6 +122,7 @@ class RawInfo:
     segment_frames: list[int]  # header counts; the last segment's is decoded (see probe)
     segments: list[Path]
     fps: float | None
+    bgr: bool = False  # decode via BGR->gray: the raw decode of this codec is wrong
 
 
 def probe(raw_dir: Path) -> RawInfo:
@@ -91,20 +131,20 @@ def probe(raw_dir: Path) -> RawInfo:
     Counts come from the container header, except for the last segment, which is decoded
     in full: a recording that stops abruptly leaves a truncated last file whose header
     still claims the full count. Pass 1 checks every other segment's decoded count.
+
+    Frame 0 is decoded raw and via BGR->gray; if they disagree (``needs_bgr``) the whole
+    session is read via BGR->gray (``RawInfo.bgr``).
     """
     segments = list_segments(raw_dir)
     if not segments:
         raise FileNotFoundError(f"no *.avi segments in {raw_dir}")
-    cap = _open(segments[0])
-    ok, first = cap.read()
-    cap.release()
-    if not ok:
-        raise OSError(f"cannot read a frame from {segments[0]}")
-    height, width = _gray(first).shape
-    counts = [frame_count(s) for s in segments[:-1]] + [decoded_frame_count(segments[-1])]
+    bgr = needs_bgr(first_frame(segments[0], False), first_frame(segments[0], True))
+    height, width = first_frame(segments[0], bgr).shape
+    counts = [frame_count(s) for s in segments[:-1]]
+    counts.append(decoded_frame_count(segments[-1], bgr))
     meta = Path(raw_dir).parent / "meta.json"
     fps = float(json.loads(meta.read_text())["fps"]) if meta.exists() else None
-    return RawInfo(height, width, sum(counts), counts, segments, fps)
+    return RawInfo(height, width, sum(counts), counts, segments, fps, bgr)
 
 
 def hash_files(paths: list[Path], sample_mb: int = 1, n_samples: int = 16) -> str:
