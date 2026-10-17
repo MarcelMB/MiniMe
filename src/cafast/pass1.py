@@ -12,11 +12,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from fastminian import motion, preprocess
-from fastminian.io import RawInfo, read_avi
-from fastminian.motion import Template
-from fastminian.params import Params
-from fastminian.tiles import Tile, TileStore, pack_tiles, tile_offsets
+from cafast import motion, preprocess
+from cafast.io import RawInfo, read_avi
+from cafast.motion import Template
+from cafast.params import Params
+from cafast.tiles import Tile, TileStore, pack_tiles, tile_offsets
 
 STAGES = (
     "read_avi",

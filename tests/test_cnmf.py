@@ -4,10 +4,10 @@ import pandas as pd
 import scipy.sparse as sps
 from numba import njit, prange
 
-from fastminian import cnmf, compress, corr, init, tiles
-from fastminian import factors as fm
-from fastminian.params import Params
-from fastminian.testing import synth
+from cafast import cnmf, compress, corr, init, tiles
+from cafast import factors as fm
+from cafast.params import Params
+from cafast.testing import synth
 
 
 def _dense(f):

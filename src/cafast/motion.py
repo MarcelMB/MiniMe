@@ -16,7 +16,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-import fastminian
+import cafast
 
 FORMAT_VERSION = 1
 META_FILE = "meta.json"
@@ -170,7 +170,7 @@ def save_sidecar(path: str | os.PathLike, sc: MotionSidecar) -> None:
         **{k: v for k, v in sc.meta.items() if k not in reserved},
         "format_version": FORMAT_VERSION,
         "created": _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds"),
-        "fastminian_version": fastminian.__version__,
+        "cafast_version": cafast.__version__,
         "n_frames": int(shifts.shape[0]),
         "template_shape": [int(x) for x in template.shape],
         "raw_hash": sc.raw_hash,

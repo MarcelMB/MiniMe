@@ -1,6 +1,6 @@
 import numpy as np
 
-from fastminian import io, tiles
+from cafast import io, tiles
 
 
 def test_segments_and_probe(tiny_session):
@@ -12,7 +12,7 @@ def test_segments_and_probe(tiny_session):
 
 
 def test_read_avi_roundtrip(tiny_session):
-    from fastminian.testing import synth
+    from cafast.testing import synth
 
     frames = io.read_avi(io.list_segments(tiny_session["raw_dir"])[0])
     assert frames.dtype == np.uint8 and frames.shape == (100, 64, 64)
