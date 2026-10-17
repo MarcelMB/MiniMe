@@ -1,0 +1,110 @@
+import json
+import time
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+import scipy.sparse as sps
+from typer.testing import CliRunner
+
+from fastminian import cli, pipeline, report
+from fastminian.params import Params
+from fastminian.testing import synth
+
+
+def test_pipeline_end_to_end_tiny(tiny_session):
+    # pnr_thres: with "auto" the PNR GMM already removes every noise seed, so gmm_refine's
+    # 2-GMM on ptp then splits the 7 toy cells into bright and dim and drops the dim ones;
+    # a low fixed threshold leaves noise seeds in for gmm_refine to separate from cells.
+    p = Params(
+        pnr_thres=0.5,
+        tile=32,
+        seeds_wnd=100,
+        seeds_stp=50,
+        seeds_max_wnd=8,
+        template_frames=50,
+        inita_wnd=8,
+        dl_wnd=5,
+        size_thres=(9, None),
+        svd_k0=16,
+    )
+    out = pipeline.run(tiny_session["raw_dir"], p, run_name="t", workers=2)
+    assert out == tiny_session["raw_dir"].parent / "processed" / "t"
+    assert (out / "factors" / "meta.json").exists() and not (out / "tiles").exists()
+    A = sps.load_npz(out / "cnmf" / "A.npz")
+    C = np.load(out / "cnmf" / "C.npy")
+    rep = json.loads((out / "report.json").read_text())
+    assert A.shape[1] == 64 * 64 and C.shape == (A.shape[0], 300)
+    assert rep["counts"]["units_final"] == A.shape[0]
+    cents = synth.true_centroids(tiny_session["setup"])
+    cents = cents[(cents >= 4).all(1) & (cents < 60).all(1)]
+    from fastminian.init import centroids
+
+    uc = centroids(A, 64, 64)
+    d = np.sqrt(((cents[:, None] - uc[None]) ** 2).sum(-1)).min(1)
+    assert (d < 5).mean() >= 0.8
+    # output contract
+    assert np.load(out / "cnmf" / "YrA.npy").shape == C.shape
+    assert np.load(out / "cnmf" / "b.npy").shape == (64, 64)
+    assert np.load(out / "cnmf" / "f.npy").shape == (300,)
+    units = pd.read_csv(out / "cnmf" / "units.csv")
+    assert list(units.columns) == ["unit_id", "centroid_h", "centroid_w", "size_px", "peak"]
+    assert len(units) == A.shape[0]
+    prm = json.loads((out / "params.json").read_text())
+    assert prm["tile"] == 32 and prm["raw_dir"] == str(tiny_session["raw_dir"].resolve())
+    assert {"raw_hash", "fastminian_version"} <= set(prm)
+    assert (out / "motion" / "meta.json").exists()
+    assert rep["motion"]["sidecar_reused"] is False
+    assert rep["bytes"]["store_peak"] > 0 and rep["bytes"]["factors"] > 0
+    assert rep["workers"] == 2 and rep["counts"]["seeds_init"] >= rep["counts"]["seeds_pnr"]
+    assert "cnmf" in {r["stage"] for r in rep["stages"]}
+    (out / "stale.txt").write_text("from a previous run")
+    # second run reuses the sidecar and overwrites
+    out2 = pipeline.run(tiny_session["raw_dir"], p, run_name="t", workers=1)
+    rep2 = json.loads((out2 / "report.json").read_text())
+    assert rep2["motion"]["sidecar_reused"] is True
+    assert not (out2 / "stale.txt").exists()
+    assert np.array_equal(sps.load_npz(out2 / "cnmf" / "A.npz").toarray(), A.toarray())
+
+
+def test_pipeline_refuses_out_dir_containing_raw(tmp_path):
+    raw = tmp_path / "proc" / "t" / "raw"
+    raw.mkdir(parents=True)
+    with pytest.raises(ValueError, match="raw"):
+        pipeline.run(raw, Params(), run_name="t", out_root=tmp_path / "proc")
+    assert raw.exists()
+
+
+def test_stage_timer(tmp_path):
+    timer = report.StageTimer()
+    with timer("a"):
+        time.sleep(0.01)
+    timer.counts["n"] = 3
+    timer.to_json(tmp_path / "r.json", {"version": "x"})
+    rep = json.loads((tmp_path / "r.json").read_text())
+    assert rep["stages"][0]["stage"] == "a" and rep["stages"][0]["seconds"] >= 0.01
+    assert rep["counts"] == {"n": 3} and rep["version"] == "x"
+
+
+def test_cli_run_wires_options(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_run(raw_dir: Path, params: Params, **kw) -> Path:
+        seen.update(raw_dir=raw_dir, params=params, **kw)
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "report.json").write_text(json.dumps({"counts": {"units_final": 7}}))
+        return out
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    Params(tile=32).to_json(tmp_path / "p.json")
+    res = CliRunner().invoke(
+        cli.app,
+        ["run", str(tmp_path), "--params", str(tmp_path / "p.json"), "--workers", "3"]
+        + ["--name", "x", "--keep-store"],
+    )
+    assert res.exit_code == 0, res.output
+    assert seen["params"].tile == 32 and seen["workers"] == 3
+    assert seen["run_name"] == "x" and seen["keep_store"] is True
+    assert "units_final" in res.output and str(tmp_path / "out") in res.output

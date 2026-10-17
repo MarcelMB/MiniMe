@@ -65,7 +65,11 @@ def build_template(info: RawInfo, params: Params) -> Template:
 
 
 class Pass1:
-    """Stateful frame-batch processor: running max, block maxima, shifts, quality, timings."""
+    """Stateful frame-batch processor: running max, block maxima, shifts, quality, timings.
+
+    With ``shifts`` (T, 2) given, frames are warped by ``shifts[absolute frame index]``
+    instead of being estimated against the template (apply-only rerun from a sidecar).
+    """
 
     def __init__(
         self,
@@ -74,8 +78,10 @@ class Pass1:
         params: Params,
         block_edges: np.ndarray,
         t_start: int,
+        shifts: np.ndarray | None = None,
     ) -> None:
         self.template = template
+        self.given_shifts = shifts
         self.grid = grid
         self.params = params
         self.block_edges = block_edges
@@ -111,7 +117,11 @@ class Pass1:
             t1 = time.perf_counter()
             blk = preprocess.tophat(blk, p.tophat_wnd)
             t2 = time.perf_counter()
-            sh = motion.estimate(blk, self.template, p.motion_max_shift)
+            if self.given_shifts is None:
+                sh = motion.estimate(blk, self.template, p.motion_max_shift)
+            else:
+                a = self.t_start + self.frames + b0
+                sh = self.given_shifts[a : a + blk.shape[0]]
             t3 = time.perf_counter()
             blk = motion.apply_shifts(blk, sh)
             t4 = time.perf_counter()
@@ -173,11 +183,12 @@ def pass1_worker(
     params: Params,
     block_edges: np.ndarray,
     t_start: int,
+    shifts: np.ndarray | None = None,
 ) -> dict:
     """Process a contiguous run of segments, writing part ``part`` of every tile file."""
     cv2.setNumThreads(1)
     store = TileStore(Path(store_root), grid, n_parts)
-    p1 = Pass1(template, grid, params, block_edges, t_start)
+    p1 = Pass1(template, grid, params, block_edges, t_start, shifts)
     t_read = t_write = 0.0
     with ExitStack() as stack:
         files = [stack.enter_context(f) for f in store.open_part(part)]
@@ -201,9 +212,22 @@ def pass1_worker(
 
 
 def run_pass1(
-    info: RawInfo, store: TileStore, template: Template, params: Params, workers: int
+    info: RawInfo,
+    store: TileStore,
+    template: Template,
+    params: Params,
+    workers: int,
+    shifts: np.ndarray | None = None,
 ) -> Pass1Result:
-    """Run pass 1 over all segments with ``workers`` single-threaded processes."""
+    """Run pass 1 over all segments with ``workers`` single-threaded processes.
+
+    ``shifts`` (T, 2): apply these instead of estimating motion (``template`` is then used
+    only for the per-frame quality).
+    """
+    if shifts is not None:
+        shifts = np.asarray(shifts, dtype=np.float32)
+        if shifts.shape != (info.frames, 2):
+            raise ValueError(f"shifts must be ({info.frames}, 2), got {shifts.shape}")
     edges = seed_block_edges(info.frames, params.seeds_wnd, params.seeds_stp)
     starts = np.concatenate([[0], np.cumsum(info.segment_frames)]).astype(int)
     ranges = _split(len(info.segments), workers)
@@ -223,6 +247,7 @@ def run_pass1(
             params,
             edges,
             int(starts[r.start]),
+            shifts,
         )
         for k, r in enumerate(ranges)
     ]
