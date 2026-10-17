@@ -1,6 +1,9 @@
+import warnings
+
 import cv2
 import numpy as np
 import pandas as pd
+import pytest
 import scipy.sparse as sps
 from numba import njit, prange
 
@@ -88,16 +91,22 @@ def _parallel_double(x):
 
 
 def test_background_trace_correct_after_numba_parallel_region():
-    # Accelerate (macOS 26, M1 Max) returned wrong float32 transposed-gemv results for output
-    # lengths ~513-575 right after a numba parallel region; the WL25 tail chunk (541 frames)
-    # hit it after update_spatial and turned f into NaN. Same shape here: a 64 x 64 tile
-    # (4096 pixels) and a 541-frame chunk.
+    """Canary, not a regression test: it cannot fail deterministically.
+
+    Accelerate (macOS 26, M1 Max) was seen to return wrong float32 transposed-gemv results
+    for output lengths ~513-575 right after a numba parallel region; the WL25 tail chunk
+    (541 frames) turned f into NaN in 3 of 6 runs. The final review could not reproduce it
+    (0 of 150 trials with the old ``R.T @ b`` code), so this test also passes on the old
+    code. It keeps the failing shape (a 64 x 64 tile = 4096 pixels, a 541-frame chunk) in
+    the suite in case the bug returns; the guards that do catch it at run time are the
+    NaN checks in ``run_cnmf`` and ``f64_spot_check`` in ``update_background``.
+    """
     f, fc, A, C = _setup(64, 64, 600, tile=64)
     Y = _dense(f)
     R = np.clip(Y - A.toarray().astype(np.float64).T @ C, 0, None)
     b_ref = R.mean(1)
     f_ref = R.T @ b_ref / (b_ref @ b_ref)
-    for _ in range(20):  # intermittent: the old code failed in about 3 of 5 test runs
+    for _ in range(20):  # intermittent when it occurred; passing proves nothing
         _parallel_double(np.ones(100_000))
         _, fb = cnmf.update_background(f, A, C, b=b_ref.astype(np.float32), chunk=541)
         assert np.isfinite(fb).all() and np.allclose(fb, f_ref, rtol=1e-4)
@@ -163,3 +172,46 @@ def test_run_cnmf_refreshes_background_on_last_iteration():
     assert np.linalg.norm(res.b - b0) > 0.05 * np.linalg.norm(b0)  # footprints changed b
     assert np.allclose(res.b, b_ref, atol=1e-4 * b_ref.max())
     assert np.allclose(res.f, f_ref, rtol=1e-4)
+
+
+def test_background_f64_spot_check_warns_on_wrong_float32_trace(monkeypatch):
+    f, fc, A, C = _setup()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # the correct path does not warn
+        b, fb = cnmf.update_background(f, A, C, chunk=128)
+    true_part = cnmf._trace_part
+    monkeypatch.setattr(cnmf, "_trace_part", lambda R, bt: true_part(R, bt) * 1.01)
+    with pytest.warns(RuntimeWarning, match="differs from float64"):
+        cnmf.update_background(f, A, C, b=b, chunk=128)
+    monkeypatch.setattr(cnmf, "_trace_part", lambda R, bt: true_part(R, bt) * np.nan)
+    with pytest.warns(RuntimeWarning, match="differs from float64"):
+        cnmf.update_background(f, A, C, b=b, chunk=128)
+
+
+@pytest.mark.parametrize(
+    "target, stage",
+    [
+        ("update_background", "initial background"),
+        ("update_spatial", "spatial update"),
+        ("compute_trace", "traces"),
+    ],
+)
+def test_run_cnmf_raises_on_non_finite_stage_output(monkeypatch, target, stage):
+    f, fc, A, C = _setup()
+    real = getattr(cnmf, target)
+
+    def poisoned(*a, **kw):
+        out = real(*a, **kw)
+        if target == "update_spatial":
+            A2, mask, nf = out
+            A2 = A2.copy()
+            A2.data[0] = np.nan
+            return A2, mask, nf
+        if target == "update_background":
+            return out[0], np.full_like(out[1], np.nan)
+        return np.full_like(out, np.inf)
+
+    monkeypatch.setattr(cnmf, target, poisoned)
+    p = Params(dl_wnd=5, size_thres=(9, None), n_iter=2)
+    with pytest.raises(RuntimeError, match=stage):
+        cnmf.run_cnmf(f, A, C, p, fc.traces_corr)
