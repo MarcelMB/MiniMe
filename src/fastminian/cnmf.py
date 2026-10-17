@@ -126,6 +126,11 @@ def _clipped_residual(
     return R
 
 
+def tile_units(Acsc: sps.csc_matrix, rows: np.ndarray) -> np.ndarray:
+    """Indices of the units whose footprint has a stored entry among the pixels ``rows``."""
+    return np.flatnonzero(np.diff(sps.csr_matrix(Acsc[:, rows]).indptr))
+
+
 def update_background(
     f: Factors,
     A: sps.csr_matrix,
@@ -136,7 +141,8 @@ def update_background(
     """``(b (P,) float32, f (T,) float32)`` from the clipped residual ``clip(Y - A^T C, 0)``.
 
     Pass 1 (skipped when ``b`` is given) ``b = mean_t R``; pass 2 ``f_t = R_t . b / (b . b)``.
-    Both stream ``chunk`` frames of one tile at a time.
+    Both stream ``chunk`` frames of one tile at a time; ``A^T C`` of a tile uses only the
+    units that touch it (all K units made this the slowest CNMF stage).
     """
     Acsc = sps.csc_matrix(A, dtype=np.float32)
     C32 = np.ascontiguousarray(C, dtype=np.float32)
@@ -145,16 +151,18 @@ def update_background(
     num = np.zeros(f.T, dtype=np.float64)
     for t in range(len(f.tiles)):
         rows = f.tile_rows(t)
-        Ab = Acsc[:, rows].toarray()  # (K, P_b) float32
+        ks = tile_units(Acsc, rows)
+        Ab = Acsc[ks][:, rows].toarray()  # (K_b, P_b) float32
+        Cb = C32[ks]
         ranges = [(t0, min(f.T, t0 + chunk)) for t0 in range(0, f.T, chunk)]
         if not given:
             acc = np.zeros(rows.size, dtype=np.float64)
             for t0, t1 in ranges:
-                acc += _clipped_residual(f, t, Ab, C32, t0, t1).sum(axis=1, dtype=np.float64)
+                acc += _clipped_residual(f, t, Ab, Cb, t0, t1).sum(axis=1, dtype=np.float64)
             b_out[rows] = acc / f.T
         b_tile = b_out[rows]
         for t0, t1 in ranges:
-            num[t0:t1] += _clipped_residual(f, t, Ab, C32, t0, t1).T @ b_tile
+            num[t0:t1] += _clipped_residual(f, t, Ab, Cb, t0, t1).T @ b_tile
     bb = float(b_out.astype(np.float64) @ b_out.astype(np.float64))
     fb = num / bb if bb > 0 else np.zeros(f.T)
     return b_out, fb.astype(np.float32)

@@ -61,6 +61,23 @@ def test_background_and_trace_match_dense_reference():
     assert np.allclose(cnmf.compute_trace(f, A, b, C, fb), ref, atol=1e-3 * abs(ref).max())
 
 
+def test_background_uses_only_units_touching_each_tile():
+    f, fc, A, C = _setup()
+    Acsc = sps.csc_matrix(A)
+    for t in range(len(f.tiles)):
+        rows = f.tile_rows(t)
+        touching = np.flatnonzero(np.abs(A.toarray()[:, rows]).sum(1) > 0)
+        assert np.array_equal(cnmf.tile_units(Acsc, rows), touching)
+    # a unit confined to tile 0 with a huge trace leaves the other tiles' background unchanged
+    extra = sps.csr_matrix(([1.0], ([0], [f.tile_rows(0)[0]])), shape=(1, f.P), dtype=np.float32)
+    A2 = sps.vstack([A, extra]).tocsr()
+    C2 = np.vstack([C, np.full((1, f.T), 1e6, dtype=C.dtype)])
+    b, _ = cnmf.update_background(f, A, C)
+    b2, _ = cnmf.update_background(f, A2, C2)
+    rest = np.concatenate([f.tile_rows(t) for t in range(1, len(f.tiles))])
+    assert np.array_equal(b2[rest], b[rest]) and b2[f.tile_rows(0)[0]] == 0
+
+
 def test_dilate_footprints_disk():
     H = W = 15
     A = sps.csr_matrix(([1.0], ([0], [7 * W + 7])), shape=(1, H * W), dtype=np.float32)
