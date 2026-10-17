@@ -16,13 +16,13 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sps
 
-import fastminian
-from fastminian import corr, init, io, motion, pass1, pass2, seeds
-from fastminian.cnmf import CnmfResult, run_cnmf
-from fastminian.factors import Factors
-from fastminian.params import Params
-from fastminian.report import StageTimer, dir_bytes, peak_rss
-from fastminian.tiles import TileStore, tile_grid
+import cafast
+from cafast import corr, init, io, motion, pass1, pass2, seeds
+from cafast.cnmf import CnmfResult, run_cnmf
+from cafast.factors import Factors
+from cafast.params import Params
+from cafast.report import StageTimer, dir_bytes, peak_rss
+from cafast.tiles import TileStore, tile_grid
 
 # ---------------------------------------------------------------------------
 # Output directory
@@ -160,7 +160,7 @@ def _write_params(out: Path, params: Params, raw_dir: Path, raw_hash: str) -> No
         **params.asdict(),
         "raw_dir": str(Path(raw_dir).resolve()),
         "raw_hash": raw_hash,
-        "fastminian_version": fastminian.__version__,
+        "cafast_version": cafast.__version__,
     }
     (out / "params.json").write_text(json.dumps(doc, indent=1))
 
@@ -173,7 +173,7 @@ def _write_params(out: Path, params: Params, raw_dir: Path, raw_hash: str) -> No
 def run(
     raw_dir: Path,
     params: Params,
-    run_name: str = "fastminian",
+    run_name: str = "cafast",
     out_root: Path | None = None,
     keep_store: bool = False,
     workers: int | None = None,
@@ -249,7 +249,7 @@ def run(
             "peak_rss_children": peak_rss(children=True),
             "wall_total": time.perf_counter() - t_start,
             "workers": workers,
-            "version": fastminian.__version__,
+            "version": cafast.__version__,
         },
     )
     return out

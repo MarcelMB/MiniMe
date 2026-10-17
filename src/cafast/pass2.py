@@ -8,12 +8,12 @@ from pathlib import Path
 
 import numpy as np
 
-from fastminian.compress import compress_tile
-from fastminian.factors import Factors, TileFactors
-from fastminian.io import RawInfo
-from fastminian.params import Params
-from fastminian.pass1 import Pass1Result
-from fastminian.tiles import Tile, TileStore
+from cafast.compress import compress_tile
+from cafast.factors import Factors, TileFactors
+from cafast.io import RawInfo
+from cafast.params import Params
+from cafast.pass1 import Pass1Result
+from cafast.tiles import Tile, TileStore
 
 _THREAD_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
 

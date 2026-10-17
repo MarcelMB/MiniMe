@@ -8,9 +8,9 @@ import pytest
 import scipy.sparse as sps
 from typer.testing import CliRunner
 
-from fastminian import cli, pipeline, report
-from fastminian.params import Params
-from fastminian.testing import synth
+from cafast import cli, pipeline, report
+from cafast.params import Params
+from cafast.testing import synth
 
 
 def test_pipeline_end_to_end_tiny(tiny_session):
@@ -37,7 +37,7 @@ def test_pipeline_end_to_end_tiny(tiny_session):
     assert rep["counts"]["units_final"] == A.shape[0]
     cents = synth.true_centroids(tiny_session["setup"])
     cents = cents[(cents >= 4).all(1) & (cents < 60).all(1)]
-    from fastminian.init import centroids
+    from cafast.init import centroids
 
     uc = centroids(A, 64, 64)
     d = np.sqrt(((cents[:, None] - uc[None]) ** 2).sum(-1)).min(1)
@@ -51,7 +51,7 @@ def test_pipeline_end_to_end_tiny(tiny_session):
     assert len(units) == A.shape[0]
     prm = json.loads((out / "params.json").read_text())
     assert prm["tile"] == 32 and prm["raw_dir"] == str(tiny_session["raw_dir"].resolve())
-    assert {"raw_hash", "fastminian_version"} <= set(prm)
+    assert {"raw_hash", "cafast_version"} <= set(prm)
     assert (out / "motion" / "meta.json").exists()
     assert rep["motion"]["sidecar_reused"] is False
     assert rep["bytes"]["store_peak"] > 0 and rep["bytes"]["factors"] > 0
@@ -112,7 +112,7 @@ def test_cli_run_wires_options(tmp_path, monkeypatch):
 def test_seeds_stage_runs_gmm_refine_only_when_enabled(monkeypatch, use_gmm):
     from types import SimpleNamespace
 
-    from fastminian import corr, seeds
+    from cafast import corr, seeds
 
     df = pd.DataFrame({"height": [1, 2, 3], "width": [1, 2, 3]})
     called = []

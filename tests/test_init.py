@@ -2,9 +2,9 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sps
 
-from fastminian import compress, corr, init, tiles
-from fastminian import factors as fm
-from fastminian.testing import synth
+from cafast import compress, corr, init, tiles
+from cafast import factors as fm
+from cafast.testing import synth
 
 
 def _session(H=64, W=64, T=800, seed=0):

@@ -2,7 +2,7 @@
 
 Inputs -> outputs: a pipeline's units (footprints `A`, traces, motion `shifts`) -> `score.json`
 (recall, precision, F1, trace correlation) against the ground truth of the synthetic session
-(`fastminian.testing.synth`, dataset meta in `<raw>/../meta.json`).
+(`cafast.testing.synth`, dataset meta in `<raw>/../meta.json`).
 
 ## Scoring method (`bench/score.py`)
 - Footprint centroids are intensity-weighted. Units are matched one-to-one to true centroids,
@@ -57,17 +57,17 @@ $MINIAN_PY bench/minian_redo_spatial.py $OUT --scratch $SCRATCH
 # 3. export (A_new from SCRATCH, C_new and motion from the run) -> $OUT/minian_units.npz
 $MINIAN_PY bench/minian_export.py $OUT A_new C_new $SCRATCH
 # 4. score under our venv -> $OUT/score.json
-.venv/bin/fastminian score --minian $OUT/minian_units.npz --raw $RAW
-# score a fastminian run (--raw only needed if RUN_DIR/params.json is missing)
-.venv/bin/fastminian score RUN_DIR [--raw $RAW]                         # -> RUN_DIR/score.json
+.venv/bin/cafast score --minian $OUT/minian_units.npz --raw $RAW
+# score a cafast run (--raw only needed if RUN_DIR/params.json is missing)
+.venv/bin/cafast score RUN_DIR [--raw $RAW]                         # -> RUN_DIR/score.json
 ```
 `bench/minian_export.py` refuses to export if `A_new` contains NaN. Score dicts carry
 `alignment_ok`: False (plus a stderr warning) when neither offset sign gives a median matched
 distance below 1.5 px, i.e. the motion offset could not be verified.
 
-## fastminian runs (Task 12, commit 16f6ac8, M1 Max, 10 cores)
+## cafast runs (Task 12, commit 16f6ac8, M1 Max, 10 cores)
 
-Fresh runs (no motion sidecar reused), default params, scored with `fastminian score`.
+Fresh runs (no motion sidecar reused), default params, scored with `cafast score`.
 
 | session | workers | wall | pass 1 | pass 2 | window 2 (cnmf) | units | recall | precision | F1 | trace corr median / q25 |
 |---|---|---|---|---|---|---|---|---|---|---|

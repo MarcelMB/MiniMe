@@ -11,7 +11,7 @@ import numpy as np
 import scipy.linalg as sla
 from scipy.linalg import blas as sblas
 
-from fastminian.factors import TileFactors
+from cafast.factors import TileFactors
 
 N_OVERSAMPLES = 10
 MAX_RANK = 100

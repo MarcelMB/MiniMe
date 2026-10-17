@@ -1,7 +1,7 @@
 """Score a pipeline's units (footprints + traces) against the synthetic ground truth.
 
-Used for both the fastminian run and the exported Minian reference. Depends only on
-numpy, scipy and pandas (plus the synthetic ground truth in ``fastminian.testing.synth``).
+Used for both the cafast run and the exported Minian reference. Depends only on
+numpy, scipy and pandas (plus the synthetic ground truth in ``cafast.testing.synth``).
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 from scipy import sparse
 
-from fastminian.testing import synth
+from cafast.testing import synth
 
 BASELINE_F0 = 20.0
 MAX_DIST_PX = 5.0
@@ -181,7 +181,7 @@ def _read_json(p: Path) -> dict:
 
 
 def score_pipeline_dir(run_dir: Path, raw_dir: Path | None = None) -> dict:
-    """Score a fastminian run directory (``cnmf/``, ``motion/``, ``factors/``)."""
+    """Score a cafast run directory (``cnmf/``, ``motion/``, ``factors/``)."""
     run_dir = Path(run_dir)
     if raw_dir is None:
         raw_dir = Path(_read_json(run_dir / "params.json")["raw_dir"])

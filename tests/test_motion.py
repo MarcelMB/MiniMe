@@ -1,7 +1,7 @@
 import numpy as np
 
-from fastminian import motion, preprocess
-from fastminian.testing import synth
+from cafast import motion, preprocess
+from cafast.testing import synth
 
 
 def _aligned_rmse(est, true):

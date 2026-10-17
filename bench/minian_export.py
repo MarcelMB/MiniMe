@@ -1,6 +1,6 @@
 """Export Minian's units from its zarr intermediates into a plain ``minian_units.npz``.
 
-Run under the Minian venv (needs xarray + zarr), not the fastminian venv::
+Run under the Minian venv (needs xarray + zarr), not the cafast venv::
 
     <minian_v2.0>/.venv/bin/python bench/minian_export.py RUN_OUT_DIR
 

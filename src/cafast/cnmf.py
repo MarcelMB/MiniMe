@@ -23,10 +23,10 @@ import cv2
 import numpy as np
 import scipy.sparse as sps
 
-from fastminian import init
-from fastminian.factors import Factors
-from fastminian.params import Params
-from fastminian.spatial_kernel import solve_nnqp
+from cafast import init
+from cafast.factors import Factors
+from cafast.params import Params
+from cafast.spatial_kernel import solve_nnqp
 
 # ---------------------------------------------------------------------------
 # Spatial update

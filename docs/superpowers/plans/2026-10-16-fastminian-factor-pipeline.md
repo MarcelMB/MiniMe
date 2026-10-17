@@ -1,14 +1,14 @@
-# fastminian Factor-First Pipeline Implementation Plan
+# cafast Factor-First Pipeline Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A `fastminian run <raw_dir>` command that compresses a Miniscope AVI session into per-tile SVD factors (window 1) and runs seeds, init and two CNMF iterations entirely on those factors (window 2), scoring at least as well as Minian against synthetic ground truth.
+**Goal:** A `cafast run <raw_dir>` command that compresses a Miniscope AVI session into per-tile SVD factors (window 1) and runs seeds, init and two CNMF iterations entirely on those factors (window 2), scoring at least as well as Minian against synthetic ground truth.
 
 **Architecture:** Window 1 is a two-pass streaming engine (frame-major pass 1 → uint8 tile store → tile-major pass 2 → `factors/`), a straight port of the measured `pre_rect_down2` prototype. Window 2 holds every tile's factors `W (P_b×r)`, `V (T×r)`, `mean`, `sigma`, `energy` in RAM and expresses each Minian stage as small matrix algebra on them, streaming reconstructed chunks only where a nonlinearity (clip, max, percentile) needs it.
 
 **Tech Stack:** Python 3.11, numpy, scipy, numba, opencv-python-headless, scikit-learn, pandas, typer; pytest + ruff; `uv` venv.
 
-**Spec:** `docs/superpowers/specs/2026-10-16-fastminian-factor-pipeline-design.md`
+**Spec:** `docs/superpowers/specs/2026-10-16-cafast-factor-pipeline-design.md`
 
 **Prototype root** (read-only, referenced as `$BENCH` below):
 `/Users/mbrosch/Documents/GitKraken_mac/03_analysis-tools/minian_v2.0/scripts/`.
@@ -41,7 +41,7 @@ Test data: `/Users/mbrosch/minian_testing_local/synth_v4_5min/{raw,meta.json}` (
 ### Task 1: Scaffold, synthetic generator, test data
 
 **Files:**
-- Create: `pyproject.toml`, `README.md`, `.gitignore`, `src/fastminian/__init__.py`, `src/fastminian/testing/__init__.py`, `src/fastminian/testing/synth.py`, `src/fastminian/cli.py` (synth subcommand only), `tests/conftest.py`, `tests/test_synth.py`
+- Create: `pyproject.toml`, `README.md`, `.gitignore`, `src/cafast/__init__.py`, `src/cafast/testing/__init__.py`, `src/cafast/testing/synth.py`, `src/cafast/cli.py` (synth subcommand only), `tests/conftest.py`, `tests/test_synth.py`
 
 **Interfaces:**
 - Produces:
@@ -51,14 +51,14 @@ Test data: `/Users/mbrosch/minian_testing_local/synth_v4_5min/{raw,meta.json}` (
   - `synth.true_centroids(setup) -> np.ndarray` (n_cells, 2) float: `(ys + 7 - margin, xs + 7 - margin)` in frame coordinates of an unshifted frame.
   - `synth.write_session(out_dir: Path, minutes: float, fps: int = 30, segment: int = 1000, seed: int = 0, side: int = 600) -> dict` — writes `N.avi` (fourcc GREY) into `out_dir` and `meta.json` into `out_dir.parent`, as `$BENCH/bench_browser/gen_dataset.py`.
   - `tests/conftest.py` fixture `tiny_session(tmp_path)` → dict with `raw_dir` (3 segments of 100 frames, 64×64, seed 0), `setup`, `T=300`.
-  - CLI `fastminian synth --minutes 10 --out ~/minian_testing_local/synth_v4_10min/raw`.
+  - CLI `cafast synth --minutes 10 --out ~/minian_testing_local/synth_v4_10min/raw`.
 
 - [ ] **Step 1: Write pyproject, venv, package skeleton**
 
 `pyproject.toml`:
 ```toml
 [project]
-name = "fastminian"
+name = "cafast"
 version = "0.0.1"
 description = "Factor-first CNMF pipeline for one-photon miniscope data"
 requires-python = ">=3.11"
@@ -69,12 +69,12 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
 [project.scripts]
-fastminian = "fastminian.cli:app"
+cafast = "cafast.cli:app"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
-packages = ["src/fastminian"]
+packages = ["src/cafast"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
@@ -94,7 +94,7 @@ uv venv -p 3.11 && uv pip install -e ".[dev]"
 `tests/test_synth.py`:
 ```python
 import numpy as np
-from fastminian.testing import synth
+from cafast.testing import synth
 
 
 def test_synth_movie_is_deterministic_uint8():
@@ -148,13 +148,13 @@ app = typer.Typer(add_completion=False)
 @app.command()
 def synth(out: Path, minutes: float = 10.0, fps: int = 30, segment: int = 1000, seed: int = 0) -> None:
     """Write a synthetic Miniscope session (N.avi, GREY) and meta.json."""
-    from fastminian.testing.synth import write_session
+    from cafast.testing.synth import write_session
     typer.echo(write_session(out, minutes, fps, segment, seed))
 ```
 `tests/conftest.py`:
 ```python
 import pytest
-from fastminian.testing import synth
+from cafast.testing import synth
 
 @pytest.fixture
 def tiny_session(tmp_path):
@@ -173,7 +173,7 @@ git add -A && git commit -m "Scaffold package with synthetic session generator a
 - [ ] **Step 6: Generate the 10-min dataset (background, ~1 min)**
 
 ```bash
-.venv/bin/fastminian synth /Users/mbrosch/minian_testing_local/synth_v4_10min/raw --minutes 10
+.venv/bin/cafast synth /Users/mbrosch/minian_testing_local/synth_v4_10min/raw --minutes 10
 ```
 Verify `meta.json` says 18000 frames, 18 segments, and `0.avi` from `synth_v4_5min/raw` and `synth_v4_10min/raw` are byte-identical (same seed, same first segment).
 
@@ -182,7 +182,7 @@ Verify `meta.json` says 18000 frames, 18 segments, and `0.avi` from `synth_v4_5m
 ### Task 2: io and tiles
 
 **Files:**
-- Create: `src/fastminian/io.py`, `src/fastminian/tiles.py`, `tests/test_io_tiles.py`
+- Create: `src/cafast/io.py`, `src/cafast/tiles.py`, `tests/test_io_tiles.py`
 
 **Interfaces:**
 - Produces (`io.py`):
@@ -200,7 +200,7 @@ Verify `meta.json` says 18000 frames, 18 segments, and `0.avi` from `synth_v4_5m
 `tests/test_io_tiles.py`:
 ```python
 import numpy as np
-from fastminian import io, tiles
+from cafast import io, tiles
 
 
 def test_segments_and_probe(tiny_session):
@@ -212,7 +212,7 @@ def test_segments_and_probe(tiny_session):
 
 
 def test_read_avi_roundtrip(tiny_session):
-    from fastminian.testing import synth
+    from cafast.testing import synth
     frames = io.read_avi(io.list_segments(tiny_session["raw_dir"])[0])
     assert frames.dtype == np.uint8 and frames.shape == (100, 64, 64)
     assert np.array_equal(frames, synth.synth_movie(64, 64, 300, 0)[:100])
@@ -254,7 +254,7 @@ def test_pack_and_store_roundtrip(tmp_path):
 ### Task 3: preprocess and motion (with sidecar)
 
 **Files:**
-- Create: `src/fastminian/preprocess.py`, `src/fastminian/motion.py`, `tests/test_motion.py`
+- Create: `src/cafast/preprocess.py`, `src/cafast/motion.py`, `tests/test_motion.py`
 
 **Interfaces:**
 - Produces (`preprocess.py`): `denoise(frames: np.ndarray, ksize: int = 7) -> np.ndarray`; `tophat(frames: np.ndarray, wnd: int = 15) -> np.ndarray` using `np.ones((2*wnd+1,)*2, np.uint8)` (square kernel, `$BENCH/bench_browser/candidates/preproc.py:tophat_rect`); `preprocess(frames, ksize, wnd) -> np.ndarray` = tophat(denoise(frames)).
@@ -271,8 +271,8 @@ def test_pack_and_store_roundtrip(tmp_path):
 
 ```python
 import numpy as np
-from fastminian import motion, preprocess
-from fastminian.testing import synth
+from cafast import motion, preprocess
+from cafast.testing import synth
 
 
 def _aligned_rmse(est, true):
@@ -320,7 +320,7 @@ def test_sidecar_roundtrip_and_validation(tmp_path):
 ```
 
 - [ ] **Step 2: Run, verify fail.**
-- [ ] **Step 3: Implement** from `candidates/motion.py` (`_down2`, `_hann`, `_prep`, `estimate`, `_mean_template`, `make_template`) and `heavy_pass.py` (`_parabolic`, `apply_shifts`). `frame_quality`: `f = _prep(frames, tmpl.down)`, `t = irfft2(tmpl.fft)`; Pearson over pixels per frame. Sidecar functions from `motion_sidecar.py` lines 95–248 (`canonical_params`, `MotionSidecar`, `save_sidecar`, `load_sidecar`, `validate`, `load_if_valid`); replace `_minian_version()` with `fastminian.__version__`.
+- [ ] **Step 3: Implement** from `candidates/motion.py` (`_down2`, `_hann`, `_prep`, `estimate`, `_mean_template`, `make_template`) and `heavy_pass.py` (`_parabolic`, `apply_shifts`). `frame_quality`: `f = _prep(frames, tmpl.down)`, `t = irfft2(tmpl.fft)`; Pearson over pixels per frame. Sidecar functions from `motion_sidecar.py` lines 95–248 (`canonical_params`, `MotionSidecar`, `save_sidecar`, `load_sidecar`, `validate`, `load_if_valid`); replace `_minian_version()` with `cafast.__version__`.
 - [ ] **Step 4: Run, verify pass; lint; commit** `git commit -m "Add preprocessing, template motion estimate and motion sidecar"`
 
 ---
@@ -328,7 +328,7 @@ def test_sidecar_roundtrip_and_validation(tmp_path):
 ### Task 4: pass 1
 
 **Files:**
-- Create: `src/fastminian/pass1.py`, `src/fastminian/params.py`, `tests/test_pass1.py`
+- Create: `src/cafast/pass1.py`, `src/cafast/params.py`, `tests/test_pass1.py`
 
 **Interfaces:**
 - Produces (`params.py`): `@dataclass Params` with the exact fields and defaults of spec §6 (`median_ksize=7, tophat_wnd=15, motion_max_shift=20, motion_down=2, tile=64, svd_k0=40, svd_power_iter=1, rank_rho_min=0.2, rank_z=4.0, seeds_wnd=1000, seeds_stp=500, seeds_max_wnd=15, seeds_diff_thres=3, noise_freq=0.06, pnr_thres: float | str = "auto", merge_dist=10, merge_corr=0.8, inita_corr=0.8, inita_wnd=10, init_merge_corr=0.8, loop_merge_corr=0.9, dl_wnd=10, sparse_penal=0.01, size_thres=(25, None), n_iter=2, workers=1, template_frames=200, sub_batch=100`); `Params.from_json(path)`, `to_json(path)`, `motion_params() -> dict` (the subset that invalidates a sidecar: ksize, wnd, max_shift, down, template_frames), `asdict()`.
@@ -343,8 +343,8 @@ def test_sidecar_roundtrip_and_validation(tmp_path):
 
 ```python
 import numpy as np
-from fastminian import io, motion, pass1, preprocess, tiles
-from fastminian.params import Params
+from cafast import io, motion, pass1, preprocess, tiles
+from cafast.params import Params
 
 
 def test_block_edges_cover_movie():
@@ -374,7 +374,7 @@ def test_pass1_single_and_parallel_agree(tiny_session, tmp_path):
 
 
 def test_pass1_ragged_last_segment(tmp_path):
-    from fastminian.testing import synth
+    from cafast.testing import synth
     raw = tmp_path / "raw"
     synth.write_session(raw, minutes=250 / 30 / 60, fps=30, segment=100, seed=0, side=64)  # 100,100,50
     info = io.probe(raw)
@@ -405,7 +405,7 @@ and `self.quality.append(motion.frame_quality(blk, self.template))`. The worker 
 ### Task 5: compression, factors container, pass 2
 
 **Files:**
-- Create: `src/fastminian/compress.py`, `src/fastminian/factors.py`, `src/fastminian/pass2.py`, `tests/test_compress.py`
+- Create: `src/cafast/compress.py`, `src/cafast/factors.py`, `src/cafast/pass2.py`, `tests/test_compress.py`
 
 **Interfaces:**
 - Produces (`factors.py`):
@@ -426,8 +426,8 @@ and `self.quality.append(motion.frame_quality(blk, self.template))`. The worker 
 ```python
 import numpy as np
 import scipy.sparse as sps
-from fastminian import compress, factors as fm, tiles
-from fastminian.testing import synth
+from cafast import compress, factors as fm, tiles
+from cafast.testing import synth
 
 
 def _tile_movie(T=400, side=32, seed=3):
@@ -492,7 +492,7 @@ def test_factors_save_load_and_algebra(tmp_path):
 ### Task 6: seeds, PNR and GMM on factors
 
 **Files:**
-- Create: `src/fastminian/seeds.py`, `tests/test_seeds.py`
+- Create: `src/cafast/seeds.py`, `tests/test_seeds.py`
 
 **Interfaces:**
 - Produces:
@@ -508,15 +508,15 @@ def test_factors_save_load_and_algebra(tmp_path):
 ```python
 import numpy as np
 import pandas as pd
-from fastminian import compress, factors as fm, seeds as sd, tiles
-from fastminian.testing import synth
+from cafast import compress, factors as fm, seeds as sd, tiles
+from cafast.testing import synth
 
 
 def _session(H=64, W=64, T=600, seed=0):
     movie = synth.synth_movie(H, W, T, seed)
     grid = tiles.tile_grid(H, W, 32)
     tf = [compress.compress_tile(np.ascontiguousarray(movie[:, t.y0:t.y1, t.x0:t.x1]), k0=16) for t in grid]
-    from fastminian.pass1 import seed_block_edges
+    from cafast.pass1 import seed_block_edges
     edges = seed_block_edges(T, 300, 150)  # the same edges pass 1 would store
     bm = np.stack([movie[a:b].max(0) for a, b in zip(edges[:-1], edges[1:])])
     return movie, fm.Factors(H, W, T, grid, tf, movie.max(0), bm, edges, {})
@@ -526,7 +526,7 @@ def test_seeds_from_block_max_equal_full_projection():
     movie, f = _session()
     s = sd.seeds_init(f.block_max, f.block_edges, f.T, wnd_size=300, stp_size=150, max_wnd=10, diff_thres=2)
     # reference: same windows from the raw movie
-    from fastminian.seeds import rolling_windows, local_max_roll
+    from cafast.seeds import rolling_windows, local_max_roll
     wins = rolling_windows(f.T, 300, 150)
     ref = sum(local_max_roll(movie[w.start:w.stop].max(0), 2, 10, 2) for w in wins)
     hh, ww = np.nonzero(ref)
@@ -568,7 +568,7 @@ def test_pnr_raises_when_nothing_survives():
 ### Task 7: correlations on factors
 
 **Files:**
-- Create: `src/fastminian/corr.py`, `tests/test_corr.py`
+- Create: `src/cafast/corr.py`, `tests/test_corr.py`
 
 **Interfaces:**
 - Produces:
@@ -585,8 +585,8 @@ def test_pnr_raises_when_nothing_survives():
 ```python
 import numpy as np
 import pandas as pd
-from fastminian import compress, corr, factors as fm, tiles
-from fastminian.testing import synth
+from cafast import compress, corr, factors as fm, tiles
+from cafast.testing import synth
 
 
 def _session(H=64, W=64, T=800, seed=0):
@@ -650,7 +650,7 @@ def test_seeds_merge_keeps_brightest_per_group():
 ### Task 8: initA, initC, unit_merge
 
 **Files:**
-- Create: `src/fastminian/init.py`, `tests/test_init.py`
+- Create: `src/cafast/init.py`, `tests/test_init.py`
 
 **Interfaces:**
 - Produces:
@@ -665,8 +665,8 @@ def test_seeds_merge_keeps_brightest_per_group():
 import numpy as np
 import pandas as pd
 import scipy.sparse as sps
-from fastminian import compress, corr, factors as fm, init, tiles
-from fastminian.testing import synth
+from cafast import compress, corr, factors as fm, init, tiles
+from cafast.testing import synth
 
 
 def _session(H=64, W=64, T=800, seed=0):
@@ -723,7 +723,7 @@ def test_initA_raises_without_footprints():
 ### Task 9: spatial update kernel and CNMF stages
 
 **Files:**
-- Create: `src/fastminian/spatial_kernel.py`, `src/fastminian/cnmf.py`, `tests/test_spatial_kernel.py`, `tests/test_cnmf.py`
+- Create: `src/cafast/spatial_kernel.py`, `src/cafast/cnmf.py`, `tests/test_spatial_kernel.py`, `tests/test_cnmf.py`
 
 **Interfaces:**
 - Produces (`spatial_kernel.py`): `solve_nnqp(G: np.ndarray, B: np.ndarray, lam: np.ndarray, indptr: np.ndarray, indices: np.ndarray, rel_gap_tol: float = 1e-10, max_sweeps: int = 100_000) -> np.ndarray` — for active pixel i with allowed units `indices[indptr[i]:indptr[i+1]]`, minimise `½ wᵀGw − b_iᵀw + lam_i Σw`, `w ≥ 0`; returns `values` aligned with `indices` (so `(values, indices, indptr)` is the CSR of `A_newᵀ` over active pixels). Numba `@njit(parallel=True, nogil=True)`, duality-gap stop — `$BENCH/bench_spatial/candidates/numba_cd.py` kernel (`_solve_pixels` or equivalent; keep its gap bound).
@@ -740,7 +740,7 @@ def test_initA_raises_without_footprints():
 ```python
 import numpy as np
 from scipy.optimize import nnls
-from fastminian.spatial_kernel import solve_nnqp
+from cafast.spatial_kernel import solve_nnqp
 
 
 def test_nnqp_matches_nnls_per_pixel():
@@ -771,9 +771,9 @@ def test_nnqp_matches_nnls_per_pixel():
 ```python
 import numpy as np
 import scipy.sparse as sps
-from fastminian import cnmf, compress, corr, factors as fm, init, tiles
-from fastminian.params import Params
-from fastminian.testing import synth
+from cafast import cnmf, compress, corr, factors as fm, init, tiles
+from cafast.params import Params
+from cafast.testing import synth
 
 
 def _dense(f):
@@ -836,13 +836,13 @@ def test_run_cnmf_two_iterations():
 ### Task 10: pipeline, report and CLI
 
 **Files:**
-- Create: `src/fastminian/pipeline.py`, `src/fastminian/report.py`, `tests/test_pipeline.py`; Modify: `src/fastminian/cli.py`
+- Create: `src/cafast/pipeline.py`, `src/cafast/report.py`, `tests/test_pipeline.py`; Modify: `src/cafast/cli.py`
 
 **Interfaces:**
 - Produces:
-  - `pipeline.run(raw_dir: Path, params: Params, run_name: str = "fastminian", out_root: Path | None = None, keep_store: bool = False) -> Path` executing: probe → hash → template → sidecar check → pass 1 (or apply-only from sidecar) → sidecar save → pass 2 → `Factors.save` → store removal → seeds_init → pnr_refine → gmm_refine → seeds_merge → initA → initC → unit_merge(init_merge_corr) → run_cnmf → write `cnmf/` files, `units.csv`, `params.json`, `report.json`. Output dir = `out_root or raw_dir.parent / "processed"` / `run_name`; it is removed and recreated at start (Review Focus 5). Window-2 stages write their wall time and counts into `report.json` through `report.StageTimer`.
+  - `pipeline.run(raw_dir: Path, params: Params, run_name: str = "cafast", out_root: Path | None = None, keep_store: bool = False) -> Path` executing: probe → hash → template → sidecar check → pass 1 (or apply-only from sidecar) → sidecar save → pass 2 → `Factors.save` → store removal → seeds_init → pnr_refine → gmm_refine → seeds_merge → initA → initC → unit_merge(init_merge_corr) → run_cnmf → write `cnmf/` files, `units.csv`, `params.json`, `report.json`. Output dir = `out_root or raw_dir.parent / "processed"` / `run_name`; it is removed and recreated at start (Review Focus 5). Window-2 stages write their wall time and counts into `report.json` through `report.StageTimer`.
   - `report.StageTimer`: `with timer("seeds_init"): ...`; `.rows` list of `{"stage", "seconds"}`; `.counts` dict; `to_json(path, extra: dict)`.
-  - CLI: `fastminian run RAW_DIR [--params p.json] [--workers N] [--name NAME] [--keep-store]` and the existing `synth`.
+  - CLI: `cafast run RAW_DIR [--params p.json] [--workers N] [--name NAME] [--keep-store]` and the existing `synth`.
   - Apply-only path when a valid sidecar exists: pass 1 still runs its warp and store write but skips `estimate` (uses stored shifts per frame index) and `make_template`.
 
 - [ ] **Step 1: Failing test**
@@ -851,9 +851,9 @@ def test_run_cnmf_two_iterations():
 import json
 import numpy as np
 import scipy.sparse as sps
-from fastminian import pipeline
-from fastminian.params import Params
-from fastminian.testing import synth
+from cafast import pipeline
+from cafast.params import Params
+from cafast.testing import synth
 
 
 def test_pipeline_end_to_end_tiny(tiny_session):
@@ -867,7 +867,7 @@ def test_pipeline_end_to_end_tiny(tiny_session):
     assert rep["counts"]["units_final"] == A.shape[0]
     cents = synth.true_centroids(tiny_session["setup"])
     cents = cents[(cents >= 4).all(1) & (cents < 60).all(1)]
-    from fastminian.init import centroids
+    from cafast.init import centroids
     uc = centroids(A, 64, 64)
     d = np.sqrt(((cents[:, None] - uc[None]) ** 2).sum(-1)).min(1)
     assert (d < 5).mean() >= 0.8
@@ -886,14 +886,14 @@ def test_pipeline_end_to_end_tiny(tiny_session):
 ### Task 11: scoring against truth and the Minian reference
 
 **Files:**
-- Create: `bench/__init__.py`, `bench/score.py`, `bench/minian_export.py`, `bench/README.md`, `tests/test_score.py`; Modify: `src/fastminian/cli.py` (add `score`), `tests/conftest.py` (insert the repo root into `sys.path` so `import bench` works)
+- Create: `bench/__init__.py`, `bench/score.py`, `bench/minian_export.py`, `bench/README.md`, `tests/test_score.py`; Modify: `src/cafast/cli.py` (add `score`), `tests/conftest.py` (insert the repo root into `sys.path` so `import bench` works)
 
 **Interfaces:**
 - Produces:
   - `score.match_units(unit_centroids: np.ndarray, true_centroids: np.ndarray, max_dist: float = 5.0) -> tuple[np.ndarray, np.ndarray]` greedy one-to-one by increasing distance; returns `(unit_idx, true_idx)` of matches.
   - `score.score_run(A: csr_matrix, traces: np.ndarray, H: int, W: int, meta_path: Path, shifts: np.ndarray) -> dict` with `recall, precision, f1, n_units, n_true, trace_corr_median, trace_corr_q25, align_offset_px`: truth from `synth.synth_setup(meta)`, true centroids shifted by the fitted motion offset (`bench_opt.motion_fit(est_shifts, setup.shifts)` → `c`, `sign`: template coordinates = frame coordinates + mean correction; derive and document the sign from the warp convention, then verify with the pipeline's own units: the median matched distance must be < 1.5 px, otherwise flip), trace corr = Pearson(`traces[k]`, `setup.C[j] − 20`).
-  - CLI `fastminian score RUN_DIR` → prints JSON and writes `RUN_DIR/score.json`; reads `cnmf/A.npz`, `cnmf/YrA.npy`, `motion/arrays.npz`, `factors/meta.json`, `<raw>/../meta.json`.
-  - `bench/minian_export.py RUN_OUT_DIR`: opens Minian's zarr intermediates (`minian_intermediate/A_new.zarr/A_new`, `C_new.zarr/C_new`) and `minian/motion.zarr/motion` with `zarr` + `xarray` from the **minian venv** (`/Users/mbrosch/Documents/GitKraken_mac/03_analysis-tools/minian_v2.0/.venv/bin/python`, this script is run there, not in ours), writes `minian_units.npz` with `A (K, H*W) float32 dense`, `C (K, T)`, `shifts (T, 2)` (Minian's `motion` is (frame, shift_dim) in (height, width) order); then `fastminian score --minian minian_units.npz --raw <raw_dir>` scores it with the same function.
+  - CLI `cafast score RUN_DIR` → prints JSON and writes `RUN_DIR/score.json`; reads `cnmf/A.npz`, `cnmf/YrA.npy`, `motion/arrays.npz`, `factors/meta.json`, `<raw>/../meta.json`.
+  - `bench/minian_export.py RUN_OUT_DIR`: opens Minian's zarr intermediates (`minian_intermediate/A_new.zarr/A_new`, `C_new.zarr/C_new`) and `minian/motion.zarr/motion` with `zarr` + `xarray` from the **minian venv** (`/Users/mbrosch/Documents/GitKraken_mac/03_analysis-tools/minian_v2.0/.venv/bin/python`, this script is run there, not in ours), writes `minian_units.npz` with `A (K, H*W) float32 dense`, `C (K, T)`, `shifts (T, 2)` (Minian's `motion` is (frame, shift_dim) in (height, width) order); then `cafast score --minian minian_units.npz --raw <raw_dir>` scores it with the same function.
 
 - [ ] **Step 1: Failing test**
 
@@ -916,7 +916,7 @@ def test_match_units_greedy_one_to_one():
 ```bash
 /Users/mbrosch/Documents/GitKraken_mac/03_analysis-tools/minian_v2.0/.venv/bin/python bench/minian_export.py \
   /Users/mbrosch/minian_testing_local/synth_v4_5min/processed/minian_baseline_keep
-.venv/bin/fastminian score --minian /Users/mbrosch/minian_testing_local/synth_v4_5min/processed/minian_baseline_keep/minian_units.npz \
+.venv/bin/cafast score --minian /Users/mbrosch/minian_testing_local/synth_v4_5min/processed/minian_baseline_keep/minian_units.npz \
   --raw /Users/mbrosch/minian_testing_local/synth_v4_5min/raw
 ```
 Record Minian's `f1`, `trace_corr_median` in `bench/README.md` together with its 471 s / 24.9 GB from `$BENCH/bench_browser/results/BASELINE_5min.md`. Delete `minian_intermediate/` afterwards (25 GB) once `minian_units.npz` exists.
@@ -931,23 +931,23 @@ Record Minian's `f1`, `trace_corr_median` in `bench/README.md` together with its
 
 - [ ] **Step 1: 5-min run, 6 workers**
 ```bash
-.venv/bin/fastminian run /Users/mbrosch/minian_testing_local/synth_v4_5min/raw --workers 6 --name fast_5min
-.venv/bin/fastminian score /Users/mbrosch/minian_testing_local/synth_v4_5min/processed/fast_5min
+.venv/bin/cafast run /Users/mbrosch/minian_testing_local/synth_v4_5min/raw --workers 6 --name fast_5min
+.venv/bin/cafast score /Users/mbrosch/minian_testing_local/synth_v4_5min/processed/fast_5min
 ```
 Expected: finishes; `report.json` wall under 160 s; score F1 ≥ Minian F1 − 0.02 and trace corr ≥ Minian − 0.02. If F1 fails, sweep `inita_corr` ∈ {0.6, 0.7, 0.9} via `--params` files, keep the best, and note it in `bench/README.md`. If a stage crashes, fix it in its module with a regression test, commit, rerun.
 - [ ] **Step 2: 10-min run, 6 workers and 1 worker**
 ```bash
-.venv/bin/fastminian run /Users/mbrosch/minian_testing_local/synth_v4_10min/raw --workers 6 --name fast_10min
-.venv/bin/fastminian score /Users/mbrosch/minian_testing_local/synth_v4_10min/processed/fast_10min
-.venv/bin/fastminian run /Users/mbrosch/minian_testing_local/synth_v4_10min/raw --workers 1 --name fast_10min_w1
+.venv/bin/cafast run /Users/mbrosch/minian_testing_local/synth_v4_10min/raw --workers 6 --name fast_10min
+.venv/bin/cafast score /Users/mbrosch/minian_testing_local/synth_v4_10min/processed/fast_10min
+.venv/bin/cafast run /Users/mbrosch/minian_testing_local/synth_v4_10min/raw --workers 1 --name fast_10min_w1
 ```
 Expected: both finish unattended; 6-worker wall ≤ 6 min target (report either way).
 - [ ] **Step 3: Real-data smoke run**
 ```bash
-.venv/bin/fastminian run /Users/mbrosch/minian_testing_local/WL25_demo --workers 6 --name fast_wl25
+.venv/bin/cafast run /Users/mbrosch/minian_testing_local/WL25_demo --workers 6 --name fast_wl25
 ```
 (Check first that `WL25_demo` holds `N.avi` segments directly; if they sit in a subfolder, pass that folder.) Expected: finishes; `units_final` between 50 and 2000; note the count and wall time.
-- [ ] **Step 4: README** — inputs → outputs, the one command, the parameter file, what is out of scope, the measured table (5-min: Minian vs fastminian; 10-min: 1 and 6 workers). Commit `git commit -m "Document runs and results"`.
+- [ ] **Step 4: README** — inputs → outputs, the one command, the parameter file, what is out of scope, the measured table (5-min: Minian vs cafast; 10-min: 1 and 6 workers). Commit `git commit -m "Document runs and results"`.
 
 ---
 

@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from fastminian import io, pass1, tiles
-from fastminian.params import Params
+from cafast import io, pass1, tiles
+from cafast.params import Params
 
 
 def test_block_edges_cover_movie():
@@ -73,7 +73,7 @@ def test_pass1_single_and_parallel_agree(tiny_session, tmp_path):
 
 
 def test_pass1_ragged_last_segment(tmp_path):
-    from fastminian.testing import synth
+    from cafast.testing import synth
 
     raw = tmp_path / "raw"
     synth.write_session(raw, minutes=250 / 30 / 60, fps=30, segment=100, seed=0, side=64)

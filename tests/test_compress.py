@@ -3,11 +3,11 @@ import json
 import numpy as np
 import scipy.sparse as sps
 
-from fastminian import compress, pass2, tiles
-from fastminian import factors as fm
-from fastminian.params import Params
-from fastminian.pass1 import Pass1Result
-from fastminian.testing import synth
+from cafast import compress, pass2, tiles
+from cafast import factors as fm
+from cafast.params import Params
+from cafast.pass1 import Pass1Result
+from cafast.testing import synth
 
 
 def _tile_movie(T=400, side=32, seed=3):

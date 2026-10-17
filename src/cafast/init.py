@@ -16,8 +16,8 @@ import pandas as pd
 import scipy.sparse as sps
 from scipy.linalg import LinAlgError, cho_factor, cho_solve
 
-from fastminian.corr import FactorCorr, merge_labels
-from fastminian.factors import Factors
+from cafast.corr import FactorCorr, merge_labels
+from cafast.factors import Factors
 
 COND_MAX = 1e12  # above this, G is treated as rank-deficient and pinv is used
 PINV_RCOND = 1e-12  # relative cutoff on eigenvalues of G (~1e-6 on singular values of A)

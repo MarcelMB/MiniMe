@@ -2,11 +2,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from fastminian import compress, tiles
-from fastminian import factors as fm
-from fastminian import seeds as sd
-from fastminian.pass1 import seed_block_edges
-from fastminian.testing import synth
+from cafast import compress, tiles
+from cafast import factors as fm
+from cafast import seeds as sd
+from cafast.pass1 import seed_block_edges
+from cafast.testing import synth
 
 
 def _session(H=64, W=64, T=600, seed=0):

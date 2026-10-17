@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import scipy.sparse as sps
 
-from fastminian.tiles import Tile, tile_grid
+from cafast.tiles import Tile, tile_grid
 
 FORMAT_VERSION = 1
 
