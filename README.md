@@ -43,6 +43,9 @@ To change some, write a JSON file with only those keys and pass `--params`:
 
     {"pnr_thres": 2.5, "gmm_refine": true, "workers": 6}
 
+A run's own `params.json` can be passed back to `--params` to reproduce it (its `raw_dir`,
+`raw_hash` and `cafast_version` entries are ignored; `--workers` still overrides).
+
 Defaults that differ from the Minian notebook, with the measurement behind each, are in
 `bench/README.md`. The only one changed so far: `gmm_refine` is off (Minian's reference run
 also skipped it). All defaults were checked on synthetic data only.

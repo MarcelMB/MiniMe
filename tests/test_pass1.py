@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pytest
 
@@ -244,3 +246,16 @@ def test_pass1_worker_streams_single_segment_in_batches(tmp_path):
         assert np.array_equal(res["max_proj"], ref["max_proj"])
         assert np.array_equal(res["quality"], ref["quality"])
         assert all(np.array_equal(a, b) for a, b in zip(tl, ref_tiles, strict=True))
+
+
+def test_run_params_json_roundtrips(tmp_path):
+    from cafast import pipeline
+
+    p = Params(tile=32, pnr_thres=2.5, workers=3, size_thres=(9, None))
+    pipeline._write_params(tmp_path, p, tmp_path, "abc")
+    doc = json.loads((tmp_path / "params.json").read_text())
+    assert {"raw_dir", "raw_hash", "cafast_version"} <= set(doc)
+    assert Params.from_json(tmp_path / "params.json") == p  # workers kept as recorded
+    (tmp_path / "bad.json").write_text(json.dumps({"tile": 32, "tiel": 16}))
+    with pytest.raises(ValueError, match="tiel"):
+        Params.from_json(tmp_path / "bad.json")
