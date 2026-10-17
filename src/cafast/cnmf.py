@@ -248,7 +248,9 @@ def compute_trace(
 
 @dataclass
 class CnmfResult:
-    A: sps.csr_matrix  # (K, P) float32 footprints, row maxima 1
+    # (K, P) float32 footprints. Row maxima are 1 after the last spatial update; a unit the
+    # last unit_merge formed is the mean of its members' rows, so its maximum can be below 1
+    A: sps.csr_matrix
     C: np.ndarray  # (K, T) float32, trace fed to the last spatial update (merged)
     YrA: np.ndarray  # (K, T) float32, final residual trace (merged)
     b: np.ndarray  # (P,) float32 background footprint
