@@ -2,7 +2,7 @@
 
 Stage order (spec section 5): probe, hash, motion sidecar check (reuse its shifts, or build a
 template), pass 1, sidecar save, pass 2, factors save, store removal, then window 2 on the
-factors: seeds_init, pnr_refine, gmm_refine, seeds_merge, initA, initC, unit_merge, CNMF.
+factors: seeds_init, pnr_refine, gmm_refine (opt-in), seeds_merge, initA, initC, unit_merge, CNMF.
 """
 
 from __future__ import annotations
@@ -105,9 +105,10 @@ def _seeds(fac: Factors, fc: corr.FactorCorr, params: Params, timer: StageTimer)
     with timer("pnr_refine"):
         s = _filter(seeds.pnr_refine(fac, s, thres=p.pnr_thres), "mask_pnr")
     n["seeds_pnr"] = len(s)
-    with timer("gmm_refine"):
-        s = _filter(seeds.gmm_refine(fac, s), "mask_gmm")
-    n["seeds_gmm"] = len(s)
+    if p.gmm_refine:
+        with timer("gmm_refine"):
+            s = _filter(seeds.gmm_refine(fac, s), "mask_gmm")
+    n["seeds_gmm"] = len(s)  # equals seeds_pnr when gmm_refine is off
     with timer("seeds_merge"):
         s = _filter(corr.seeds_merge(fc, s, fac.max_proj, p.merge_dist, p.merge_corr), "mask_mrg")
     n["seeds_merged"] = len(s)

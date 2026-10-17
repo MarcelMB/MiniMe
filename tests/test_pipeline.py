@@ -14,11 +14,9 @@ from fastminian.testing import synth
 
 
 def test_pipeline_end_to_end_tiny(tiny_session):
-    # pnr_thres: with "auto" the PNR GMM already removes every noise seed, so gmm_refine's
-    # 2-GMM on ptp then splits the 7 toy cells into bright and dim and drops the dim ones;
-    # a low fixed threshold leaves noise seeds in for gmm_refine to separate from cells.
+    # default seed filters (auto PNR, no gmm_refine): with gmm_refine on, its 2-GMM on ptp
+    # splits the 7 toy cells into bright and dim and drops the dim ones
     p = Params(
-        pnr_thres=0.5,
         tile=32,
         seeds_wnd=100,
         seeds_stp=50,
@@ -108,3 +106,31 @@ def test_cli_run_wires_options(tmp_path, monkeypatch):
     assert seen["params"].tile == 32 and seen["workers"] == 3
     assert seen["run_name"] == "x" and seen["keep_store"] is True
     assert "units_final" in res.output and str(tmp_path / "out") in res.output
+
+
+@pytest.mark.parametrize("use_gmm", [False, True])
+def test_seeds_stage_runs_gmm_refine_only_when_enabled(monkeypatch, use_gmm):
+    from types import SimpleNamespace
+
+    from fastminian import corr, seeds
+
+    df = pd.DataFrame({"height": [1, 2, 3], "width": [1, 2, 3]})
+    called = []
+
+    def fake_gmm(f, s):
+        called.append(len(s))
+        return s.assign(mask_gmm=[True, False, True])
+
+    monkeypatch.setattr(seeds, "seeds_init", lambda *a: df)
+    monkeypatch.setattr(seeds, "pnr_refine", lambda f, s, thres: s.assign(mask_pnr=True))
+    monkeypatch.setattr(seeds, "gmm_refine", fake_gmm)
+    monkeypatch.setattr(corr, "seeds_merge", lambda fc, s, mp, d, c: s.assign(mask_mrg=True))
+    fac = SimpleNamespace(block_max=None, block_edges=None, T=10, max_proj=None)
+    assert Params().gmm_refine is False
+    timer = report.StageTimer()
+    s = pipeline._seeds(fac, None, Params(gmm_refine=use_gmm), timer)
+    assert called == ([3] if use_gmm else [])
+    assert (
+        len(s) == timer.counts["seeds_gmm"] == timer.counts["seeds_merged"] == (2 if use_gmm else 3)
+    )
+    assert ("gmm_refine" in {r["stage"] for r in timer.rows}) is use_gmm

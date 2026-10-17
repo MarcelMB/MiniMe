@@ -29,6 +29,9 @@ class Params:
     seeds_diff_thres: float = 3
     noise_freq: float = 0.06
     pnr_thres: float | str = "auto"
+    # off by default: Minian's reference run skipped it, and on a session whose cells share one
+    # amplitude distribution its 2-GMM splits real cells into bright/dim (bench/README.md)
+    gmm_refine: bool = False
     merge_dist: int = 10
     merge_corr: float = 0.8
     # initialization
