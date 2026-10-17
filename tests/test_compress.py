@@ -137,3 +137,58 @@ def test_run_pass2_parallel_matches_serial_and_builds_factors(tmp_path):
     expected = json.loads(json.dumps(p.asdict()))  # tuples become lists in JSON
     assert back.meta["params"] == expected and back.meta["params"]["size_thres"] == [25, None]
     assert back.meta["pass1_seconds"] == {"denoise": 1.0} and len(back.tiles) == 4
+
+
+def _truth_metrics(Y_truth, S, grid, tfs):
+    """Spec section 7 metrics (prototype ``bench_opt._truth_group``), dense.
+
+    ``rel_err = ||W V^T - (Y0 - mean Y0)|| / ||Y0 - mean Y0||`` over all tiles, with ``Y0``
+    the noise-free movie through the same preprocessing and shifts; ``capture`` = fraction
+    of the (per-pixel centred) true cell variance that lies in span(V) of its tile.
+    """
+    T = Y_truth.shape[0]
+    err2 = y2 = cap = s2 = 0.0
+    for t, tf in zip(grid, tfs, strict=True):
+        sl = (slice(None), slice(t.y0, t.y1), slice(t.x0, t.x1))
+        Yc = Y_truth[sl].reshape(T, -1).T.astype(np.float64)
+        Yc -= Yc.mean(axis=1, keepdims=True)
+        Sc = S[sl].reshape(T, -1).T.astype(np.float64)
+        Sc -= Sc.mean(axis=1, keepdims=True)
+        rec = tf.W.astype(np.float64) @ tf.V.T.astype(np.float64)
+        err2 += ((rec - Yc) ** 2).sum()
+        y2 += (Yc**2).sum()
+        V = tf.V.astype(np.float64)
+        proj = Sc @ V
+        cap += np.trace(proj @ np.linalg.solve(V.T @ V, proj.T))
+        s2 += (Sc**2).sum()
+    return float(np.sqrt(err2 / y2)), float(cap / s2)
+
+
+def test_compression_gate_against_noise_free_truth(tmp_path):
+    """Spec section 7 gate on pass-1 preprocessing + pass-2 compression: rel err <= 0.30
+    against the noise-free movie and cell capture >= 0.97 (prototype, 600 x 600 x 9000:
+    0.145 / 0.991). Known shifts are undone on both the noisy and the noise-free movie,
+    so this measures compression only. Measured here: 0.217 / 0.981."""
+    from cafast import motion, preprocess
+
+    H = W = 128
+    T = 1000
+    p = Params()
+    setup = synth.synth_setup(H, W, T, 0)
+    undo = -setup.shifts.astype(np.float64)  # apply_shifts moves content by -(dy, dx)
+    movie = synth.synth_movie(H, W, T, 0)
+    Y = motion.apply_shifts(preprocess.preprocess(movie, p.median_ksize, p.tophat_wnd), undo)
+    clean = np.concatenate([c for _, c, _ in synth.truth_chunks(setup, H, W)])
+    cells = np.concatenate([s for _, _, s in synth.truth_chunks(setup, H, W)])
+    Y0 = motion.apply_shifts(preprocess.preprocess(clean, p.median_ksize, p.tophat_wnd), undo)
+    S = motion.apply_shifts(cells, undo)
+    grid = tiles.tile_grid(H, W, p.tile)
+    store = tiles.TileStore(tmp_path / "s", grid, n_parts=1)
+    packed = tiles.pack_tiles(Y, grid)
+    for f, (a, b) in zip(store.open_part(0), tiles.tile_offsets(T, grid), strict=True):
+        with f:
+            f.write(memoryview(packed[a:b]))
+    tfs = pass2.pass2_worker(str(store.root), grid, 1, range(len(grid)), p)
+    rel_err, capture = _truth_metrics(Y0, S, grid, tfs)
+    assert rel_err <= 0.30, rel_err
+    assert capture >= 0.97, capture
