@@ -18,6 +18,7 @@ Every stage reads the movie only through ``Factors`` (``YCt``, ``AtY``,
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -128,6 +129,52 @@ def _clipped_residual(
     return R
 
 
+F64_CHECK_RTOL = 1e-3  # warn when the float32 background trace of the spot check is off
+
+
+def _trace_part(R: np.ndarray, b_tile: np.ndarray) -> np.ndarray:
+    """``R^T b`` (Tc,) of one clipped-residual chunk, float32.
+
+    einsum, not ``R.T @ b``: after a numba parallel region Accelerate's float32 transposed
+    gemv returned wrong values for output lengths ~513-575 (macOS 26, M1 Max); the
+    541-frame tail chunk of a 39541-frame session turned f into NaN. The cause is not
+    established (it did not reproduce later), so ``update_background`` also recomputes one
+    chunk in float64 and ``run_cnmf`` checks every stage's output for NaN/inf.
+    """
+    return np.einsum("pt,p->t", R, b_tile)
+
+
+def f64_spot_check(
+    f: Factors,
+    t: int,
+    Ab: np.ndarray,
+    Cb: np.ndarray,
+    t0: int,
+    t1: int,
+    b_tile: np.ndarray,
+    part: np.ndarray,
+) -> float:
+    """Relative error of the float32 ``part = R^T b`` of tile ``t``, frames ``t0:t1``, vs float64.
+
+    Warns (``RuntimeWarning``) when it exceeds ``F64_CHECK_RTOL`` or is not finite.
+    """
+    tf = f.tiles[t]
+    Y = tf.W.astype(np.float64) @ tf.V[t0:t1].astype(np.float64).T + tf.mean[:, None]
+    R = np.clip(Y - Ab.astype(np.float64).T @ Cb[:, t0:t1].astype(np.float64), 0, None)
+    ref = R.T @ b_tile.astype(np.float64)
+    den = float(np.linalg.norm(ref))
+    diff = float(np.linalg.norm(np.asarray(part, dtype=np.float64) - ref))
+    err = diff / den if den > 0 else diff
+    if not np.isfinite(err) or err > F64_CHECK_RTOL:
+        warnings.warn(
+            f"update_background: float32 background trace of tile {t}, frames {t0}-{t1} "
+            f"differs from float64 by {err:.3g} (relative); f may be wrong",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    return err
+
+
 def tile_units(Acsc: sps.csc_matrix, rows: np.ndarray) -> np.ndarray:
     """Indices of the units whose footprint has a stored entry among the pixels ``rows``."""
     return np.flatnonzero(np.diff(sps.csr_matrix(Acsc[:, rows]).indptr))
@@ -144,13 +191,15 @@ def update_background(
 
     Pass 1 (skipped when ``b`` is given) ``b = mean_t R``; pass 2 ``f_t = R_t . b / (b . b)``.
     Both stream ``chunk`` frames of one tile at a time; ``A^T C`` of a tile uses only the
-    units that touch it (all K units made this the slowest CNMF stage).
+    units that touch it (all K units made this the slowest CNMF stage). The last chunk of
+    one tile (``T mod n_tiles``) is recomputed in float64 (``f64_spot_check``).
     """
     Acsc = sps.csc_matrix(A, dtype=np.float32)
     C32 = np.ascontiguousarray(C, dtype=np.float32)
     given = b is not None
     b_out = np.asarray(b, dtype=np.float32).copy() if given else np.empty(f.P, dtype=np.float32)
     num = np.zeros(f.T, dtype=np.float64)
+    check_tile = f.T % len(f.tiles)
     for t in range(len(f.tiles)):
         rows = f.tile_rows(t)
         ks = tile_units(Acsc, rows)
@@ -164,10 +213,10 @@ def update_background(
             b_out[rows] = acc / f.T
         b_tile = b_out[rows]
         for t0, t1 in ranges:
-            # einsum, not ``R.T @ b``: after a numba parallel region Accelerate's float32
-            # transposed gemv returned wrong values for output lengths ~513-575 (macOS 26,
-            # M1 Max); the 541-frame tail chunk of a 39541-frame session turned f into NaN
-            num[t0:t1] += np.einsum("pt,p->t", _clipped_residual(f, t, Ab, Cb, t0, t1), b_tile)
+            part = _trace_part(_clipped_residual(f, t, Ab, Cb, t0, t1), b_tile)
+            num[t0:t1] += part
+            if t == check_tile and t1 == f.T:
+                f64_spot_check(f, t, Ab, Cb, t0, t1, b_tile, part)
     bb = float(b_out.astype(np.float64) @ b_out.astype(np.float64))
     fb = num / bb if bb > 0 else np.zeros(f.T)
     return b_out, fb.astype(np.float32)
@@ -207,6 +256,13 @@ class CnmfResult:
     counts: dict[str, int] = field(default_factory=dict)
 
 
+def _check_finite(stage: str, **arrays: np.ndarray) -> None:
+    """Raise ``RuntimeError`` naming ``stage`` if any array holds NaN or inf."""
+    bad = [k for k, v in arrays.items() if not np.isfinite(np.asarray(v)).all()]
+    if bad:
+        raise RuntimeError(f"CNMF {stage}: non-finite values in {', '.join(bad)}")
+
+
 def run_cnmf(
     fac: Factors,
     A: sps.csr_matrix,
@@ -218,6 +274,7 @@ def run_cnmf(
     sn = fac.sigma_flat()
     counts: dict[str, int] = {}
     b, fb = update_background(fac, A, C)
+    _check_finite("initial background", b=b, f=fb)
     C_sp = np.asarray(C, dtype=np.float32)
     YrA = C_sp
     for it in range(params.n_iter):
@@ -225,10 +282,13 @@ def run_cnmf(
             fac, A, C, sn, params.dl_wnd, params.sparse_penal, params.size_thres
         )
         C_sp = (np.asarray(C)[mask] * nf[:, None]).astype(np.float32)
+        _check_finite(f"spatial update (iteration {it})", A_data=A.data, C=C_sp)
         counts[f"units_after_spatial_{it}"] = A.shape[0]
         last = it == params.n_iter - 1
         b, fb = update_background(fac, A, C_sp, b=None if last else b)
+        _check_finite(f"background (iteration {it})", b=b, f=fb)
         YrA = compute_trace(fac, A, b, C_sp, fb)
+        _check_finite(f"traces (iteration {it})", YrA=YrA)
         A, YrA, (C_sp,) = init.unit_merge(A, YrA, fc_traces, params.loop_merge_corr, [C_sp])
         C = YrA
         counts[f"units_after_merge_{it}"] = A.shape[0]
