@@ -76,6 +76,17 @@ Fresh runs (no motion sidecar reused), default params, scored with `cafast score
 | 10 min | 6 | 68.5 s | 17.2 s | 11.1 s | 38.6 s (35.5 s) | 400 | 0.924 | 0.973 | 0.948 | 0.995 / 0.989 |
 | 10 min | 1 | 147.3 s | 65.4 s | 42.2 s | 38.4 s (35.6 s) | 400 | 0.924 | 0.973 | 0.948 | 0.995 / 0.989 |
 
+Rerun after the final-review fixes (background `b` recomputed on the last CNMF iteration,
+streamed pass 1, decoded frame counts, NaN guards), fresh, 6 workers:
+
+| session | workers | wall | pass 1 | pass 2 | window 2 (cnmf) | units | recall | precision | F1 | trace corr median / q25 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5 min | 6 | 43.4 s | 11.0 s | 5.9 s | 25.4 s (23.9 s) | 404 | 0.933 | 0.973 | **0.953** | **0.995** / 0.991 |
+
+Same units and detection scores as before; trace corr median 0.99505 -> 0.99515, q25
+0.99101 -> 0.99119. The extra background pass costs 3.8 s. Peak RSS: main 3.8 GB, largest
+worker 2.2 GB. The 10-min rows above were not rerun.
+
 - Gate: F1 >= 0.829 - 0.02 = 0.809 and trace corr >= 0.964 - 0.02 = 0.944: passed. Targets
   5-min <= 160 s and 10-min <= 6 min on 6 workers: met.
 - Disk: tile store = raw size (3.24 / 6.48 GB, deleted after pass 2), factors 52 / 93 MB,
@@ -129,13 +140,17 @@ Checked and left unchanged (measured on the 5-min factors):
   never without a prior numba parallel call, never in float64). A session whose frame count
   leaves a 541-frame tail chunk got NaN in `f` and then all units dropped (3 of 6 runs of a
   39541-frame real session). `update_background` now uses `np.einsum` for this product
-  (same speed). The synthetic sessions (T multiple of 1000) never hit it.
+  (same speed). The synthetic sessions (T multiple of 1000) never hit it. The final review
+  could not reproduce the bug (0 of 150 trials with the old code), so the cause is not
+  established: `run_cnmf` now raises on NaN/inf after every stage, and `update_background`
+  recomputes one tile chunk in float64 and warns above 1e-3 relative error. The unit test
+  for it is a canary that also passes on the old code.
 - `pnr_refine` / `gmm_refine` held all seed traces at once (5.4 GB for 11k seeds x 39541
   frames); now 1024 seeds at a time (0.5 GB).
 - `read_avi` kept every decoded 3-channel frame alive until a final stack (4x the segment
   size for codecs decoded as BGR); it now fills one preallocated array, and the template
   reads only its 200 frames.
 
-Real-data smoke run (WL25): not part of this result set; scheduled separately. Open issue
-seen in exploratory runs: pass 1 holds a whole segment ~3x in memory per worker, which only
-matters for single-file sessions (6.5 GB worker RSS for a 1.6 GB AVI).
+Real-data smoke run (WL25): not part of this result set; scheduled separately. Pass 1 used
+to hold a whole segment ~3x in memory per worker (6.5 GB worker RSS for a 1.6 GB single-file
+AVI); workers now stream 1000-frame batches (not yet measured on WL25).

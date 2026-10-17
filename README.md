@@ -55,9 +55,12 @@ also skipped it). All defaults were checked on synthetic data only.
 | session | pipeline | workers | wall | units | recall | precision | F1 | trace corr (median) |
 |---|---|---|---|---|---|---|---|---|
 | 5 min (9000 fr) | Minian 2.0.2 | 4 x 2 thr | 471 s | 508 | 0.914 | 0.758 | 0.829 | 0.964 |
-| 5 min | cafast | 6 | 40.1 s | 404 | 0.933 | 0.973 | **0.953** | **0.995** |
-| 10 min (18000 fr) | cafast | 6 | 68.5 s | 400 | 0.924 | 0.973 | 0.948 | 0.995 |
-| 10 min | cafast | 1 | 147.3 s | 400 | 0.924 | 0.973 | 0.948 | 0.995 |
+| 5 min | cafast | 6 | 43.4 s | 404 | 0.933 | 0.973 | **0.953** | **0.995** |
+| 10 min (18000 fr) | cafast* | 6 | 68.5 s | 400 | 0.924 | 0.973 | 0.948 | 0.995 |
+| 10 min | cafast* | 1 | 147.3 s | 400 | 0.924 | 0.973 | 0.948 | 0.995 |
+
+\* 10-min rows: commit 16f6ac8, before the background footprint `b` was recomputed on the
+last CNMF iteration (that adds one background pass, +3.8 s on 5 min); not rerun.
 
 Gate (spec section 7): F1 >= 0.809 and trace corr >= 0.944 on the 5-min session: passed.
 Peak disk = raw size (tile store) + factors (52 MB / 93 MB). Details and per-stage times:
