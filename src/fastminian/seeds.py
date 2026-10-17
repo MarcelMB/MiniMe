@@ -174,6 +174,24 @@ def ptp_q(X: np.ndarray, q: tuple[float, float]) -> np.ndarray:
     return hi - lo
 
 
+SEED_BATCH = 1024  # seeds whose (T,) traces are held at once (~160 MB at 40k frames)
+
+
+def seed_ptp(
+    f: Factors, pixels: np.ndarray, q: tuple[float, float], batch: int = SEED_BATCH
+) -> np.ndarray:
+    """``ptp_q`` of the denoised traces of flat ``pixels``, ``batch`` traces at a time.
+
+    All traces at once cost 4 * n * T bytes plus percentile copies (5.4 GB for 11k seeds
+    of a 39541-frame session).
+    """
+    pixels = np.asarray(pixels, dtype=np.int64)
+    out = np.empty(pixels.size, dtype=np.float64)
+    for i in range(0, pixels.size, batch):
+        out[i : i + batch] = ptp_q(f.traces(pixels[i : i + batch]), q)
+    return out
+
+
 def seed_pixels(f: Factors, seeds: pd.DataFrame) -> np.ndarray:
     """Flat pixel indices (int64) of the seeds."""
     return seeds["height"].to_numpy(np.int64) * f.W_ + seeds["width"].to_numpy(np.int64)
@@ -191,7 +209,7 @@ def pnr_refine(
     bad = sigma <= 0
     if bad.any():
         sigma[bad] = np.median(f.sigma_flat())
-    pnr = ptp_q(f.traces(pixels), q) / (6.18 * sigma)
+    pnr = seed_ptp(f, pixels, q) / (6.18 * sigma)
     if isinstance(thres, str):
         if thres != "auto":
             raise ValueError(f"unknown pnr threshold {thres!r}")
@@ -223,7 +241,7 @@ def gmm_refine(
     compares against whichever component sklearn labelled first; we use the true lowest mean,
     which is the documented intent and independent of component labelling.
     """
-    ptp = ptp_q(f.traces(seed_pixels(f, seeds)), q)
+    ptp = seed_ptp(f, seed_pixels(f, seeds), q)
     dat = ptp.reshape(-1, 1)
     gmm = GaussianMixture(n_components=n_components, random_state=0).fit(dat)
     idg = np.argsort(gmm.means_.ravel())[-valid_components:]

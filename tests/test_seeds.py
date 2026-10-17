@@ -102,3 +102,13 @@ def test_gmm_mean_mask_uses_lowest_component_mean():
     assert on.any()
     assert (ptp[on] > low_mean).all()
     assert (off | ~on).all()  # mean_mask=False keeps a superset
+
+
+def test_seed_ptp_batched_equals_all_at_once():
+    _, f = _session()
+    rng = np.random.default_rng(1)
+    pix = rng.integers(0, f.P, 37)
+    ref = sd.ptp_q(f.traces(pix), (0.1, 99.9))
+    # float32 traces differ in the last bits with the batch composition (BLAS blocking)
+    assert np.allclose(sd.seed_ptp(f, pix, (0.1, 99.9), batch=5), ref, rtol=1e-6, atol=0)
+    assert np.allclose(sd.seed_ptp(f, pix, (0.1, 99.9)), ref, rtol=1e-6, atol=0)
