@@ -12,6 +12,27 @@ def main() -> None:
 
 
 @app.command()
+def run(
+    raw_dir: Annotated[Path, typer.Argument(help="Folder of N.avi segments (read-only).")],
+    params: Annotated[Path | None, typer.Option(help="Params JSON (default: built-in).")] = None,
+    workers: Annotated[int | None, typer.Option(help="Worker processes (default: params).")] = None,
+    name: Annotated[str, typer.Option(help="Run name under ../processed/.")] = "fastminian",
+    keep_store: Annotated[bool, typer.Option(help="Keep the temporary tile store.")] = False,
+) -> None:
+    """Run the pipeline on RAW_DIR; outputs go to RAW_DIR/../processed/NAME/."""
+    import json
+
+    from fastminian import pipeline
+    from fastminian.params import Params
+
+    prm = Params.from_json(params) if params is not None else Params()
+    out = pipeline.run(raw_dir, prm, run_name=name, keep_store=keep_store, workers=workers)
+    counts = json.loads((out / "report.json").read_text())["counts"]
+    typer.echo(str(out))
+    typer.echo(json.dumps(counts, indent=1))
+
+
+@app.command()
 def synth(
     out: Path, minutes: float = 10.0, fps: int = 30, segment: int = 1000, seed: int = 0
 ) -> None:

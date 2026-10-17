@@ -126,3 +126,26 @@ def test_pass1_part_count_mismatch_names_helper(tiny_session, tmp_path):
     store = tiles.TileStore(tmp_path / "s", tiles.tile_grid(64, 64, 32), n_parts=8)
     with pytest.raises(ValueError, match="n_parts_for"):
         pass1.run_pass1(info, store, pass1.build_template(info, p), p, workers=8)
+
+
+def test_pass1_apply_only_uses_given_shifts(tiny_session, tmp_path):
+    info = io.probe(tiny_session["raw_dir"])
+    p = Params(seeds_wnd=100, seeds_stp=50, template_frames=50)
+    tmpl = pass1.build_template(info, p)
+    grid = tiles.tile_grid(64, 64, 32)
+    s_est = tiles.TileStore(tmp_path / "est", grid, pass1.n_parts_for(info, 2))
+    r_est = pass1.run_pass1(info, s_est, tmpl, p, workers=2)
+    s_app = tiles.TileStore(tmp_path / "app", grid, pass1.n_parts_for(info, 2))
+    r_app = pass1.run_pass1(info, s_app, tmpl, p, workers=2, shifts=r_est.shifts)
+    assert np.array_equal(r_app.shifts, r_est.shifts)
+    assert r_app.seconds["motion_estimate"] < 0.1 * r_est.seconds["motion_estimate"]
+    assert np.allclose(r_app.quality, r_est.quality)
+    assert np.array_equal(r_app.block_max, r_est.block_max)
+    for t in grid:
+        assert np.array_equal(s_app.read_tile(t.index), s_est.read_tile(t.index))
+    # the given shifts are applied as they are: zero shifts leave the frames unwarped
+    s0 = tiles.TileStore(tmp_path / "zero", grid, pass1.n_parts_for(info, 1))
+    r0 = pass1.run_pass1(info, s0, tmpl, p, workers=1, shifts=np.zeros((300, 2), np.float32))
+    assert not r0.shifts.any() and not np.array_equal(s0.read_tile(0), s_est.read_tile(0))
+    with pytest.raises(ValueError, match="shifts"):
+        pass1.run_pass1(info, s0, tmpl, p, workers=1, shifts=np.zeros((10, 2), np.float32))
