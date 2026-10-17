@@ -64,3 +64,78 @@ $MINIAN_PY bench/minian_export.py $OUT A_new C_new $SCRATCH
 `bench/minian_export.py` refuses to export if `A_new` contains NaN. Score dicts carry
 `alignment_ok`: False (plus a stderr warning) when neither offset sign gives a median matched
 distance below 1.5 px, i.e. the motion offset could not be verified.
+
+## fastminian runs (Task 12, commit 16f6ac8, M1 Max, 10 cores)
+
+Fresh runs (no motion sidecar reused), default params, scored with `fastminian score`.
+
+| session | workers | wall | pass 1 | pass 2 | window 2 (cnmf) | units | recall | precision | F1 | trace corr median / q25 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5 min, Minian 2.0.2 | 4 x 2 thr | 471 s | | | | 508 | 0.914 | 0.758 | 0.829 | 0.964 / 0.942 |
+| 5 min | 6 | 40.1 s | 11.1 s | 6.4 s | 21.5 s (20.1 s) | 404 | 0.933 | 0.973 | **0.953** | **0.995** / 0.991 |
+| 10 min | 6 | 68.5 s | 17.2 s | 11.1 s | 38.6 s (35.5 s) | 400 | 0.924 | 0.973 | 0.948 | 0.995 / 0.989 |
+| 10 min | 1 | 147.3 s | 65.4 s | 42.2 s | 38.4 s (35.6 s) | 400 | 0.924 | 0.973 | 0.948 | 0.995 / 0.989 |
+
+- Gate: F1 >= 0.829 - 0.02 = 0.809 and trace corr >= 0.964 - 0.02 = 0.944: passed. Targets
+  5-min <= 160 s and 10-min <= 6 min on 6 workers: met.
+- Disk: tile store = raw size (3.24 / 6.48 GB, deleted after pass 2), factors 52 / 93 MB,
+  cnmf 33 / 61 MB. Peak RSS: main 3.8-4.0 GB, largest worker 2.2-2.3 GB.
+- Seed and unit counts, 5 min: seeds_init 2273 -> pnr 1258 -> merge 407 -> initA 407 ->
+  final 404. 10 min: 3926 -> 1903 -> 402 -> 400 -> 400. Motion: median frame quality
+  0.835 / 0.844, all alignment self-checks ok (median match distance 0.16 / 0.17 px).
+- The 1- and 6-worker 10-min runs give identical scores and unit counts.
+- Window 2 runs in one process; its time is mostly `update_background` (two full passes over
+  the reconstructed movie per call, single-threaded numpy, ~4.7 s per pass on 5 min). The
+  NNQP spatial solve takes 0.1-0.2 s.
+
+## Default changed and why
+
+**`gmm_refine` off by default** (`Params.gmm_refine = False`, opt-in). Diagnostic run with it
+on (old default, 5 min): 199 units, recall 0.468, precision 0.990, F1 0.635. Seeds matched to
+truth (a true cell is covered when a seed lies within 5 px):
+
+| stage | seeds | true cells covered (of 421) |
+|---|---|---|
+| seeds_init | 2273 | 421 |
+| pnr_refine (auto) | 1258 | 421 |
+| gmm_refine | 595 | **216** |
+| seeds_merge after gmm | 199 | 211 |
+| seeds_merge without gmm | 407 | 412 |
+
+All synthetic cells share one amplitude distribution, so the 2-GMM on peak-to-peak splits
+real cells into a bright and a dim half and drops the dim half. Minian's reference run did
+not use `gmm_refine` either. With it off the 5-min F1 is 0.953. No other default changed.
+
+Checked and left unchanged (measured on the 5-min factors):
+- `pnr_thres="auto"`: cuts at pnr 2.5-2.7. PNR of seeds on true cells: min 2.9, 5th
+  percentile 6.2; non-cell seeds: 95th percentile 0.34. Fixed thresholds 1, 1.5, 2, 2.5 keep
+  the same 421 cells; auto drops none.
+- `merge_corr=0.8`: of 2059 seed pairs within 10 px, 1444 are on the same cell (median corr
+  0.999) and 603 on different cells (median 0.28, 9.6 % above 0.8). 20 of 407 merged groups
+  span more than one cell (max 3). Of the 25 in-FOV cells we miss, most have another true
+  cell within 2-7 px; Minian finds 21 of those 25 but misses 29 in-FOV cells overall.
+- `inita_corr=0.8`: no sweep needed (gate passed by 0.14 F1).
+- `sparse_penal` / `sn`: see README "Known differences"; scaling `sn` by Minian's logmexp
+  factor 0.749 changed no score.
+- Spatial NNQP sweeps (5 min): median 1, p99 11-12; 46 of 246 820 pixels hit the 100 000
+  sweep cap in iteration 0 (none in iteration 1). The whole solve takes 0.16 s, so no cap change.
+
+## Fixes found by the runs
+
+- `update_background` used all K units in every tile's `A^T C`; now only the units touching
+  the tile (results bit-identical, background pass 10.6 s -> 8.8 s on 5 min).
+- Accelerate float32 transposed gemv (`R.T @ b`) returned wrong values for output lengths of
+  about 513-575 right after a numba parallel region (macOS 26, M1 Max; reproduced in isolation,
+  never without a prior numba parallel call, never in float64). A session whose frame count
+  leaves a 541-frame tail chunk got NaN in `f` and then all units dropped (3 of 6 runs of a
+  39541-frame real session). `update_background` now uses `np.einsum` for this product
+  (same speed). The synthetic sessions (T multiple of 1000) never hit it.
+- `pnr_refine` / `gmm_refine` held all seed traces at once (5.4 GB for 11k seeds x 39541
+  frames); now 1024 seeds at a time (0.5 GB).
+- `read_avi` kept every decoded 3-channel frame alive until a final stack (4x the segment
+  size for codecs decoded as BGR); it now fills one preallocated array, and the template
+  reads only its 200 frames.
+
+Real-data smoke run (WL25): not part of this result set; scheduled separately. Open issue
+seen in exploratory runs: pass 1 holds a whole segment ~3x in memory per worker, which only
+matters for single-file sessions (6.5 GB worker RSS for a 1.6 GB AVI).
