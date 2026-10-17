@@ -47,3 +47,13 @@ def test_pack_and_store_roundtrip(tmp_path):
     assert store.nbytes() == full.size
     store.remove()
     assert not (tmp_path / "tiles").exists()
+
+
+def test_read_avi_max_frames_and_wrong_frame_count(tiny_session, monkeypatch):
+    seg = io.list_segments(tiny_session["raw_dir"])[0]
+    full = io.read_avi(seg)
+    assert np.array_equal(io.read_avi(seg, max_frames=7), full[:7])
+    for wrong in (10, 500):  # container frame count too low / too high
+        monkeypatch.setattr(io, "frame_count", lambda p, n=wrong: n)
+        assert np.array_equal(io.read_avi(seg), full)
+        assert np.array_equal(io.read_avi(seg, max_frames=30), full[:30])

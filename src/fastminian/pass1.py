@@ -54,7 +54,7 @@ def seed_block_edges(T: int, wnd_size: int, stp_size: int) -> np.ndarray:
 
 def build_template(info: RawInfo, params: Params) -> Template:
     """Motion template from the first ``template_frames`` frames of segment 0."""
-    frames = read_avi(info.segments[0])[: params.template_frames]
+    frames = read_avi(info.segments[0], max_frames=params.template_frames)
     pre = preprocess.preprocess(frames, params.median_ksize, params.tophat_wnd)
     return motion.make_template(pre, params.motion_down, params.motion_max_shift)
 

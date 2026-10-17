@@ -27,17 +27,34 @@ def _gray(frame: np.ndarray) -> np.ndarray:
     return frame if frame.ndim == 2 else frame[..., 0]
 
 
-def read_avi(path: Path) -> np.ndarray:
-    """All frames of one AVI as (n, h, w) uint8."""
+def read_avi(path: Path, max_frames: int | None = None) -> np.ndarray:
+    """The first ``max_frames`` (default all) frames of one AVI as (n, h, w) uint8.
+
+    Frames go straight into one preallocated array sized by the container's frame count
+    (frames beyond it are appended): keeping the decoded 3-channel frames alive until a
+    final stack cost 4x the segment size (8.4 GB for a 1.6 GB single-file session).
+    """
+    limit = frame_count(path) if max_frames is None else min(frame_count(path), max_frames)
     cap = _open(path)
-    frames = []
-    while True:
+    out: np.ndarray | None = None
+    extra: list[np.ndarray] = []
+    n = 0
+    while max_frames is None or n < max_frames:
         ok, f = cap.read()
         if not ok:
             break
-        frames.append(_gray(f))
+        g = _gray(f)
+        if out is None:
+            out = np.empty((max(limit, 1), *g.shape), dtype=np.uint8)
+        if n < out.shape[0]:
+            out[n] = g
+        else:
+            extra.append(g.copy())
+        n += 1
     cap.release()
-    return np.stack(frames)
+    if out is None:
+        raise OSError(f"no frames could be read from {path}")
+    return np.concatenate([out[: min(n, out.shape[0])], *([np.stack(extra)] if extra else [])])
 
 
 def frame_count(path: Path) -> int:
