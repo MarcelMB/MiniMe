@@ -11,7 +11,9 @@ Every stage reads the movie only through ``Factors`` (``YCt``, ``AtY``,
   (``bench_passes/candidates/bg_streamed.py``).
 * ``compute_trace``: Minian ``compute_trace`` (``trace_shared.py`` algebra).
 * ``run_cnmf``: background, then ``n_iter`` x (spatial, background, traces,
-  ``C := YrA``, unit merge).
+  ``C := YrA``, unit merge). The background footprint ``b`` is computed in full on the
+  first and on the last iteration (Minian recomputes it every iteration; in between the
+  previous ``b`` is reused and only ``f`` is refreshed).
 """
 
 from __future__ import annotations
@@ -224,7 +226,8 @@ def run_cnmf(
         )
         C_sp = (np.asarray(C)[mask] * nf[:, None]).astype(np.float32)
         counts[f"units_after_spatial_{it}"] = A.shape[0]
-        b, fb = update_background(fac, A, C_sp, b=b)
+        last = it == params.n_iter - 1
+        b, fb = update_background(fac, A, C_sp, b=None if last else b)
         YrA = compute_trace(fac, A, b, C_sp, fb)
         A, YrA, (C_sp,) = init.unit_merge(A, YrA, fc_traces, params.loop_merge_corr, [C_sp])
         C = YrA
