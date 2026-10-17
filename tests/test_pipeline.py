@@ -134,3 +134,45 @@ def test_seeds_stage_runs_gmm_refine_only_when_enabled(monkeypatch, use_gmm):
         len(s) == timer.counts["seeds_gmm"] == timer.counts["seeds_merged"] == (2 if use_gmm else 3)
     )
     assert ("gmm_refine" in {r["stage"] for r in timer.rows}) is use_gmm
+
+
+@pytest.mark.parametrize("name", ["", ".", "..", "../x", "a/b"])
+def test_pipeline_rejects_unsafe_run_names(tmp_path, name):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    keep = tmp_path / "processed" / "other_run"
+    keep.mkdir(parents=True)
+    (keep / "params.json").write_text(json.dumps({"cafast_version": "0"}))
+    with pytest.raises(ValueError, match="run name"):
+        pipeline.run(raw, Params(), run_name=name)
+    assert (keep / "params.json").exists()
+
+
+def test_pipeline_refuses_to_wipe_foreign_dir(tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    foreign = tmp_path / "processed" / "mine"
+    foreign.mkdir(parents=True)
+    (foreign / "notes.txt").write_text("not a cafast run")
+    with pytest.raises(ValueError, match="refusing to delete"):
+        pipeline.run(raw, Params(), run_name="mine")
+    assert (foreign / "notes.txt").read_text() == "not a cafast run"
+
+
+def test_reset_dir_wipes_only_empty_or_cafast_dirs(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    pipeline._reset_dir(empty)
+    assert empty.is_dir() and not any(empty.iterdir())
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "report.json").write_text(json.dumps({"stages": []}))
+    (run / "old.npy").write_text("x")
+    pipeline._reset_dir(run)
+    assert run.is_dir() and not any(run.iterdir())
+    fake = tmp_path / "fake"
+    fake.mkdir()
+    (fake / "params.json").write_text(json.dumps({"tile": 64}))  # no cafast marker key
+    with pytest.raises(ValueError, match="refusing to delete"):
+        pipeline._reset_dir(fake)
+    assert (fake / "params.json").exists()
