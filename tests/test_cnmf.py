@@ -148,3 +148,18 @@ def test_run_cnmf_two_iterations():
     assert res.b.shape == (f.P,) and res.f.shape == (f.T,) and res.counts["iter"] == 2
     assert res.counts["units_after_merge_1"] == res.A.shape[0]
     assert (res.YrA >= 0).all()
+
+
+def test_run_cnmf_refreshes_background_on_last_iteration():
+    f, fc, A, C = _setup()
+    b0, _ = cnmf.update_background(f, A, C)
+    # loop_merge_corr 1.0: no merge, so res.A / res.C are the units the last background saw
+    p = Params(dl_wnd=5, size_thres=(9, None), n_iter=2, loop_merge_corr=1.0)
+    res = cnmf.run_cnmf(f, A, C, p, fc.traces_corr)
+    Y = _dense(f)
+    R = np.clip(Y - res.A.toarray().astype(np.float64).T @ res.C.astype(np.float64), 0, None)
+    b_ref = R.mean(1)
+    f_ref = R.T @ b_ref / (b_ref @ b_ref)
+    assert np.linalg.norm(res.b - b0) > 0.05 * np.linalg.norm(b0)  # footprints changed b
+    assert np.allclose(res.b, b_ref, atol=1e-4 * b_ref.max())
+    assert np.allclose(res.f, f_ref, rtol=1e-4)
