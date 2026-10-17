@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import pandas as pd
 import scipy.sparse as sps
+from numba import njit, prange
 
 from fastminian import cnmf, compress, corr, init, tiles
 from fastminian import factors as fm
@@ -27,10 +28,10 @@ def _undo_motion(movie, shifts):
     return out
 
 
-def _setup(H=48, W=48, T=600):
+def _setup(H=48, W=48, T=600, tile=24):
     setup = synth.synth_setup(H, W, T, 2)
     movie = _undo_motion(synth.synth_movie(H, W, T, 2), setup.shifts)
-    grid = tiles.tile_grid(H, W, 24)
+    grid = tiles.tile_grid(H, W, tile)
     tf = [
         compress.compress_tile(np.ascontiguousarray(movie[:, t.y0 : t.y1, t.x0 : t.x1]), k0=16)
         for t in grid
@@ -76,6 +77,30 @@ def test_background_uses_only_units_touching_each_tile():
     b2, _ = cnmf.update_background(f, A2, C2)
     rest = np.concatenate([f.tile_rows(t) for t in range(1, len(f.tiles))])
     assert np.array_equal(b2[rest], b[rest]) and b2[f.tile_rows(0)[0]] == 0
+
+
+@njit(parallel=True)
+def _parallel_double(x):
+    out = np.zeros(x.shape[0])
+    for i in prange(x.shape[0]):
+        out[i] = 2.0 * x[i]
+    return out
+
+
+def test_background_trace_correct_after_numba_parallel_region():
+    # Accelerate (macOS 26, M1 Max) returned wrong float32 transposed-gemv results for output
+    # lengths ~513-575 right after a numba parallel region; the WL25 tail chunk (541 frames)
+    # hit it after update_spatial and turned f into NaN. Same shape here: a 64 x 64 tile
+    # (4096 pixels) and a 541-frame chunk.
+    f, fc, A, C = _setup(64, 64, 600, tile=64)
+    Y = _dense(f)
+    R = np.clip(Y - A.toarray().astype(np.float64).T @ C, 0, None)
+    b_ref = R.mean(1)
+    f_ref = R.T @ b_ref / (b_ref @ b_ref)
+    for _ in range(20):  # intermittent: the old code failed in about 3 of 5 test runs
+        _parallel_double(np.ones(100_000))
+        _, fb = cnmf.update_background(f, A, C, b=b_ref.astype(np.float32), chunk=541)
+        assert np.isfinite(fb).all() and np.allclose(fb, f_ref, rtol=1e-4)
 
 
 def test_dilate_footprints_disk():
