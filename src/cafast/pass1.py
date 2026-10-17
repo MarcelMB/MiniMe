@@ -122,6 +122,11 @@ class Pass1:
             else:
                 a = self.t_start + self.frames + b0
                 sh = self.given_shifts[a : a + blk.shape[0]]
+                if sh.shape[0] != blk.shape[0]:
+                    raise ValueError(
+                        f"frames {a}..{a + blk.shape[0]} decoded, but only "
+                        f"{self.given_shifts.shape[0]} shifts given"
+                    )
             t3 = time.perf_counter()
             blk = motion.apply_shifts(blk, sh)
             t4 = time.perf_counter()
@@ -155,7 +160,7 @@ class Pass1Result:
     max_proj: np.ndarray  # (H, W) uint8
     block_max: np.ndarray  # (n_blocks, H, W) uint8
     block_edges: np.ndarray  # (n_blocks + 1,) int64
-    frames: int
+    frames: int  # decoded frames (equals the probed count, else run_pass1 raises)
     seconds: dict[str, float]  # CPU seconds per stage, summed over workers
 
 
@@ -190,12 +195,14 @@ def pass1_worker(
     store = TileStore(Path(store_root), grid, n_parts)
     p1 = Pass1(template, grid, params, block_edges, t_start, shifts)
     t_read = t_write = 0.0
+    decoded: list[int] = []
     with ExitStack() as stack:
         files = [stack.enter_context(f) for f in store.open_part(part)]
         for path in paths:
             t0 = time.perf_counter()
             frames = read_avi(Path(path))
             t_read += time.perf_counter() - t0
+            decoded.append(int(frames.shape[0]))
             packed = p1.process(frames)
             t0 = time.perf_counter()
             for f, (a, b) in zip(files, tile_offsets(frames.shape[0], grid), strict=True):
@@ -204,11 +211,30 @@ def pass1_worker(
     return {
         "seconds": {**p1.seconds, "read_avi": t_read, "write_tiles": t_write},
         "frames": p1.frames,
+        "segment_frames": decoded,
         "max_proj": p1.max_proj,
         "block_max": p1.block_max,
         "shifts": np.concatenate(p1.shifts),
         "quality": np.concatenate(p1.quality),
     }
+
+
+def check_segment_frames(info: RawInfo, decoded: list[int]) -> None:
+    """Raise ``ValueError`` naming every segment whose decoded frame count differs from probe.
+
+    Block edges and each worker's first frame index come from the probed counts, so a
+    mismatch (a truncated or mis-labelled segment) would misplace frames silently.
+    """
+    bad = [
+        f"{seg.name}: probed {exp}, decoded {got}"
+        for seg, exp, got in zip(info.segments, info.segment_frames, decoded, strict=True)
+        if exp != got
+    ]
+    if bad:
+        raise ValueError(
+            "decoded frame counts differ from the container frame counts "
+            f"(truncated or corrupt segment?): {'; '.join(bad)}"
+        )
 
 
 def run_pass1(
@@ -263,6 +289,7 @@ def run_pass1(
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+    check_segment_frames(info, [n for r in res for n in r["segment_frames"]])
     return Pass1Result(
         shifts=np.concatenate([r["shifts"] for r in res]).astype(np.float32),
         quality=np.concatenate([r["quality"] for r in res]).astype(np.float32),

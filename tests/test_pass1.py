@@ -149,3 +149,63 @@ def test_pass1_apply_only_uses_given_shifts(tiny_session, tmp_path):
     assert not r0.shifts.any() and not np.array_equal(s0.read_tile(0), s_est.read_tile(0))
     with pytest.raises(ValueError, match="shifts"):
         pass1.run_pass1(info, s0, tmpl, p, workers=1, shifts=np.zeros((10, 2), np.float32))
+
+
+def _truncate(path, frac=0.6):
+    import os
+
+    os.truncate(path, int(path.stat().st_size * frac))
+
+
+def test_probe_decodes_truncated_last_segment(tmp_path):
+    from cafast.testing import synth
+
+    raw = tmp_path / "raw"
+    synth.write_session(raw, minutes=300 / 30 / 60, fps=30, segment=100, seed=0, side=64)
+    last = io.list_segments(raw)[-1]
+    _truncate(last)
+    assert io.frame_count(last) == 100  # the header still claims the full segment
+    n_last = io.read_avi(last).shape[0]
+    assert 0 < n_last < 100
+    info = io.probe(raw)
+    assert info.segment_frames == [100, 100, n_last] and info.frames == 200 + n_last
+    p = Params(seeds_wnd=100, seeds_stp=50, template_frames=50)
+    grid = tiles.tile_grid(64, 64, 32)
+    store = tiles.TileStore(tmp_path / "s", grid, pass1.n_parts_for(info, 2))
+    r = pass1.run_pass1(info, store, pass1.build_template(info, p), p, workers=2)
+    assert r.frames == info.frames and r.block_edges[-1] == info.frames
+    assert store.read_tile(0).shape[0] == info.frames
+
+
+def test_pass1_names_truncated_middle_segment(tmp_path):
+    from cafast.testing import synth
+
+    raw = tmp_path / "raw"
+    synth.write_session(raw, minutes=300 / 30 / 60, fps=30, segment=100, seed=0, side=64)
+    _truncate(io.list_segments(raw)[1])
+    info = io.probe(raw)
+    assert info.segment_frames == [100, 100, 100]  # middle headers are trusted by probe
+    p = Params(seeds_wnd=100, seeds_stp=50, template_frames=50)
+    grid = tiles.tile_grid(64, 64, 32)
+    store = tiles.TileStore(tmp_path / "s", grid, pass1.n_parts_for(info, 2))
+    with pytest.raises(ValueError, match=r"1\.avi: probed 100, decoded \d+"):
+        pass1.run_pass1(info, store, pass1.build_template(info, p), p, workers=2)
+
+
+def test_build_factors_uses_decoded_frame_count():
+    from types import SimpleNamespace
+
+    from cafast import pass2
+
+    T = 40
+    info = SimpleNamespace(height=8, width=8, frames=50)  # stale probe count
+    p1 = pass1.Pass1Result(
+        np.zeros((T, 2), np.float32),
+        np.zeros(T, np.float32),
+        np.zeros((8, 8), np.uint8),
+        np.zeros((1, 8, 8), np.uint8),
+        np.array([0, T]),
+        T,
+        {},
+    )
+    assert pass2.build_factors(info, tiles.tile_grid(8, 8, 8), p1, [], Params()).T == T

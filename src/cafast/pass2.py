@@ -68,7 +68,7 @@ def build_factors(
     return Factors(
         H=info.height,
         W_=info.width,
-        T=info.frames,
+        T=p1.frames,
         grid=grid,
         tiles=tiles,
         max_proj=p1.max_proj,
