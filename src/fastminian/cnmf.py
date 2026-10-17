@@ -162,7 +162,10 @@ def update_background(
             b_out[rows] = acc / f.T
         b_tile = b_out[rows]
         for t0, t1 in ranges:
-            num[t0:t1] += _clipped_residual(f, t, Ab, Cb, t0, t1).T @ b_tile
+            # einsum, not ``R.T @ b``: after a numba parallel region Accelerate's float32
+            # transposed gemv returned wrong values for output lengths ~513-575 (macOS 26,
+            # M1 Max); the 541-frame tail chunk of a 39541-frame session turned f into NaN
+            num[t0:t1] += np.einsum("pt,p->t", _clipped_residual(f, t, Ab, Cb, t0, t1), b_tile)
     bb = float(b_out.astype(np.float64) @ b_out.astype(np.float64))
     fb = num / bb if bb > 0 else np.zeros(f.T)
     return b_out, fb.astype(np.float32)
