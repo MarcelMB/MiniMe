@@ -8,6 +8,7 @@ factors: seeds_init, pnr_refine, gmm_refine (opt-in), seeds_merge, initA, initC,
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import time
 from pathlib import Path
@@ -29,8 +30,20 @@ from cafast.tiles import TileStore, tile_grid
 # ---------------------------------------------------------------------------
 
 
+def check_run_name(run_name: str) -> None:
+    """A run name must be one plain path component: not empty, ``.``, ``..`` or with a separator.
+
+    ``--name ""`` or ``--name .`` would otherwise resolve to ``processed/`` itself and the
+    wipe below would delete every run in it; ``--name ../x`` would escape it.
+    """
+    seps = {"/", "\\", os.sep} | ({os.altsep} if os.altsep else set())
+    if run_name in ("", ".", "..") or any(c in run_name for c in seps):
+        raise ValueError(f"invalid run name {run_name!r}: use a single, plain directory name")
+
+
 def out_dir_for(raw_dir: Path, run_name: str, out_root: Path | None = None) -> Path:
     """``(out_root or raw_dir/../processed) / run_name``."""
+    check_run_name(run_name)
     root = Path(out_root) if out_root is not None else Path(raw_dir).parent / "processed"
     return root / run_name
 
@@ -42,7 +55,36 @@ def _check_out_dir(raw_dir: Path, out: Path) -> None:
         raise ValueError(f"output dir {o} would contain the raw dir {raw}; choose another")
 
 
+def _is_cafast_run(out: Path) -> bool:
+    """``out`` holds a ``params.json`` or ``report.json`` that a cafast run wrote."""
+    for name, keys in (
+        ("params.json", {"cafast_version", "fastminian_version"}),  # older runs: fastminian
+        ("report.json", {"stages"}),
+    ):
+        try:
+            doc = json.loads((out / name).read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict) and keys & set(doc):
+            return True
+    return False
+
+
+def _check_wipe(out: Path) -> None:
+    """Refuse to delete ``out`` unless it is missing, empty, or a previous cafast run."""
+    if not out.exists():
+        return
+    if not out.is_dir():
+        raise ValueError(f"output path {out} exists and is not a directory")
+    if any(out.iterdir()) and not _is_cafast_run(out):
+        raise ValueError(
+            f"output dir {out} is not empty and holds no cafast params.json / report.json; "
+            "refusing to delete it (choose another --name)"
+        )
+
+
 def _reset_dir(out: Path) -> None:
+    _check_wipe(out)
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
 
@@ -184,6 +226,7 @@ def run(
     workers = params.workers if workers is None else int(workers)
     out = out_dir_for(raw_dir, run_name, out_root)
     _check_out_dir(raw_dir, out)
+    _check_wipe(out)
     timer = StageTimer()
 
     with timer("probe"):
@@ -193,6 +236,7 @@ def run(
     # read a valid sidecar into memory before the output dir is wiped
     sc = motion.load_if_valid(out / "motion", raw_hash, params.motion_params(), info.frames)
     _reset_dir(out)
+    _write_params(out, params, raw_dir, raw_hash)  # first: marks the dir as a cafast run
 
     with timer("template"):
         if sc is None:
@@ -229,7 +273,6 @@ def run(
 
     with timer("write_outputs"):
         _write_cnmf(out / "cnmf", res, info.height, info.width)
-        _write_params(out, params, raw_dir, raw_hash)
     timer.to_json(
         out / "report.json",
         {
