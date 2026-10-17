@@ -59,6 +59,8 @@ class Template:
     fft: np.ndarray
     down: int
     shape: tuple[int, int]  # full-resolution (h, w) of the frames it was built from
+    # (h, w) of the prepared (downsampled) template image; cv2.resize rounds h / 2 up
+    prep_shape: tuple[int, int]
 
 
 def estimate(frames: np.ndarray, tmpl: Template, max_shift: int = 20) -> np.ndarray:
@@ -92,7 +94,8 @@ def apply_shifts(frames: np.ndarray, shifts: np.ndarray) -> np.ndarray:
 
 def _mean_template(pre_frames: np.ndarray, down: int) -> Template:
     shape = (int(pre_frames.shape[1]), int(pre_frames.shape[2]))
-    return Template(np.fft.rfft2(_prep(pre_frames, down).mean(axis=0)), down, shape)
+    img = _prep(pre_frames, down).mean(axis=0)
+    return Template(np.fft.rfft2(img), down, shape, (int(img.shape[0]), int(img.shape[1])))
 
 
 def make_template(pre_frames: np.ndarray, down: int = 2, max_shift: int = 20) -> Template:
@@ -103,10 +106,8 @@ def make_template(pre_frames: np.ndarray, down: int = 2, max_shift: int = 20) ->
 
 
 def template_image(tmpl: Template) -> np.ndarray:
-    """The template in image space, (h/down, w/down) float32."""
-    h, w = tmpl.shape
-    s = (h // 2, w // 2) if tmpl.down == 2 else (h, w)
-    return np.fft.irfft2(tmpl.fft, s=s).astype(np.float32)
+    """The prepared template in image space, ``tmpl.prep_shape`` (about h/down, w/down) float32."""
+    return np.fft.irfft2(tmpl.fft, s=tmpl.prep_shape).astype(np.float32)
 
 
 def frame_quality(frames: np.ndarray, tmpl: Template) -> np.ndarray:

@@ -98,7 +98,12 @@ def _template_from_sidecar(
     sc: motion.MotionSidecar, info: io.RawInfo, params: Params
 ) -> motion.Template:
     """``Template`` rebuilt from the stored template image (used for frame quality only)."""
-    return motion.Template(np.fft.rfft2(sc.template), params.motion_down, (info.height, info.width))
+    return motion.Template(
+        np.fft.rfft2(sc.template),
+        params.motion_down,
+        (info.height, info.width),
+        (int(sc.template.shape[0]), int(sc.template.shape[1])),
+    )
 
 
 def _save_sidecar(

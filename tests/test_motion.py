@@ -69,3 +69,25 @@ def test_sidecar_roundtrip_and_validation(tmp_path):
     )
     assert motion.load_if_valid(tmp_path / "motion", "abc", sc.params, 11) is None
     assert motion.load_if_valid(tmp_path / "nope", "abc", sc.params, 10) is None
+
+
+def test_template_image_shape_for_odd_sizes():
+    from types import SimpleNamespace
+
+    from cafast import pipeline
+    from cafast.params import Params
+
+    h, w = 603, 601  # cv2.resize gives 302 x 300 here, not h // 2 x w // 2 = 301 x 300
+    pre = preprocess.preprocess(synth.synth_movie(h, w, 4, 0), 7, 15)
+    tmpl = motion._mean_template(pre, 2)
+    img = motion.template_image(tmpl)
+    assert img.shape == tmpl.prep_shape == motion._prep(pre, 2).shape[1:] == (302, 300)
+    assert np.allclose(img, motion._prep(pre, 2).mean(axis=0), atol=1e-3)
+    # sidecar rerun: the rebuilt template gives the same quality as the original
+    sc = SimpleNamespace(template=img)
+    info = SimpleNamespace(height=h, width=w)
+    back = pipeline._template_from_sidecar(sc, info, Params(motion_down=2))
+    assert back.prep_shape == tmpl.prep_shape and back.shape == (h, w)
+    np.testing.assert_allclose(
+        motion.frame_quality(pre, back), motion.frame_quality(pre, tmpl), atol=1e-5
+    )

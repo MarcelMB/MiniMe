@@ -26,7 +26,7 @@ decoded once more at startup to count its frames.
 | path | content |
 |---|---|
 | `params.json` | every parameter used, raw content hash, package version |
-| `motion/` | shifts (T, 2), template, per-frame quality; reused on a rerun with the same raw data and motion params |
+| `motion/` | shifts (T, 2), template (the prepared half-resolution image, about H/2 x W/2), per-frame quality; reused on a rerun with the same raw data and motion params |
 | `factors/` | per-tile factors `W, V, mean, sigma, energy`, max projection, block maxima |
 | `cnmf/A.npz` | footprints, scipy CSR (K, H*W) float32, row maximum 1 |
 | `cnmf/C.npy`, `cnmf/YrA.npy` | (K, T) float32: trace fed to the last spatial update; final residual trace |
