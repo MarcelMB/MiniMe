@@ -209,3 +209,38 @@ def test_build_factors_uses_decoded_frame_count():
         {},
     )
     assert pass2.build_factors(info, tiles.tile_grid(8, 8, 8), p1, [], Params()).T == T
+
+
+def test_pass1_worker_streams_single_segment_in_batches(tmp_path):
+    from cafast.testing import synth
+
+    raw = tmp_path / "raw"
+    synth.write_session(raw, minutes=300 / 30 / 60, fps=30, segment=300, seed=0, side=64)
+    info = io.probe(raw)
+    assert info.segment_frames == [300]
+    seg = info.segments[0]
+    batches = list(io.iter_avi(seg, batch=100))
+    assert [b.shape for b in batches] == [(100, 64, 64)] * 3
+    assert np.array_equal(np.concatenate(batches), io.read_avi(seg))
+    assert [b.shape[0] for b in io.iter_avi(seg, batch=70)] == [70, 70, 70, 70, 20]
+    p = Params(seeds_wnd=100, seeds_stp=50, template_frames=50, sub_batch=30)
+    tmpl = pass1.build_template(info, p)
+    grid = tiles.tile_grid(64, 64, 32)
+    edges = pass1.seed_block_edges(300, p.seeds_wnd, p.seeds_stp)
+    out = {}
+    for rb in (1000, 100, 70):  # one shot, aligned batches, batches straddling sub-batches
+        store = tiles.TileStore(tmp_path / f"s{rb}", grid, 1)
+        res = pass1.pass1_worker(
+            [str(seg)], 0, str(store.root), grid, 1, tmpl, p, edges, 0, read_batch=rb
+        )
+        out[rb] = (res, [store.read_tile(t.index) for t in grid])
+    ref, ref_tiles = out[1000]
+    assert ref["frames"] == 300 and ref["segment_frames"] == [300]
+    for rb in (100, 70):
+        res, tl = out[rb]
+        assert res["segment_frames"] == [300]
+        assert np.array_equal(res["shifts"], ref["shifts"])
+        assert np.array_equal(res["block_max"], ref["block_max"])
+        assert np.array_equal(res["max_proj"], ref["max_proj"])
+        assert np.array_equal(res["quality"], ref["quality"])
+        assert all(np.array_equal(a, b) for a, b in zip(tl, ref_tiles, strict=True))

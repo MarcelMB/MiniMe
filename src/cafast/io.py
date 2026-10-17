@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -94,6 +95,34 @@ def read_avi(path: Path, max_frames: int | None = None, bgr: bool = False) -> np
     if out is None:
         raise OSError(f"no frames could be read from {path}")
     return np.concatenate([out[: min(n, out.shape[0])], *([np.stack(extra)] if extra else [])])
+
+
+def iter_avi(path: Path, batch: int = 1000, bgr: bool = False) -> Iterator[np.ndarray]:
+    """Yield the frames of one AVI as (n, h, w) uint8 batches of ``batch`` frames (last shorter).
+
+    Memory stays at one batch whatever the file size (a single-file session no longer has to
+    fit in RAM). The total of the yielded frames is the decoded frame count.
+    """
+    cap = _open(path, bgr)
+    try:
+        buf: np.ndarray | None = None
+        n = 0
+        while True:
+            ok, f = cap.read()
+            if not ok:
+                break
+            g = _gray(f, bgr)
+            if buf is None:
+                buf = np.empty((batch, *g.shape), dtype=np.uint8)
+            buf[n] = g
+            n += 1
+            if n == batch:
+                yield buf
+                buf, n = None, 0
+        if buf is not None and n:
+            yield buf[:n]
+    finally:
+        cap.release()
 
 
 def frame_count(path: Path) -> int:
