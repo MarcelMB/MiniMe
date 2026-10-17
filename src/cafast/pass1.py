@@ -54,7 +54,7 @@ def seed_block_edges(T: int, wnd_size: int, stp_size: int) -> np.ndarray:
 
 def build_template(info: RawInfo, params: Params) -> Template:
     """Motion template from the first ``template_frames`` frames of segment 0."""
-    frames = read_avi(info.segments[0], max_frames=params.template_frames)
+    frames = read_avi(info.segments[0], max_frames=params.template_frames, bgr=info.bgr)
     pre = preprocess.preprocess(frames, params.median_ksize, params.tophat_wnd)
     return motion.make_template(pre, params.motion_down, params.motion_max_shift)
 
@@ -189,6 +189,7 @@ def pass1_worker(
     block_edges: np.ndarray,
     t_start: int,
     shifts: np.ndarray | None = None,
+    bgr: bool = False,
 ) -> dict:
     """Process a contiguous run of segments, writing part ``part`` of every tile file."""
     cv2.setNumThreads(1)
@@ -200,7 +201,7 @@ def pass1_worker(
         files = [stack.enter_context(f) for f in store.open_part(part)]
         for path in paths:
             t0 = time.perf_counter()
-            frames = read_avi(Path(path))
+            frames = read_avi(Path(path), bgr=bgr)
             t_read += time.perf_counter() - t0
             decoded.append(int(frames.shape[0]))
             packed = p1.process(frames)
@@ -274,6 +275,7 @@ def run_pass1(
             edges,
             int(starts[r.start]),
             shifts,
+            info.bgr,
         )
         for k, r in enumerate(ranges)
     ]

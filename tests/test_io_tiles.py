@@ -57,3 +57,63 @@ def test_read_avi_max_frames_and_wrong_frame_count(tiny_session, monkeypatch):
         monkeypatch.setattr(io, "frame_count", lambda p, n=wrong: n)
         assert np.array_equal(io.read_avi(seg), full)
         assert np.array_equal(io.read_avi(seg, max_frames=30), full[:30])
+
+
+def _write_avi(path, frames, fourcc, color):
+    import cv2
+
+    h, w = frames.shape[1:]
+    wr = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*fourcc), 30, (w, h), color)
+    if not wr.isOpened():
+        return False
+    for f in frames:
+        wr.write(cv2.cvtColor(f, cv2.COLOR_GRAY2BGR) if color else f)
+    wr.release()
+    return True
+
+
+def test_needs_bgr_decision():
+    rng = np.random.default_rng(0)
+    f = rng.integers(0, 256, (32, 32), dtype=np.uint8)
+    assert not io.needs_bgr(f, f.copy())
+    rounding = np.where(rng.random(f.shape) < 0.1, 1, 0)  # +-1 codec rounding on 10 % of px
+    near = np.clip(f.astype(int) + rounding, 0, 255).astype(np.uint8)
+    assert not io.needs_bgr(f, near)
+    one_px = f.copy()
+    one_px[0, 0] = f[0, 0] ^ 0x80  # a single pixel off by 128
+    assert io.needs_bgr(f, one_px)
+    limited = (16 + f.astype(np.float32) * 219 / 255).astype(np.uint8)  # TV-range Y plane
+    assert io.needs_bgr(limited, f)
+    assert io.needs_bgr(f[:, :16], f)  # shape mismatch
+
+
+def test_probe_uses_bgr_path_for_codec_with_wrong_raw_decode(tmp_path):
+    import pytest
+
+    from cafast import pass1, tiles
+    from cafast.params import Params
+    from cafast.testing import synth
+
+    movie = synth.synth_movie(64, 64, 120, 0)
+    grey, hfyu = tmp_path / "grey" / "raw", tmp_path / "hfyu" / "raw"
+    for d, cc, color in ((grey, "GREY", False), (hfyu, "HFYU", True)):
+        d.mkdir(parents=True)
+        for k in range(2):
+            if not _write_avi(d / f"{k}.avi", movie[60 * k : 60 * (k + 1)], cc, color):
+                pytest.skip(f"cv2.VideoWriter cannot write {cc} here")
+    raw0 = io.read_avi(hfyu / "0.avi")  # raw decode of bgr0 HuffYUV: right shape, wrong pixels
+    assert raw0.shape == (60, 64, 64) and np.abs(raw0.astype(int) - movie[:60]).mean() > 10
+    gi, hi = io.probe(grey), io.probe(hfyu)
+    assert gi.bgr is False and hi.bgr is True and hi.frames == 120
+    assert np.array_equal(io.read_avi(hfyu / "0.avi", bgr=True), movie[:60])  # lossless
+    p = Params(seeds_wnd=60, seeds_stp=30, template_frames=50)
+    grid = tiles.tile_grid(64, 64, 32)
+    runs = []
+    for name, info in (("g", gi), ("h", hi)):
+        store = tiles.TileStore(tmp_path / name, grid, pass1.n_parts_for(info, 2))
+        tmpl = pass1.build_template(info, p)
+        runs.append((pass1.run_pass1(info, store, tmpl, p, workers=2), store))
+    (rg, sg), (rh, sh) = runs
+    assert np.array_equal(rg.shifts, rh.shifts) and np.array_equal(rg.block_max, rh.block_max)
+    for t in grid:
+        assert np.array_equal(sg.read_tile(t.index), sh.read_tile(t.index))
