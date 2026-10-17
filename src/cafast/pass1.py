@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 
 from cafast import motion, preprocess
-from cafast.io import RawInfo, read_avi
+from cafast.io import RawInfo, iter_avi, read_avi
 from cafast.motion import Template
 from cafast.params import Params
 from cafast.tiles import Tile, TileStore, pack_tiles, tile_offsets
@@ -30,6 +30,7 @@ STAGES = (
     "write_tiles",
 )
 _THREAD_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
+READ_BATCH = 1000  # frames decoded, processed and written at a time by a pass-1 worker
 
 
 # ---------------------------------------------------------------------------
@@ -190,8 +191,14 @@ def pass1_worker(
     t_start: int,
     shifts: np.ndarray | None = None,
     bgr: bool = False,
+    read_batch: int = READ_BATCH,
 ) -> dict:
-    """Process a contiguous run of segments, writing part ``part`` of every tile file."""
+    """Process a contiguous run of segments, writing part ``part`` of every tile file.
+
+    Each segment is streamed in batches of ``read_batch`` frames (``io.iter_avi``), so a
+    worker holds about 3 batches whatever the segment length. Returns the decoded frame
+    count of every segment (``segment_frames``) for ``check_segment_frames``.
+    """
     cv2.setNumThreads(1)
     store = TileStore(Path(store_root), grid, n_parts)
     p1 = Pass1(template, grid, params, block_edges, t_start, shifts)
@@ -200,15 +207,21 @@ def pass1_worker(
     with ExitStack() as stack:
         files = [stack.enter_context(f) for f in store.open_part(part)]
         for path in paths:
-            t0 = time.perf_counter()
-            frames = read_avi(Path(path), bgr=bgr)
-            t_read += time.perf_counter() - t0
-            decoded.append(int(frames.shape[0]))
-            packed = p1.process(frames)
-            t0 = time.perf_counter()
-            for f, (a, b) in zip(files, tile_offsets(frames.shape[0], grid), strict=True):
-                f.write(memoryview(packed[a:b]))
-            t_write += time.perf_counter() - t0
+            batches = iter_avi(Path(path), read_batch, bgr)
+            n_seg = 0
+            while True:
+                t0 = time.perf_counter()
+                frames = next(batches, None)
+                t_read += time.perf_counter() - t0
+                if frames is None:
+                    break
+                n_seg += frames.shape[0]
+                packed = p1.process(frames)
+                t0 = time.perf_counter()
+                for f, (a, b) in zip(files, tile_offsets(frames.shape[0], grid), strict=True):
+                    f.write(memoryview(packed[a:b]))
+                t_write += time.perf_counter() - t0
+            decoded.append(n_seg)
     return {
         "seconds": {**p1.seconds, "read_avi": t_read, "write_tiles": t_write},
         "frames": p1.frames,

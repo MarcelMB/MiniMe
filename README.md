@@ -16,7 +16,10 @@ CNMF stage after that runs on the stored factors and never rereads the movie.
 
 **Input:** `RAW_DIR` = a folder of `N.avi` grayscale uint8 segments (Miniscope DAQ layout,
 sorted by integer stem). Read-only. A single long AVI works if it is named `0.avi` (a
-symlink is enough), but it is then processed by one pass-1 worker.
+symlink is enough). Pass-1 workers stream each segment in 1000-frame batches, so worker
+memory does not grow with the file (about 3 x 1000 frames, ~1.1 GB at 600 x 600). A single
+file is still processed by one pass-1 worker, and the last segment (here: the whole file) is
+decoded once more at startup to count its frames.
 
 **Output:** `RAW_DIR/../processed/NAME/`
 
