@@ -117,3 +117,28 @@ def test_probe_uses_bgr_path_for_codec_with_wrong_raw_decode(tmp_path):
     assert np.array_equal(rg.shifts, rh.shifts) and np.array_equal(rg.block_max, rh.block_max)
     for t in grid:
         assert np.array_equal(sg.read_tile(t.index), sh.read_tile(t.index))
+
+
+def test_probe_falls_back_to_bgr_when_raw_decode_fails(tmp_path):
+    """Fiji/ImageJ AVIs are palette (pal8) rawvideo; OpenCV's raw decode returns no frame."""
+    import shutil
+    import subprocess
+
+    import pytest
+
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+    rng = np.random.default_rng(0)
+    movie = rng.integers(0, 256, (20, 32, 32), dtype=np.uint8)
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    avi = raw / "0.avi"
+    cmd = ["ffmpeg", "-v", "error", "-f", "rawvideo", "-pix_fmt", "gray", "-s", "32x32"]
+    cmd += ["-i", "-", "-c:v", "rawvideo", "-pix_fmt", "pal8", str(avi)]
+    subprocess.run(cmd, input=movie.tobytes(), check=True)
+    cmd = ["ffmpeg", "-v", "error", "-i", str(avi), "-f", "rawvideo", "-pix_fmt", "gray", "-"]
+    ref = np.frombuffer(subprocess.run(cmd, capture_output=True, check=True).stdout, np.uint8)
+    info = io.probe(raw)
+    assert info.bgr is True and info.frames == 20 and (info.height, info.width) == (32, 32)
+    got = io.read_avi(avi, bgr=True).astype(int)
+    assert np.abs(got - ref.reshape(20, 32, 32)).max() <= 1

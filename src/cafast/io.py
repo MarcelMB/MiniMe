@@ -162,13 +162,18 @@ def probe(raw_dir: Path) -> RawInfo:
     still claims the full count. Pass 1 checks every other segment's decoded count.
 
     Frame 0 is decoded raw and via BGR->gray; if they disagree (``needs_bgr``) the whole
-    session is read via BGR->gray (``RawInfo.bgr``).
+    session is read via BGR->gray (``RawInfo.bgr``). So is a codec whose raw decode returns
+    no frame at all (palette rawvideo, as written by Fiji/ImageJ).
     """
     segments = list_segments(raw_dir)
     if not segments:
         raise FileNotFoundError(f"no *.avi segments in {raw_dir}")
-    bgr = needs_bgr(first_frame(segments[0], False), first_frame(segments[0], True))
-    height, width = first_frame(segments[0], bgr).shape
+    via_bgr = first_frame(segments[0], True)
+    try:
+        bgr = needs_bgr(first_frame(segments[0], False), via_bgr)
+    except OSError:
+        bgr = True
+    height, width = (via_bgr if bgr else first_frame(segments[0], False)).shape
     counts = [frame_count(s) for s in segments[:-1]]
     counts.append(decoded_frame_count(segments[-1], bgr))
     meta = Path(raw_dir).parent / "meta.json"
