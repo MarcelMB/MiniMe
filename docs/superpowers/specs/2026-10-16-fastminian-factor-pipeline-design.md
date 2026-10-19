@@ -114,8 +114,8 @@ load the sidecar and skip estimation (apply only).
 **Pass 2** (`pass2.py`, `compress.py`), per tile, all frames, N workers over tiles:
 
 1. read the tile's part files into one `(T, P_b)` uint8 array;
-2. per-pixel mean (float64 accumulation) and noise `sigma` = 1.4826·MAD of first
-   differences over the first 512 frames / √2;
+2. per-pixel mean (float64 accumulation) and noise `sigma` = Minian's `noise_fft`
+   (logmexp of the periodogram over (noise_freq, 0.5), all frames, 128-pixel chunks);
 3. streamed randomized SVD of the mean-removed tile (Halko, oversampling 10, 1 power
    iteration, float32 chunks of 4096 frames, BLAS `sgemm`), start rank k=40;
 4. keep component i if lag-1 autocorrelation of V_i > max(4/√T, 0.2); if any of the last
@@ -166,8 +166,8 @@ correlation. `||y_i − mean_i||²` is the `energy` array pass 2 stores per tile
 Cholesky with `pinv` fallback above cond 1e12 (`initc_normal.py`). A as CSR.
 
 **Noise for the spatial penalty.** Minian uses `sn` from the PSD in (noise_freq, 0.5).
-Here `sn := sigma` from pass 2 (white-noise sd per pixel). For white noise the two agree
-to within a few percent; the difference is documented in `report.json`.
+Here `sn := sigma` from pass 2, the same estimate (0.75 x the sd for white noise). A
+median of integer frame differences was quantized on uint8 frames and left pixels at 0.
 
 **Background** (`cnmf.py`). Exact Minian semantics with the clip:
 `b = mean_t clip(Y − A C, 0)`, `f_t = clip(Y_t − A C_t, 0)·b / (b·b)`. Two streamed passes

@@ -42,6 +42,26 @@ def test_compress_tile_single_pixel_tile():
     assert tf.mean.shape == tf.sigma.shape == tf.energy.shape == (1,)
 
 
+def _minian_noise_fft(y: np.ndarray, noise_range: tuple[float, float]) -> np.ndarray:
+    """Minian's ``noise_fft(..., noise_method="logmexp")`` per column, in float64."""
+    T = len(y)
+    nr = np.around(np.array(noise_range) * T).astype(int)
+    px = np.abs(np.fft.rfft(y, axis=0)[nr[0] : nr[1]]) ** 2 / T
+    return np.sqrt(np.exp(np.log(px + np.finfo(np.float32).eps).mean(axis=0)))
+
+
+def test_noise_matches_minian_fft_and_is_not_quantized():
+    rng = np.random.default_rng(1)
+    T, sd = 2001, 0.8
+    raw = np.clip(np.rint(2 + sd * rng.standard_normal((T, 300))), 0, 255).astype(np.uint8)
+    sn = compress.TileMatrix(raw, chunk=512).noise(0.03)
+    assert np.allclose(sn, _minian_noise_fft(raw.astype(np.float64), (0.03, 0.5)), rtol=1e-4)
+    # rounded white noise: the old median |diff| took 2-3 values here, 0 for many pixels
+    assert sn.min() > 0 and np.unique(sn).size == raw.shape[1]
+    sd_q = np.sqrt(sd**2 + 1 / 12)  # Gaussian plus rounding noise
+    assert abs(np.median(sn) / (np.exp(-np.euler_gamma / 2) * sd_q) - 1) < 0.05
+
+
 def test_autocorr_keep():
     T = 1000
     rng = np.random.default_rng(0)

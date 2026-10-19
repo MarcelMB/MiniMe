@@ -36,6 +36,7 @@ def pass2_worker(
             rho_min=params.rank_rho_min,
             z=params.rank_z,
             seed=i,
+            noise_freq=params.noise_freq,
         )
         for i in indices
     ]

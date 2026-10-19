@@ -8,6 +8,7 @@ removed), so the float copy never exceeds ``chunk * P`` values. Every product wi
 from __future__ import annotations
 
 import numpy as np
+import scipy.fft as sfft
 import scipy.linalg as sla
 from scipy.linalg import blas as sblas
 
@@ -15,7 +16,7 @@ from cafast.factors import TileFactors
 
 N_OVERSAMPLES = 10
 MAX_RANK = 100
-NOISE_FRAMES = 512
+NOISE_PX_CHUNK = 128
 ADAPT_MARGIN = 10
 SVD_CHUNK = 4096
 
@@ -74,11 +75,28 @@ class TileMatrix:
             acc += gemm_blas(Xt, np.asfortranarray(Z[c0 : c0 + Xt.shape[1]]), False)
         return acc
 
-    def noise(self) -> np.ndarray:
-        """Per-pixel noise std from the median absolute frame difference."""
-        nf = min(NOISE_FRAMES, self.T - 1)
-        d = np.abs(np.diff(self.raw[: nf + 1].astype(np.float32), axis=0))
-        return 1.4826 * np.median(d, axis=0) / np.sqrt(2.0)
+    def noise(self, noise_freq: float = 0.06) -> np.ndarray:
+        """Per-pixel noise std from the power spectrum above ``noise_freq`` (Minian's sn).
+
+        Minian's ``get_noise_fft`` with ``noise_method="logmexp"``: the square root of the
+        geometric mean of the periodogram ``|rfft(y)|^2 / T`` over bins
+        ``[round(noise_freq T), round(T / 2))``. The geometric mean of white-noise periodogram
+        bins (exponential) is ``exp(-gamma) sigma^2``, so this is ``0.75 sigma`` on white noise;
+        kept unscaled so ``sparse_penal`` means what it does in Minian. Unlike a median of
+        integer frame differences it is not quantized on uint8 frames.
+        """
+        lo, hi = np.around(np.array([noise_freq, 0.5]) * self.T).astype(int)
+        lo = max(lo, 1)
+        if hi <= lo:  # too few frames for a spectrum: fall back to the difference MAD
+            d = np.abs(np.diff(self.raw.astype(np.float32), axis=0))
+            return 1.4826 * np.median(d, axis=0) / np.sqrt(2.0) if len(d) else np.zeros(self.P)
+        eps = np.finfo(np.float32).eps
+        out = np.empty(self.P)
+        for p0 in range(0, self.P, NOISE_PX_CHUNK):
+            x = self.raw[:, p0 : p0 + NOISE_PX_CHUNK].astype(np.float32)
+            psd = np.abs(sfft.rfft(x, axis=0)[lo:hi]) ** 2 / self.T
+            out[p0 : p0 + x.shape[1]] = np.exp(0.5 * np.log(psd + eps).mean(axis=0))
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +156,7 @@ def compress_tile(
     z: float = 4.0,
     seed: int = 0,
     chunk: int = SVD_CHUNK,
+    noise_freq: float = 0.06,
 ) -> TileFactors:
     """(T, th, tw) uint8 -> ``TileFactors``.
 
@@ -146,7 +165,7 @@ def compress_tile(
     If no component passes, keep component 0 only.
     """
     Y = TileMatrix(raw, chunk)
-    sigma = Y.noise()
+    sigma = Y.noise(noise_freq)
     rng = np.random.default_rng(seed)
     k_cap = max(1, min(MAX_RANK, Y.P - 1, Y.T - 1))
     k = min(k0, k_cap)
