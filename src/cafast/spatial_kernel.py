@@ -6,7 +6,8 @@ multiplied by ``T`` and without its constant) is the quadratic program
 
     min_{w >= 0}  f(w) = 1/2 w^T G_s w - b_s^T w + lam_i sum(w)
 
-with ``G = Cc Cc^T`` shared by every pixel, ``b = Cc y_i`` and ``lam_i = T * alpha_i``.
+with ``G = Cc Cc^T`` shared by every pixel, ``b = Cc y_i`` and ``lam_i = T * alpha_i``
+(``update_spatial`` passes ``Cc`` with unit-norm rows, as ``LassoLars(normalize=True)``).
 Each pixel runs cyclic coordinate descent with exact clipped 1-D minimisers and stops on
 a certified duality gap (port of ``bench_spatial/candidates/numba_cd.py``).
 
