@@ -80,9 +80,11 @@ Peak disk = raw size (tile store) + factors (52 MB / 93 MB). Details and per-sta
 
 - Seeds, correlations and the spatial update use the denoised factor reconstruction, not
   the raw movie.
-- Spatial penalty noise: `sn := sigma` (1.4826 x MAD of first differences / sqrt 2). Minian's
-  default `noise_fft(..., "logmexp")` gives 0.75 x sigma for white noise, so our penalty is
-  1.33x Minian's. On the 5-min session scaling `sn` by 0.75 changed no score (F1 0.9527 both).
+- Noise `sigma` (spatial penalty and PNR): Minian's `noise_fft(..., "logmexp")` over
+  (noise_freq, 0.5), computed in pass 2 on the uint8 tile, so it is 0.75 x the white-noise sd.
+  It replaced 1.4826 x MAD of first differences / sqrt 2, which on uint8 tophat frames was
+  quantized (WL25: 0 / 1.05 / 2.10, 10 % of pixels 0 and so unpenalized). PNR divides by
+  `6.18 sigma`, so it reads 1.33x the white-noise-calibrated value (WL25: 1459 -> 1639 seeds).
 - Footprints carry a long tail of tiny weights: median 1029 px > 0 vs Minian 509 px, but
   329 px > 1 % of the maximum in both, and 5.7 % (ours) vs 5.5 % (Minian) of the footprint
   mass lies outside the true 15 x 15 cell patch.
