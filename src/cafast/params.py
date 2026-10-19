@@ -13,12 +13,17 @@ RUN_METADATA_KEYS = frozenset({"raw_dir", "raw_hash", "cafast_version", "fastmin
 
 @dataclass
 class Params:
-    # preprocessing + motion
+    # preprocessing + motion (median_ksize <= 1 / tophat_wnd <= 0 skip that step)
     median_ksize: int = 7
     tophat_wnd: int = 15
     motion_max_shift: int = 20
     motion_down: int = 2
     template_frames: int = 200
+    # estimate motion on band-passed denoised frames (DoG sigmas in px), then warp, then
+    # tophat: the tophat removes the static structure (vessels) that registration needs, and
+    # on real data (WL25) a fixed template on tophat frames went stale (bench/README.md)
+    motion_before_tophat: bool = True
+    motion_bandpass: tuple[float, float] = (1.0, 6.0)
     # tiling + compression
     tile: int = 64
     svd_k0: int = 40
@@ -62,6 +67,8 @@ class Params:
             "motion_max_shift": self.motion_max_shift,
             "motion_down": self.motion_down,
             "template_frames": self.template_frames,
+            "motion_before_tophat": self.motion_before_tophat,
+            "motion_bandpass": self.motion_bandpass,
         }
 
     def to_json(self, path: str | Path) -> None:
@@ -79,6 +86,7 @@ class Params:
         unknown = sorted(set(d) - {f.name for f in fields(cls)})
         if unknown:
             raise ValueError(f"unknown parameter(s) in {path}: {', '.join(unknown)}")
-        if "size_thres" in d:
-            d["size_thres"] = tuple(d["size_thres"])
+        for k in ("size_thres", "motion_bandpass"):
+            if k in d:
+                d[k] = tuple(d[k])
         return cls(**d)
