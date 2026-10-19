@@ -187,9 +187,14 @@ Open: CaFast footprints are larger (median 188 vs 54 px above 10 % of peak, 601 
 a clean reference: extra unit merge, `drop_correlated_pairs`, post-hoc filters, and its
 `motion.zarr` is all NaN.
 
-**Minian v2.0 timing on WL25: not measured yet.** `bench/minian_real.py` (Minian venv) runs
-the WL25 parameter set on `fftonly_proc.avi`, skipping Minian's preprocessing but not motion
-(the file is not motion-corrected; the original WL25 run also entered Minian at
-`estimate_motion`). On a 2000-frame clip, motion through `initC` runs, then Minian's own
-`unit_merge` fails (`KeyError: 'height'` in `centroid`, or unknown dask chunk sizes when
-saving the merged `A`).
+**Minian v2.0 timing on WL25** (`bench/minian_real.py`, Minian venv, 4 workers x 2 threads):
+378 s for the 39,822 frames (+ about 25 s of `minizero_preprocess` for its input), 165 units,
+12.4 GB peak disk; cafast on the destriped video: 49 s. Minian skips its own preprocessing
+but runs motion (the input is not motion-corrected; the original WL25 run also entered at
+`estimate_motion`). Its last stages overlapped a cafast run, so 378 s is slightly high. Two
+fixes were needed: the merge results are saved under new names (`save_minian(overwrite=True)`
+deleted `A_init` / `C_init` while they were still being read), and Minian's `LassoLars` gets
+the unit-norm column scaling that scikit-learn < 1.2 applied by default (a local change in
+`minian_v2.0/minian/cnmf.py`, uncommitted there). After the same fix in cafast (`61a63ce`):
+footprints 67 vs 51 px above 10 % of peak, 110 of 165 Minian units matched, trace corr
+median 0.83.

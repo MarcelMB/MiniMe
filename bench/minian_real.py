@@ -129,9 +129,11 @@ def run(video: Path, prm: dict, out: Path, n_workers: int, mem_limit: str, tm: T
 
         def _merge(A, C, thres: float, tag: str) -> tuple:
             A, C = unit_merge(A, C, thres_corr=thres)[:2]
-            A, C = save(A, f"A_{tag}"), save(C, f"C_{tag}")
+            # "mrg_" keeps these off the stores A and C are lazily read from (A_init, C_init):
+            # save_minian(overwrite=True) deletes its target before computing into it
+            A, C = save(A, f"A_mrg_{tag}"), save(C, f"C_mrg_{tag}")
             fc = {"unit_id": -1, "frame": chk["frame"]}
-            return A, C, save(C, f"C_chk_{tag}", mem_limit=mem, chunks=fc)
+            return A, C, save(C, f"C_chk_mrg_{tag}", mem_limit=mem, chunks=fc)
 
         init_thres = prm["init_merge"]["thres_corr"]
         A, C, C_chk = tm("unit_merge_init", lambda: _merge(A, C, init_thres, "init"))
