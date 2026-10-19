@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any
 
 # keys a run's params.json carries besides the parameters; ignored when it is read back
-RUN_METADATA_KEYS = frozenset({"raw_dir", "raw_hash", "cafast_version", "fastminian_version"})
+RUN_METADATA_KEYS = frozenset(
+    {"raw_dir", "raw_hash", "cafast_version", "fastminian_version", "source_run"}
+)
 
 
 @dataclass
@@ -75,18 +77,26 @@ class Params:
         Path(path).write_text(json.dumps(self.asdict(), indent=1))
 
     @classmethod
-    def from_json(cls, path: str | Path) -> Params:
+    def from_json(cls, path: str | Path, base: Params | None = None) -> Params:
         """Parameters from a JSON file: a partial set, or a run's ``params.json``.
 
+        Keys the file leaves out come from ``base`` (default: the built-in defaults).
         Run metadata (``RUN_METADATA_KEYS``) is ignored; any other unknown key raises.
         """
-        d = dict(json.loads(Path(path).read_text()))
+        return cls.from_dict(json.loads(Path(path).read_text()), base, source=str(path))
+
+    @classmethod
+    def from_dict(
+        cls, d: dict[str, Any], base: Params | None = None, source: str = "params"
+    ) -> Params:
+        """Like ``from_json`` for an already parsed mapping."""
+        d = dict(d)
         for k in RUN_METADATA_KEYS:
             d.pop(k, None)
         unknown = sorted(set(d) - {f.name for f in fields(cls)})
         if unknown:
-            raise ValueError(f"unknown parameter(s) in {path}: {', '.join(unknown)}")
+            raise ValueError(f"unknown parameter(s) in {source}: {', '.join(unknown)}")
         for k in ("size_thres", "motion_bandpass"):
             if k in d:
                 d[k] = tuple(d[k])
-        return cls(**d)
+        return cls(**{**(base.asdict() if base is not None else {}), **d})
