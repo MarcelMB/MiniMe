@@ -47,8 +47,12 @@ A run's own `params.json` can be passed back to `--params` to reproduce it (its 
 `raw_hash` and `cafast_version` entries are ignored; `--workers` still overrides).
 
 Defaults that differ from the Minian notebook, with the measurement behind each, are in
-`bench/README.md`. The only one changed so far: `gmm_refine` is off (Minian's reference run
-also skipped it). All defaults were checked on synthetic data only.
+`bench/README.md`. Changed so far: `gmm_refine` is off (Minian's reference run also skipped
+it), and `motion_before_tophat` is on: shifts are estimated on a band-passed copy of the
+denoised frame, then the frame is warped and tophat-filtered (on a real session the tophat
+removed the vessels registration needs). Other defaults were checked on synthetic data only.
+
+`median_ksize: 1` / `tophat_wnd: 0` skip that step, for input preprocessed upstream.
 
 ## Results (synthetic, 600 x 600 px, 421 true cells, M1 Max)
 
@@ -70,7 +74,7 @@ Peak disk = raw size (tile store) + factors (52 MB / 93 MB). Details and per-sta
 
 - Temporal update (OASIS deconvolution). `C` is the clipped residual trace (`YrA`) instead.
 - `ks_refine` (dropped), non-rigid motion, browser UI, PyPI packaging.
-- Real-data parameter tuning. No real session has been run yet (scheduled separately).
+- Real-data parameter tuning. One real session run so far (WL25, `bench/README.md`).
 
 ## Known differences from Minian
 

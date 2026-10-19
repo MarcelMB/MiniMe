@@ -21,6 +21,7 @@ from cafast.tiles import Tile, TileStore, pack_tiles, tile_offsets
 STAGES = (
     "read_avi",
     "denoise",
+    "bandpass",
     "tophat",
     "motion_estimate",
     "motion_apply",
@@ -53,11 +54,19 @@ def seed_block_edges(T: int, wnd_size: int, stp_size: int) -> np.ndarray:
     return np.array(sorted(edges), dtype=np.int64)
 
 
+def registration_image(denoised: np.ndarray, params: Params) -> np.ndarray:
+    """The frames motion is estimated on: band-passed (before the tophat) or tophat-filtered."""
+    if params.motion_before_tophat:
+        return preprocess.bandpass(denoised, *params.motion_bandpass)
+    return preprocess.tophat(denoised, params.tophat_wnd)
+
+
 def build_template(info: RawInfo, params: Params) -> Template:
     """Motion template from the first ``template_frames`` frames of segment 0."""
     frames = read_avi(info.segments[0], max_frames=params.template_frames, bgr=info.bgr)
-    pre = preprocess.preprocess(frames, params.median_ksize, params.tophat_wnd)
-    return motion.make_template(pre, params.motion_down, params.motion_max_shift)
+    den = preprocess.denoise(frames, params.median_ksize)
+    reg = registration_image(den, params)
+    return motion.make_template(reg, params.motion_down, params.motion_max_shift)
 
 
 # ---------------------------------------------------------------------------
@@ -113,13 +122,20 @@ class Pass1:
         out = np.empty_like(frames)
         for b0 in range(0, frames.shape[0], p.sub_batch):
             blk = frames[b0 : b0 + p.sub_batch]
-            t0 = time.perf_counter()
+            t = time.perf_counter()
+
+            def lap(stage: str) -> None:
+                nonlocal t
+                now = time.perf_counter()
+                s[stage] += now - t
+                t = now
+
             blk = preprocess.denoise(blk, p.median_ksize)
-            t1 = time.perf_counter()
-            blk = preprocess.tophat(blk, p.tophat_wnd)
-            t2 = time.perf_counter()
+            lap("denoise")
+            reg = registration_image(blk, p)
+            lap("bandpass" if p.motion_before_tophat else "tophat")
             if self.given_shifts is None:
-                sh = motion.estimate(blk, self.template, p.motion_max_shift)
+                sh = motion.estimate(reg, self.template, p.motion_max_shift)
             else:
                 a = self.t_start + self.frames + b0
                 sh = self.given_shifts[a : a + blk.shape[0]]
@@ -128,20 +144,23 @@ class Pass1:
                         f"frames {a}..{a + blk.shape[0]} decoded, but only "
                         f"{self.given_shifts.shape[0]} shifts given"
                     )
-            t3 = time.perf_counter()
-            blk = motion.apply_shifts(blk, sh)
-            t4 = time.perf_counter()
+            lap("motion_estimate")
+            if p.motion_before_tophat:
+                blk = motion.apply_shifts(blk, sh)
+                reg = motion.apply_shifts(reg, sh)
+                lap("motion_apply")
+                blk = preprocess.tophat(blk, p.tophat_wnd)
+                lap("tophat")
+            else:
+                blk = reg = motion.apply_shifts(reg, sh)
+                lap("motion_apply")
             np.maximum(self.max_proj, blk.max(axis=0), out=self.max_proj)
-            t5 = time.perf_counter()
+            lap("max_proj")
             self._update_block_max(blk, self.t_start + self.frames + b0)
-            t6 = time.perf_counter()
-            self.quality.append(motion.frame_quality(blk, self.template))
+            lap("block_max")
+            self.quality.append(motion.frame_quality(reg, self.template))
             out[b0 : b0 + blk.shape[0]] = blk
             self.shifts.append(sh.astype(np.float32))
-            stages = ("denoise", "tophat", "motion_estimate", "motion_apply", "max_proj")
-            for k, dt in zip(stages, (t1 - t0, t2 - t1, t3 - t2, t4 - t3, t5 - t4), strict=True):
-                s[k] += dt
-            s["block_max"] += t6 - t5
         t0 = time.perf_counter()
         packed = pack_tiles(out, self.grid)
         s["pack"] += time.perf_counter() - t0

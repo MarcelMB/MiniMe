@@ -35,6 +35,8 @@ def test_params_json_roundtrip(tmp_path):
         "motion_max_shift",
         "motion_down",
         "template_frames",
+        "motion_before_tophat",
+        "motion_bandpass",
     }
     assert p.asdict()["tile"] == 32
 
@@ -56,6 +58,7 @@ def test_pass1_single_and_parallel_agree(tiny_session, tmp_path):
     assert set(r1.seconds) == {
         "read_avi",
         "denoise",
+        "bandpass",
         "tophat",
         "motion_estimate",
         "motion_apply",
@@ -72,6 +75,37 @@ def test_pass1_single_and_parallel_agree(tiny_session, tmp_path):
     for bi in range(len(e) - 1):
         assert np.array_equal(r2.block_max[bi, :32, :32], full[e[bi] : e[bi + 1]].max(0))
     assert np.array_equal(r1.max_proj[:32, :32], full.max(0))
+
+
+@pytest.mark.parametrize("before", [True, False])
+def test_pass1_shifts_match_truth_in_both_orders(tmp_path, before):
+    """Motion estimated before the tophat (band-passed frames) or after it (old order).
+
+    128 x 128 px: at 64 x 64 neither order registers the synthetic movie (3.8 / 5.8 px).
+    """
+    from cafast.testing import synth
+
+    raw = tmp_path / "raw"
+    synth.write_session(raw, minutes=300 / 30 / 60, fps=30, segment=150, seed=0, side=128)
+    info = io.probe(raw)
+    p = Params(seeds_wnd=100, seeds_stp=50, template_frames=200, motion_before_tophat=before)
+    q = Params.from_json(_write(tmp_path / "p.json", p))
+    assert q.motion_bandpass == (1.0, 6.0) and isinstance(q.motion_bandpass, tuple)
+    grid = tiles.tile_grid(128, 128, 64)
+    store = tiles.TileStore(tmp_path / "s", grid, pass1.n_parts_for(info, 1))
+    r = pass1.run_pass1(info, store, pass1.build_template(info, p), p, 1)
+    true = synth.synth_setup(128, 128, 300, 0).shifts.astype(float)
+    rmse = []
+    for sign in (-1, 1):
+        d = r.shifts - sign * true
+        rmse.append(np.sqrt(((d - d.mean(0)) ** 2).sum(1).mean()))
+    assert min(rmse) < 0.5, rmse
+    assert r.quality.min() > 0.3
+
+
+def _write(path, p: Params):
+    p.to_json(path)
+    return path
 
 
 def test_pass1_ragged_last_segment(tmp_path):

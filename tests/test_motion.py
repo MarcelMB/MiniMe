@@ -22,6 +22,62 @@ def test_tophat_square_matches_cv2():
     assert np.array_equal(out[1], cv2.morphologyEx(f[1], cv2.MORPH_TOPHAT, k))
 
 
+def test_preprocess_steps_can_be_skipped():
+    """``ksize <= 1`` / ``wnd <= 0`` skip a step: input that was preprocessed upstream."""
+    f = synth.synth_movie(64, 64, 3, 0)
+    assert np.array_equal(preprocess.denoise(f, 1), f)
+    assert np.array_equal(preprocess.tophat(f, 0), f)
+    assert np.array_equal(preprocess.preprocess(f, 1, 0), f)
+    assert np.array_equal(preprocess.preprocess(f, 1, 15), preprocess.tophat(f, 15))
+
+
+def _vessels_and_flicker(T: int = 400, side: int = 128, seed: int = 0):
+    """Static vessel texture + vignetting + sparse flickering cells, rigidly shifted."""
+    import cv2
+
+    rng = np.random.default_rng(seed)
+    pad = side + 40
+    tex = cv2.GaussianBlur(rng.normal(0, 1, (pad, pad)).astype(np.float32), (0, 0), 2.5)
+    tex = 25 * tex / tex.std()
+    yy, xx = np.mgrid[:pad, :pad] - pad / 2
+    vignette = 80 * np.exp(-(yy**2 + xx**2) / (2 * (pad / 3) ** 2))
+    cells = rng.integers(10, pad - 10, (60, 2))
+    blob = np.exp(-(np.arange(-7, 8)[:, None] ** 2 + np.arange(-7, 8)[None] ** 2) / 8.0)
+    shifts = np.cumsum(rng.normal(0, 0.7, (T, 2)), axis=0).clip(-8, 8)
+    movie = np.empty((T, side, side), np.uint8)
+    for t in range(T):
+        f = 40 + vignette + tex
+        for cy, cx in cells[rng.random(len(cells)) < 0.1]:
+            f[cy - 7 : cy + 8, cx - 7 : cx + 8] += 90 * blob
+        m = np.array([[1, 0, 20 + shifts[t, 1]], [0, 1, 20 + shifts[t, 0]]], np.float32)
+        f = cv2.warpAffine(f.astype(np.float32), m, (side, side), flags=cv2.WARP_INVERSE_MAP)
+        movie[t] = np.clip(f + rng.normal(0, 4, f.shape), 0, 255)
+    return movie, shifts
+
+
+def test_bandpassed_registration_tracks_static_structure():
+    movie, true = _vessels_and_flicker()
+    den = preprocess.denoise(movie, 3)
+    reg = preprocess.bandpass(den, 1.0, 6.0)
+    assert reg.dtype == np.float32 and reg.shape == movie.shape
+    tmpl = motion.make_template(reg[:200], down=2)
+    assert _aligned_rmse(motion.estimate(reg, tmpl), true) < 0.5
+
+
+def test_bandpass_close_to_exact_dog():
+    import cv2
+
+    den = preprocess.denoise(synth.synth_movie(128, 128, 5, 0), 7)
+    exact = np.stack(
+        [
+            cv2.GaussianBlur(x, (0, 0), 1.0) - cv2.GaussianBlur(x, (0, 0), 6.0)
+            for x in den.astype(np.float32)
+        ]
+    )
+    fast = preprocess.bandpass(den, 1.0, 6.0)
+    assert np.corrcoef(exact.ravel(), fast.ravel())[0, 1] > 0.98  # 0.989 here, 0.993 at 600 px
+
+
 def test_motion_estimate_accuracy():
     h, w, T = 256, 256, 300  # at 128x128 the faithful port gives ~0.29 px (small FOV)
     movie = synth.synth_movie(h, w, T, 0)

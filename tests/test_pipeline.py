@@ -26,6 +26,9 @@ def test_pipeline_end_to_end_tiny(tiny_session):
         dl_wnd=5,
         size_thres=(9, None),
         svd_k0=16,
+        # 64 x 64 px is too small to register the toy movie in either order (3.8 px old,
+        # 5.8 px band-passed; test_pass1_shifts_match_truth_in_both_orders uses 128 x 128)
+        motion_before_tophat=False,
     )
     out = pipeline.run(tiny_session["raw_dir"], p, run_name="t", workers=2)
     assert out == tiny_session["raw_dir"].parent / "processed" / "t"
