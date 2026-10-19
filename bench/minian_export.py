@@ -11,6 +11,10 @@ in (height, width) order. Optional extra arguments ``A_NAME C_NAME`` export anot
 intermediates (e.g. ``A C``) to ``minian_units_<A_NAME>.npz``; a third ``A_DIR`` reads
 ``A_NAME.zarr`` from that directory instead of ``minian_intermediate`` (``consolidated=False``
 because rechunker leaves stale consolidated metadata behind).
+
+``--final MINIAN_DIR [OUT_NPZ]`` exports a finished Minian output folder (``A.zarr``,
+``C.zarr``, ``max_proj.zarr``) to ``A, C, max_proj`` for ``bench/compare_minian.py``
+(default ``MINIAN_DIR/../minian_final.npz``).
 """
 
 from __future__ import annotations
@@ -52,7 +56,28 @@ def export(
     return out
 
 
+def export_final(minian_dir: Path, out: Path | None = None) -> Path:
+    """``A (K, H*W)``, ``C (K, T)``, ``max_proj (H, W)`` of a finished Minian output folder."""
+
+    def var(name: str) -> xr.DataArray:
+        return xr.open_zarr(minian_dir / f"{name}.zarr", consolidated=False)[name]
+
+    A = var("A").transpose("unit_id", "height", "width")
+    K, h, w = A.shape
+    out = out or minian_dir.parent / "minian_final.npz"
+    np.savez(
+        out,
+        A=A.values.reshape(K, h * w).astype(np.float32),
+        C=var("C").transpose("unit_id", "frame").values.astype(np.float32),
+        max_proj=var("max_proj").transpose("height", "width").values.astype(np.float32),
+    )
+    return out
+
+
 if __name__ == "__main__":
+    if sys.argv[1] == "--final":
+        print(export_final(Path(sys.argv[2]), Path(sys.argv[3]) if len(sys.argv) > 3 else None))
+        sys.exit()
     # optional: A_NAME C_NAME [A_DIR]; A_DIR holds a re-computed A_new.zarr (see README)
     names = sys.argv[2:4]
     a_dir = Path(sys.argv[4]) if len(sys.argv) > 4 else None

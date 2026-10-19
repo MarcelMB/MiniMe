@@ -154,3 +154,42 @@ Checked and left unchanged (measured on the 5-min factors):
 Real-data smoke run (WL25): not part of this result set; scheduled separately. Pass 1 used
 to hold a whole segment ~3x in memory per worker (6.5 GB worker RSS for a 1.6 GB single-file
 AVI); workers now stream 1000-frame batches (not yet measured on WL25).
+
+## Real session WL25_20251204 (2026-10-19): motion before tophat
+
+200 x 200 px, 39,822 frames, 20 Hz. Inputs (read-only): `WL25_20251204_destriped.avi` (Fiji
+FFT destripe, pal8 rawvideo) and the existing Minian input `..._fftonly_proc.avi` (destripe +
+`minizero_preprocess.py`: min-projection subtraction, gaussian 0.6, tophat r 8, gain 2.5).
+Run folder: `~/minian_testing_local/WL25_20251204/` (see its README).
+
+**Motion after the tophat fails on real data.** The tophat (and min-projection subtraction)
+removes the static structure (vessels) that registration locks onto; what is left is sparse
+flickering cells and a fixed template goes stale over 33 min (quality 0.49 -> 0.21).
+
+| registration image, session-start template | jumps >= 3 px | frames at +-19 px |
+|---|---|---|
+| `fftonly_proc` (tophat before motion, old cafast order) | 4305 | 2364 |
+| `minizero_preprocess` without tophat (min-proj subtracted) | 2114 | 1423 |
+| destriped, band-pass 1-6 px (`motion_before_tophat`, new default) | 5 | 0 |
+
+Default changed: `motion_before_tophat = True` (median -> shifts on a band-passed copy ->
+warp -> tophat). Synthetic 5 min: F1 0.954, trace corr 0.995 (was 0.953 / 0.995); wall
+43.4 -> 49.6 s (band-pass 10 CPU-s, extra warp of the registration image for the quality
+score). The tiny 64 x 64 session cannot be registered in either order (3.8 / 5.8 px); its
+end-to-end test keeps the old order.
+
+**vs the existing Minian run** (`bench/compare_minian.py`, params `params_wl25_destriped.json`:
+Minian's WL25 set, `median_ksize 3`, `tophat_wnd 8`, `seeds_diff_thres 8` for gain 1, no
+upper size limit): CaFast 132 units / Minian 158, 115 matched (73 % of Minian, 87 % of
+CaFast), trace corr median 0.80 (CaFast `YrA` vs Minian `C`, neither deconvolved), 49 s.
+Open: CaFast footprints are larger (median 188 vs 54 px above 10 % of peak, 601 vs 67 above
+1 %), so Minian's `size_thres` upper limit 250 drops every CaFast unit. Minian's run is not
+a clean reference: extra unit merge, `drop_correlated_pairs`, post-hoc filters, and its
+`motion.zarr` is all NaN.
+
+**Minian v2.0 timing on WL25: not measured yet.** `bench/minian_real.py` (Minian venv) runs
+the WL25 parameter set on `fftonly_proc.avi`, skipping Minian's preprocessing but not motion
+(the file is not motion-corrected; the original WL25 run also entered Minian at
+`estimate_motion`). On a 2000-frame clip, motion through `initC` runs, then Minian's own
+`unit_merge` fails (`KeyError: 'height'` in `centroid`, or unknown dask chunk sizes when
+saving the merged `A`).
