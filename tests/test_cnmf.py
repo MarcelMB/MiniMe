@@ -137,6 +137,42 @@ def test_update_spatial_shrinks_outside_cells_and_keeps_units():
     assert nf.shape == (A2.shape[0],) and (nf > 0).all()
 
 
+def test_update_spatial_matches_normalized_lassolars():
+    """Per pixel, the optimum of Minian's LassoLars as tuned (scikit-learn < 1.2).
+
+    There ``LassoLars`` defaulted to ``normalize=True``: each centred column of ``C^T``
+    is scaled to unit L2 norm before the fit, which makes the penalty ``||Cc_k||`` times
+    stronger than an unscaled fit.
+    """
+    from sklearn.linear_model import LassoLars
+
+    f, fc, A, C = _setup()
+    sn = f.sigma_flat()
+    sp, dl = 0.01, 5
+    A2, mask, nf = cnmf.update_spatial(f, A, C, sn, dl, sp, (None, None))
+    got = np.zeros((A.shape[0], f.P))
+    got[np.flatnonzero(mask)] = (sps.diags(nf.astype(np.float64)) @ A2).toarray()
+    Y = _dense(f)
+    sub = cnmf.dilate_footprints(A, f.H, f.W_, dl).toarray()
+    rng = np.random.default_rng(0)
+    pixels = rng.choice(np.flatnonzero(sub.any(0)), 40, replace=False)
+    same = 0
+    for i in pixels:
+        s = np.flatnonzero(sub[:, i])
+        X = C[s].T.astype(np.float64)
+        Xc, yc = X - X.mean(0), Y[i] - Y[i].mean()
+        scale = np.linalg.norm(Xc, axis=0)
+        ref = LassoLars(alpha=sp * sn[i], positive=True).fit(X / scale, Y[i]).coef_ / scale
+
+        def obj(w, Xc=Xc, yc=yc, scale=scale, alpha=sp * sn[i]):
+            return 0.5 * np.sum((yc - Xc @ w) ** 2) / f.T + alpha * np.sum(scale * w)
+
+        # LARS can stop short of the optimum; the NNQP optimum is never worse
+        assert obj(got[s, i]) <= obj(ref) * (1 + 1e-7)
+        same += np.allclose(got[s, i], ref, rtol=1e-3, atol=1e-5 * got.max())
+    assert same >= 0.9 * pixels.size
+
+
 def test_update_spatial_size_filter_is_strict():
     f, fc, A, C = _setup()
     sn = f.sigma_flat()

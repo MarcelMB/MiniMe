@@ -4,8 +4,10 @@ Every stage reads the movie only through ``Factors`` (``YCt``, ``AtY``,
 ``reconstruct_chunk``); nothing the size of the movie is held or written.
 
 * ``update_spatial``: Minian ``update_spatial`` with the per-pixel LassoLars replaced by
-  the Gram-shared NNQP solver of ``spatial_kernel`` (same objective, true optimum), then
-  Minian's post-processing (strict ``size_thres``, divide by the footprint maximum).
+  the Gram-shared NNQP solver of ``spatial_kernel`` (same objective, true optimum, on unit-norm
+  traces as ``LassoLars(normalize=True)`` in the scikit-learn Minian pins; see
+  ``column_norms``), then Minian's post-processing (strict ``size_thres``, divide by the
+  footprint maximum).
 * ``update_background``: Minian's ``b = mean_t clip(Y - A C, 0)``,
   ``f_t = clip(Y_t - A C_t, 0) . b / (b . b)``, streamed over reconstructed tile chunks
   (``bench_passes/candidates/bg_streamed.py``).
@@ -72,6 +74,20 @@ def _size_mask(nnz: np.ndarray, size_thres: tuple[float | None, float | None]) -
     return mask
 
 
+def column_norms(Cc: np.ndarray) -> np.ndarray:
+    """(K,) L2 norms of the centred traces ``Cc`` (zero norms become 1).
+
+    Minian was tuned on scikit-learn < 1.2 (it pins 0.22.1), where ``LassoLars`` defaulted
+    to ``normalize=True``: the fit ran on the columns of ``C^T`` scaled to unit norm and the
+    coefficients were scaled back. The penalty on ``a_k`` is then ``||Cc_k||`` (about
+    ``sqrt(T) std(C_k)``, ~350 on a 40k-frame session) times stronger than in an unscaled
+    fit; without it ``sparse_penal`` is negligible and footprints fill the dilated support.
+    """
+    norms = np.linalg.norm(Cc, axis=1)
+    norms[norms == 0] = 1.0
+    return norms
+
+
 def update_spatial(
     f: Factors,
     A: sps.csr_matrix,
@@ -97,10 +113,12 @@ def update_spatial(
 
     Cc = np.asarray(C, dtype=np.float64)
     Cc = Cc - Cc.mean(axis=1, keepdims=True)
+    scale = column_norms(Cc)
+    Cc /= scale[:, None]
     G = Cc @ Cc.T
     B = f.YCt(Cc)[active].astype(np.float64)
     lam = f.T * sparse_penal * np.asarray(sn, dtype=np.float64)[active]
-    values = solve_nnqp(G, B, lam, indptr, indices)
+    values = solve_nnqp(G, B, lam, indptr, indices) / scale[indices]
 
     pix = np.repeat(active, counts[active])
     A_new = sps.csr_matrix((values, (indices, pix)), shape=(K, f.P), dtype=np.float64)
