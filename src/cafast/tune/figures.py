@@ -29,6 +29,14 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
 from cafast import window2
+from cafast.autotune.score import (
+    SIZE_FRAC,  # noqa: F401 - kept importable from here
+    n_parts,
+    size_above,
+    trace_pnr,
+)
+from cafast.autotune.score import footprint_image as _image
+from cafast.autotune.score import peak_mask as _mask
 from cafast.factors import Factors
 from cafast.init import centroids
 from cafast.motion import ARRAY_FILE
@@ -41,7 +49,6 @@ CAFAST, MINIAN, FRAG = "#2a78d6", "#eb6834", "#e0245e"  # blue, orange, red
 INK, MUTED = "#1f1f1e", "#6b6a64"
 SEED_COLORS = {"kept": "#4cc9f0", "dropped": "#f72585"}
 OUTLINE_LEVEL = 0.3  # outline at 30 % of each footprint's peak
-SIZE_FRAC = 0.1  # footprint size = pixels above 10 % of peak
 DPI = 110
 
 # ---------------------------------------------------------------------------
@@ -102,39 +109,6 @@ def load_run(d: Path) -> RunData:
 # ---------------------------------------------------------------------------
 
 
-def _row_of_entries(A: sps.csr_matrix) -> np.ndarray:
-    return np.repeat(np.arange(A.shape[0]), np.diff(A.indptr))
-
-
-def size_above(A: sps.csr_matrix, frac: float = SIZE_FRAC) -> np.ndarray:
-    """(K,) pixels of each footprint above ``frac`` of its own maximum."""
-    A = sps.csr_matrix(A)
-    if A.shape[0] == 0:
-        return np.zeros(0, np.int64)
-    peak = A.max(axis=1).toarray().ravel()
-    row = _row_of_entries(A)
-    keep = A.data > frac * peak[row]
-    return np.bincount(row[keep], minlength=A.shape[0])
-
-
-def _image(A: sps.csr_matrix, k: int, H: int, W: int) -> np.ndarray:
-    return np.asarray(A[k].toarray(), np.float32).reshape(H, W)
-
-
-def _mask(img: np.ndarray, frac: float) -> np.ndarray:
-    peak = img.max()
-    return ((img > frac * peak) & (peak > 0)).astype(np.uint8)
-
-
-def n_parts(A: sps.csr_matrix, H: int, W: int, frac: float = SIZE_FRAC) -> np.ndarray:
-    """(K,) connected pieces (8-connected) of each footprint above ``frac`` of its peak."""
-    A = sps.csr_matrix(A)
-    out = np.zeros(A.shape[0], np.int64)
-    for k in range(A.shape[0]):
-        out[k] = cv2.connectedComponents(_mask(_image(A, k, H, W), frac), connectivity=8)[0] - 1
-    return out
-
-
 def outlines(
     A: sps.csr_matrix, H: int, W: int, level: float = OUTLINE_LEVEL
 ) -> list[list[np.ndarray]]:
@@ -156,16 +130,6 @@ def shift_rows(A: sps.csr_matrix, H: int, W: int, off: np.ndarray) -> sps.csr_ma
     r, c = A.col // W + dy, A.col % W + dx
     ok = (r >= 0) & (r < H) & (c >= 0) & (c < W)
     return sps.csr_matrix((A.data[ok], (A.row[ok], (r * W + c)[ok])), shape=A.shape)
-
-
-def trace_pnr(C: np.ndarray) -> np.ndarray:
-    """(K,) peak-to-noise of traces: (99.9th - 0.1th percentile) / noise std from diffs."""
-    if C.shape[0] == 0:
-        return np.zeros(0)
-    lo, hi = np.percentile(C, [0.1, 99.9], axis=1)
-    noise = np.median(np.abs(np.diff(C, axis=1)), axis=1) / 0.6745 / np.sqrt(2)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        return np.where(noise > 0, (hi - lo) / noise, np.inf)
 
 
 def unit_table(run: RunData, mn: MinianOverlay | None) -> pd.DataFrame:
