@@ -137,14 +137,13 @@ def _filter(df: pd.DataFrame, col: str) -> pd.DataFrame:
     return df[df[col].to_numpy(bool)].reset_index(drop=True)
 
 
-def _seeds(
+def seeds_unmerged(
     fac: Factors,
-    fc: corr.FactorCorr,
     params: Params,
     timer: StageTimer,
     stages: dict[str, pd.DataFrame] | None = None,
 ) -> pd.DataFrame:
-    """Seeds after init, PNR, GMM (opt-in) and merge; ``stages`` collects each stage's table.
+    """Seeds after init, PNR and GMM (opt-in), before the merge; ``stages`` collects each table.
 
     ``stages["seeds_pnr"]`` holds every initial seed with its ``pnr`` and ``mask_pnr``.
     """
@@ -171,14 +170,28 @@ def _seeds(
             s = _filter(seeds.gmm_refine(fac, s), "mask_gmm")
         st["seeds_gmm"] = s
     n["seeds_gmm"] = len(s)  # equals seeds_pnr when gmm_refine is off
-    with timer("seeds_merge"):
-        s = _filter(corr.seeds_merge(fc, s, fac.max_proj, p.merge_dist, p.merge_corr), "mask_mrg")
-    n["seeds_merged"] = len(s)
-    st["seeds_merged"] = s
     return s
 
 
-def _init_units(
+def seeds_merged(
+    fac: Factors,
+    fc: corr.FactorCorr,
+    s: pd.DataFrame,
+    params: Params,
+    timer: StageTimer,
+    stages: dict[str, pd.DataFrame] | None = None,
+) -> pd.DataFrame:
+    """The seed merge on ``s`` (left unchanged, so a cached ``seeds_unmerged`` can be reused)."""
+    p = params
+    with timer("seeds_merge"):
+        s = _filter(corr.seeds_merge(fc, s, fac.max_proj, p.merge_dist, p.merge_corr), "mask_mrg")
+    timer.counts["seeds_merged"] = len(s)
+    if stages is not None:
+        stages["seeds_merged"] = s
+    return s
+
+
+def init_units(
     fac: Factors,
     fc: corr.FactorCorr,
     s: pd.DataFrame,
@@ -186,6 +199,7 @@ def _init_units(
     timer: StageTimer,
     footprints: dict[str, sps.csr_matrix] | None = None,
 ) -> tuple[sps.csr_matrix, np.ndarray]:
+    """initA, initC and the initial unit merge on the merged seeds ``s``."""
     fp = {} if footprints is None else footprints
     with timer("initA"):
         A = init.initA(fc, s, params.inita_corr, params.inita_wnd)
@@ -218,8 +232,8 @@ def run_window2(
             fc = corr.FactorCorr(fac, params.noise_freq)
     st: dict[str, pd.DataFrame] = {}
     fp: dict[str, sps.csr_matrix] = {}
-    s = _seeds(fac, fc, params, timer, st)
-    A, C = _init_units(fac, fc, s, params, timer, fp)
+    s = seeds_merged(fac, fc, seeds_unmerged(fac, params, timer, st), params, timer, st)
+    A, C = init_units(fac, fc, s, params, timer, fp)
     with timer("cnmf"):
         res = run_cnmf(fac, A, C, params, fc.traces_corr, record=fp.__setitem__)
     timer.counts.update(res.counts)

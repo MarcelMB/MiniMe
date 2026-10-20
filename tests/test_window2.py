@@ -116,3 +116,22 @@ def test_cli_cnmf_reports_refused_params(tiny_run, tmp_path):
     res = CliRunner().invoke(cli.app, ["cnmf", str(tiny_run), "--params", str(tmp_path / "p.json")])
     assert res.exit_code != 0
     assert "tophat_wnd" in res.output
+
+
+def test_split_seed_stages_match_run_window2(tiny_run):
+    from cafast import corr, pipeline
+    from cafast.report import StageTimer
+
+    fac = window2.load_factors(tiny_run)
+    prm = window2.run_params(tiny_run)
+    fc = corr.FactorCorr(fac, prm.noise_freq)
+    w2 = pipeline.run_window2(fac, prm, StageTimer(), fc)
+    timer = StageTimer()
+    s_pnr = pipeline.seeds_unmerged(fac, prm, timer)
+    before = s_pnr.copy()
+    s = pipeline.seeds_merged(fac, fc, s_pnr, prm, timer)
+    pd.testing.assert_frame_equal(s, w2.seeds["seeds_merged"])
+    pd.testing.assert_frame_equal(s_pnr, before)  # the cached input is not modified
+    A, C = pipeline.init_units(fac, fc, s, prm, timer)
+    assert np.array_equal(A.toarray(), w2.footprints["init_merge"].toarray())
+    assert timer.counts["seeds_merged"] == len(s)
