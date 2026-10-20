@@ -69,6 +69,14 @@ unit's footprint and trace. *Save params* writes the full set to `RUN_DIR/tune/F
 the first 300 frames for `median_ksize`, `tophat_wnd`, `motion_bandpass` (these need a full
 `cafast run`).
 
+### Auto-tune
+
+`cafast autotune RUN_DIR --diameter D` (or "Propose parameters" on `cafast tune`) sweeps the
+window-2 parameters stage by stage (~5 min on a 30-min session), scores each setting with
+label-free unit checks (trace PNR, one piece, cell size from D, no duplicates; score = good -
+flagged) and writes the proposal to `RUN_DIR/reruns/auto/` with `sweep.csv` (the map),
+`unit_flags.csv` and `autotune.json`. D is the cell diameter in px of the factor frame.
+
 ## Parameters
 
 `src/cafast/params.py` holds every parameter with its default (Minian notebook values).
