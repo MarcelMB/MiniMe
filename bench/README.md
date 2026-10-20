@@ -199,6 +199,47 @@ the unit-norm column scaling that scikit-learn < 1.2 applied by default (a local
 footprints 67 vs 51 px above 10 % of peak, 110 of 165 Minian units matched, trace corr
 median 0.83.
 
+## Second CNMF iteration: n_iter 1 vs 2 (2026-10-19, commit d616477)
+
+`bench/compare_iters.py RUN_A RUN_B [--out FILE.json]` matches the units of two runs by
+centroid (`score.match_units`, 5 px) and reports footprint IoU (pixels above 10 % of peak),
+Pearson correlation of matched `C` and `YrA`, cnmf seconds, unit counts and, on synthetic
+sessions, both scores. It splits pairs by whether RUN_A's unit came out of RUN_A's last
+merge (row maximum < 1), and the others by whether they overlap such a unit. Runs:
+`processed/cafast_iter{1,2,3}` of each session (WL27 params of `cafast_v1`, synth defaults;
+n_iter 3 on WL27 only), motion sidecar reused, 6 workers. Factors and all pre-CNMF
+counts are identical between the two runs.
+
+| session | cnmf s (1 / 2) | units (1 / 2) | matched | footprint IoU median (q05) | `YrA` corr median (q05) | `C` corr median (q05) |
+|---|---|---|---|---|---|---|
+| synth 5 min | 18.8 / 24.0 | 403 / 403 | 402 | 1.000 (0.967) | 1.000 (1.000) | 1.000 (0.998) |
+| WL27, all | 9.8 / 11.6 | 91 / 90 | 90 | 0.876 (0.695) | 0.990 (0.966) | 0.985 (0.890) |
+| WL27, merged in iter 0 | | | 12 | 0.826 (0.633) | 0.985 (0.956) | 0.984 (0.947) |
+| WL27, not merged, touching a merged unit | | | 12 | 0.839 (0.690) | 0.985 (0.964) | 0.980 (0.880) |
+| WL27, not merged, isolated | | | 66 | 0.907 (0.723) | 0.992 (0.970) | 0.985 (0.883) |
+| WL27, n_iter 2 vs 3 | 11.6 / 14.3 | 90 / 90 | 90 | 0.941 (0.814) | 0.999 (0.989) | 0.998 (0.972) |
+
+- Synth score is unchanged: n_iter 1 and 2 both give recall 0.938, precision 0.980, F1 0.959,
+  trace corr median 0.994. No unit merges in either iteration.
+- WL27 already differs after the iteration-0 merge (91 vs 90): with n_iter 1 that iteration
+  is the last, so it recomputes the background footprint `b` before the merge. The one extra
+  n_iter-1 unit is a merged unit.
+- On WL27 the second pass changes unmerged footprints too, not only the merged ones: units
+  that overlap no merged unit also move (IoU median 0.91, q05 0.72). Its spatial update uses the residual traces
+  `YrA` instead of the init traces. Median footprint size above 10 % of peak: 69 px
+  (n_iter 1), 75 (2), 75 (3). Traces change little.
+- A third pass changes footprints less again (IoU 0.94) and traces hardly at all.
+
+**Conclusion:** n_iter 1 is safe on synth (identical score, -5 s) but not on WL27, where the
+second pass refines footprints of all units, not only merged ones, for 1.8 s. Refitting only
+merged units would not reproduce it, so keep n_iter 2 as the default.
+The cnmf seconds above predate the background speed-up below, which removes most of them.
+
+```bash
+P=/Users/mbrosch/minian_testing_local/WL27_20251205/processed
+.venv/bin/python bench/compare_iters.py $P/cafast_iter1 $P/cafast_iter2 --out $P/cafast_iter2/compare_iters.json
+```
+
 ## Background speed-up (2026-10-19)
 
 `update_background` was ~80 % of the `cnmf` stage (three calls, five reconstructions of the
