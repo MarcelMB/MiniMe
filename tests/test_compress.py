@@ -18,7 +18,11 @@ def test_compress_tile_keeps_signal_and_bounds_rank():
     raw = _tile_movie()
     tf = compress.compress_tile(raw, k0=8, n_iter=1, seed=0)
     T, P = raw.shape[0], 32 * 32
-    assert tf.W.shape == (P, tf.rank) and tf.V.shape == (T, tf.rank) and 1 <= tf.rank <= 100
+    assert (
+        tf.W.shape == (P, tf.rank)
+        and tf.V.shape == (T, tf.rank)
+        and 1 <= tf.rank <= compress.MAX_RANK
+    )
     assert tf.energy.shape == (P,) and tf.energy.dtype == np.float64
     assert tf.W.dtype == tf.V.dtype == tf.mean.dtype == tf.sigma.dtype == np.float32
     Y = raw.reshape(T, -1).T.astype(np.float32)

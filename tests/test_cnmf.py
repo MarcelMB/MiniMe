@@ -151,9 +151,7 @@ def test_dilate_footprints_disk():
 def test_update_spatial_shrinks_outside_cells_and_keeps_units():
     f, fc, A, C = _setup()
     sn = f.sigma_flat()
-    A2, mask, nf = cnmf.update_spatial(
-        f, A, C, sn, dl_wnd=5, sparse_penal=0.01, size_thres=(9, None)
-    )
+    A2, mask, nf = cnmf.update_spatial(f, A, C, sn, dl_wnd=5, sparse_snr=0.25, size_thres=(9, None))
     assert mask.sum() >= 0.8 * A.shape[0] and A2.shape[1] == f.P
     assert np.allclose(A2.max(axis=1).toarray().ravel(), 1.0)
     assert (A2.data >= 0).all()
@@ -174,8 +172,9 @@ def test_update_spatial_matches_normalized_lassolars():
 
     f, fc, A, C = _setup()
     sn = f.sigma_flat()
-    sp, dl = 0.01, 5
-    A2, mask, nf = cnmf.update_spatial(f, A, C, sn, dl, sp, (None, None))
+    snr, dl = 0.25, 5
+    sp = snr / np.sqrt(f.T)  # Minian's sparse_penal for this T
+    A2, mask, nf = cnmf.update_spatial(f, A, C, sn, dl, snr, (None, None))
     got = np.zeros((A.shape[0], f.P))
     got[np.flatnonzero(mask)] = (sps.diags(nf.astype(np.float64)) @ A2).toarray()
     Y = _dense(f)
@@ -199,15 +198,43 @@ def test_update_spatial_matches_normalized_lassolars():
     assert same >= 0.9 * pixels.size
 
 
+def test_update_spatial_penalty_does_not_grow_with_length():
+    """The same movie repeated 4x in time gives the same footprints (sparse_snr is per frame).
+
+    Minian's ``lam = T * sparse_penal * sn`` would double the effective threshold here.
+    """
+    f, fc, A, C = _setup()
+    sn = f.sigma_flat()
+    rep = 4
+    tiles4 = [
+        fm.TileFactors(
+            t.W * np.sqrt(rep),  # Y repeated rep times: singular values grow by sqrt(rep)
+            np.concatenate([t.V] * rep) / np.sqrt(rep),
+            t.mean,
+            t.sigma,
+            t.energy * rep,
+        )
+        for t in f.tiles
+    ]
+    f4 = fm.Factors(
+        f.H, f.W_, f.T * rep, f.grid, tiles4, f.max_proj, f.block_max, np.array([0, f.T * rep]), {}
+    )
+    A1, mask1, nf1 = cnmf.update_spatial(f, A, C, sn, 5, 0.25, (None, None))
+    A4, mask4, nf4 = cnmf.update_spatial(f4, A, np.tile(C, (1, rep)), sn, 5, 0.25, (None, None))
+    assert np.array_equal(mask1, mask4)
+    assert np.allclose(nf1, nf4, rtol=1e-4)
+    assert np.allclose(A1.toarray(), A4.toarray(), atol=1e-4)
+
+
 def test_update_spatial_size_filter_is_strict():
     f, fc, A, C = _setup()
     sn = f.sigma_flat()
-    A2, mask, _ = cnmf.update_spatial(f, A, C, sn, 5, 0.01, (None, None))
+    A2, mask, _ = cnmf.update_spatial(f, A, C, sn, 5, 0.25, (None, None))
     nnz = np.diff(A2.indptr)
     lo = int(np.sort(nnz)[len(nnz) // 2])
-    A3, mask3, _ = cnmf.update_spatial(f, A, C, sn, 5, 0.01, (lo, None))
+    A3, mask3, _ = cnmf.update_spatial(f, A, C, sn, 5, 0.25, (lo, None))
     assert np.array_equal(mask3[mask], nnz > lo)
-    A4, mask4, _ = cnmf.update_spatial(f, A, C, sn, 5, 0.01, (None, lo))
+    A4, mask4, _ = cnmf.update_spatial(f, A, C, sn, 5, 0.25, (None, lo))
     assert np.array_equal(mask4[mask], nnz < lo)
 
 

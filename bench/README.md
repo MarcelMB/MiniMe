@@ -240,6 +240,56 @@ P=/Users/mbrosch/minian_testing_local/WL27_20251205/processed
 .venv/bin/python bench/compare_iters.py $P/cafast_iter1 $P/cafast_iter2 --out $P/cafast_iter2/compare_iters.json
 ```
 
+## Long recordings (2026-10-20): unit loss on 2 h sessions
+
+Runs: `V4_2h/processed/cafast_2h` (UCLA V4, 600 x 600, 140,000 frames at 20 fps, default
+params) and `WL27_2h/processed/cafast_2h` (200 x 200, 144,000 frames, tuned params). V4
+kept **17 units** against 362 on a 10,000-frame cut of the same recording; WL27 2 h kept 73.
+Scripts for the measurements below were run from the saved factors (window 2 only; slices
+of the 2 h factors restrict `V` to a frame range and re-orthonormalise it).
+
+**Not the compression.** Window 2 on the 2 h factors restricted to frames 100k-110k gives
+463 units (the 10k-frame run of those files: 362), so the factor subspace holds the cells.
+On one 64 x 64 tile the streamed rSVD matches an exact SVD (Gram matrix, 300 components)
+at 10k, 40k and 140k frames: ranks 41/42/43 vs 42/42/44, every exact component that passes
+the autocorrelation cut captured > 0.9 except the last few. Only the densest tile hits the
+rank cap: 124 components pass the cut at 10k frames, 176 at 140k, and the cap at 100 drops
+76 of them (capture < 0.5). `MAX_RANK` is now 300 (that tile: rank 175, 22 s instead of 19).
+
+**Cause 1: the spatial penalty grows as sqrt(T).** Units initialised on the 10k slice,
+spatial update at full T: `sparse_penal 0.01` keeps 149 of 632 (median 63 px); scaling it by
+`sqrt(10k / 140k)` keeps 525 (133 px), the slice itself 492 (134 px). WL27 2 h with its tuned
+0.0035: 72 units of 30 px; with the equivalent of its 38k-frame tuning (`sparse_snr 0.69`):
+131 units of 92 px. Fix: `sparse_snr`, `lam = sqrt(T) * sparse_snr * sn` (README).
+
+**Cause 2: the seed merge percolates.** V4 2 h: 48,405 seeds (280 rolling windows; 7,864
+on 10k frames) -> 32,314 after PNR -> **166** merged. Subsampling the same seeds to 5,000
+gives 449 merged, to 1,500: 584; the slice (4,980 seeds) 646. Of the 1.8 M seed pairs within
+10 px, 42 % correlate > 0.8, and of those 95 % still correlate > 0.7 after a high-pass at
+0.002 cycles/frame, so the links are mixture pixels between cells, not drift. Minian's
+connected components run through them once the halo is fully seeded. Variants on the full
+2 h (penalty fixed; "dup" = unit pairs with centroids within 6 px and `YrA` corr > 0.7):
+
+| seed merge | V4 2 h units (dup pairs) | V4 slice 10k (dup) | WL27 38k | WL27 2 h | synth F1 |
+|---|---|---|---|---|---|
+| connected components (Minian) | 121 (2) | 463 (26) | 90 | 131 | 0.9587 |
+| brightest-first suppression (NMS) | 1770 (1249) | 763 (143) | 90 | 130 | 0.9688 |
+| high-pass 0.002 cyc/frame + components | 360 (60) | 724 (227) | 94 | 124 | 0.9587 |
+| 21 windows, length ~ T | 406 (4) | - | - | 103 | - |
+| **brightest parent (tree), now default** | **490 (13)** | 572 (43) | 95 | 131 | **0.9638** |
+
+NMS keeps every dim halo seed that correlates < 0.8 with the kept centre as a unit; the
+high-pass dilutes same-cell correlations (duplicates); fewer, longer windows fix the density
+but lose coverage on the sparse WL27 session. The tree rule (each seed joins its brightest
+correlated neighbour, roots are kept) absorbs the halo downhill and cannot cross the
+brightness valley between two cells. Synth: recall 0.938 -> 0.948, precision 0.980 both.
+
+Final code (`fix/rank-vs-T`), V4 2 h from the kept tile store, pass 2 + window 2 with
+default params: **496 units** (17 before), 10 duplicate pairs, median footprint 172 px; pass 2 313 s (264 s with the cap at 100; rank sum 2885 vs 2710, 4 tiles above 100, max 175), window 2 104 s (`pnr_refine` 64 s on 48k seeds). Units sit on cells (`V4_2h/cafast_2h_fix_units.png`). Synthetic 5 min, full pipeline (`processed/cafast_rank_vs_T`): 407 units, recall 0.948, precision 0.980, F1 0.9638, trace corr median 0.994, 46.1 s wall (was 403 / 0.938 / 0.980 / 0.9587 / 0.994).
+
+Tile store of the 2 h session kept at `/Volumes/Extreme SSD/cafast_v4_2h/processed/store/`
+(50 GB) for further pass-2 experiments.
+
 ## Background speed-up (2026-10-19)
 
 `update_background` was ~80 % of the `cnmf` stage (three calls, five reconstructions of the

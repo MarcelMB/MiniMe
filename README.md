@@ -52,6 +52,11 @@ it), and `motion_before_tophat` is on: shifts are estimated on a band-passed cop
 denoised frame, then the frame is warped and tophat-filtered (on a real session the tophat
 removed the vessels registration needs). Other defaults were checked on synthetic data only.
 
+Minian's `sparse_penal` is `sparse_snr` here, with `sparse_snr = sparse_penal * sqrt(T)` for
+the session length `T` it was tuned on (0.01 on a 10,000-frame session is `sparse_snr: 1`,
+the default); a params file with `sparse_penal` is rejected with that hint. Unlike Minian's,
+the penalty does not grow with the length of the recording (see "Known differences").
+
 `median_ksize: 1` / `tophat_wnd: 0` skip that step, for input preprocessed upstream.
 
 ## Results (synthetic, 600 x 600 px, 421 true cells, M1 Max)
@@ -60,6 +65,7 @@ removed the vessels registration needs). Other defaults were checked on syntheti
 |---|---|---|---|---|---|---|---|---|
 | 5 min (9000 fr) | Minian 2.0.2 | 4 x 2 thr | 471 s | 508 | 0.914 | 0.758 | 0.829 | 0.964 |
 | 5 min | cafast | 6 | 43.4 s | 404 | 0.933 | 0.973 | **0.953** | **0.995** |
+| 5 min | cafast, `fix/rank-vs-T` (sparse_snr, tree seed merge) | 6 | 46.1 s | 407 | 0.948 | 0.980 | **0.964** | 0.994 |
 | 10 min (18000 fr) | cafast* | 6 | 68.5 s | 400 | 0.924 | 0.973 | 0.948 | 0.995 |
 | 10 min | cafast* | 1 | 147.3 s | 400 | 0.924 | 0.973 | 0.948 | 0.995 |
 
@@ -93,3 +99,18 @@ Peak disk = raw size (tile store) + factors (52 MB / 93 MB). Details and per-sta
 - Footprints carry a long tail of tiny weights: median 1029 px > 0 vs Minian 509 px, but
   329 px > 1 % of the maximum in both, and 5.7 % (ours) vs 5.5 % (Minian) of the footprint
   mass lies outside the true 15 x 15 cell patch.
+- Spatial penalty: `lam = sqrt(T) * sparse_snr * sn` per pixel (on unit-norm traces), so a
+  pixel keeps a unit where its std along the unit's trace exceeds `sparse_snr * sn`, whatever
+  `T`. Minian's `LassoLars(alpha = sparse_penal * sn)` amounts to `lam = T * sparse_penal * sn`,
+  a threshold that grows as `sqrt(T)`: on a 2 h session it dropped 149 of 632 units and
+  shrank footprints to 30 px. Minian's value converts as `sparse_snr = sparse_penal * sqrt(T)`.
+- `seeds_merge` joins each seed to its brightest correlated neighbour (correlation above
+  `merge_corr` within `merge_dist`, brighter than itself) and keeps the roots, instead of
+  Minian's connected components of the same links. With 280 rolling windows a 2 h session
+  seeds almost every pixel of a cell halo (48k seeds); the components then run through the
+  dim pixels between cells and merged 32k seeds into 166. The tree rule stops at the valley
+  between two cells: 490 units on that session, F1 0.959 -> 0.964 on the 5-min synthetic
+  session (bench/README.md, "Long recordings").
+- Per-tile rank cap 300 (was 100): a 64 x 64 tile dense with cells passed 176 components
+  of the autocorrelation cut at 140k frames (124 at 10k), and the cap at 100 left 76 of
+  them (capture < 0.5) out of the factors.
