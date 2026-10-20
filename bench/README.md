@@ -198,3 +198,49 @@ the unit-norm column scaling that scikit-learn < 1.2 applied by default (a local
 `minian_v2.0/minian/cnmf.py`, uncommitted there). After the same fix in cafast (`61a63ce`):
 footprints 67 vs 51 px above 10 % of peak, 110 of 165 Minian units matched, trace corr
 median 0.83.
+
+## Background speed-up (2026-10-19)
+
+`update_background` was ~80 % of the `cnmf` stage (three calls, five reconstructions of the
+movie). Two variants, measured with `bench/background_variants.py` (window-2 rerun from saved
+factors; baseline = the code before this change on the same factors). Factors: synth
+`synth_v4_5min/processed/cafast_iter2`, WL27 `WL27_20251205/processed/cafast_iter2`, WL25
+`WL25_20251204/processed/cafast_sn_fft`. Outputs in `<session>/processed/bg_bench/`.
+M1 Max, 10 cores; another session kept the load at 5-7 during all runs.
+
+1. **Threads over tiles** (now always on, `threads` = all cores). Each tile's `R^T b` is
+   summed in tile order, so the output is bit-identical to the serial loop for any thread
+   count (`b`, `f`, `A`, `C`, `YrA` all `array_equal`); the float64 spot check is unchanged.
+2. **Unclipped, on the factors** (`Params.background_clip = False`, opt-in):
+   `b = clip(mean_t Y - A^T mean_t C, 0)`, `f_t = (Y_t - A^T C_t) . b / (b . b)` with
+   `Y_t . b` from `V W^T b + mean . b`. No movie reconstruction.
+
+Seconds (background = sum of the three `update_background` calls):
+
+| session | frames | cnmf base | cnmf threads | cnmf unclipped | background base | threads | unclipped |
+|---|---|---|---|---|---|---|---|
+| synth 5 min | 9,000 | 24.0 | 9.0 | 4.2 | 19.7 | 4.7 | 0.05 |
+| WL27 | 38,763 | 11.8 | 4.5 | 2.0 | 10.0 | 2.6 | 0.07 |
+| WL25 | 39,822 | 12.7 | 5.2 | 2.7 | 10.1 | 2.6 | 0.09 |
+
+Thread scaling, synth background: 1 thread 20.0 s, 2: 10.4, 4: 6.7, 6: 5.4, 10: 4.7
+(memory-bound: the elementwise clip and row sum dominate; chunk size 128-2000 changes nothing).
+
+Unclipped vs base (units matched by centroid; every unit matched, same unit counts):
+
+| session | b max rel diff | f max rel diff | C corr min / median | YrA corr min / median |
+|---|---|---|---|---|
+| synth | 0.034 | 0.0048 | 0.99995 / 1.0000 | 0.99983 / 1.0000 |
+| WL27 | 0.062 | 0.011 | 0.9997 / 0.99996 | 0.9994 / 0.99996 |
+| WL25 | 0.058 | 0.011 | 0.9995 / 0.99995 | 0.9984 / 0.99993 |
+
+Synth score (`cafast score`): base, threads and unclipped all F1 0.9587 (403 units, recall
+0.938, precision 0.980), trace corr median 0.9941, q25 0.9893 / 0.9893 / 0.9894. WL25 vs
+Minian (`compare_minian.py`): 124 of 158 matched for base and unclipped, trace corr median
+0.813 / 0.812.
+
+**Recommendation.** Keep the threaded clipped background as the default: Minian's definition,
+bit-identical results, `cnmf` 2.4-2.7x faster. `background_clip = False` takes the background
+to ~0 s (`cnmf` another ~2x faster) and changes no score here (worst unit trace corr 0.998);
+use it for window-2 sweeps, and it is a safe candidate for the default if Minian parity of
+`b` itself is not needed.

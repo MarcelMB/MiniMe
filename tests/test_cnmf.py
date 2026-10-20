@@ -65,6 +65,31 @@ def test_background_and_trace_match_dense_reference():
     assert np.allclose(cnmf.compute_trace(f, A, b, C, fb), ref, atol=1e-3 * abs(ref).max())
 
 
+def test_background_threads_do_not_change_result():
+    f, fc, A, C = _setup()
+    b1, f1 = cnmf.update_background(f, A, C, chunk=128, threads=1)
+    for n in (2, 4, 9):
+        bn, fn = cnmf.update_background(f, A, C, chunk=128, threads=n)
+        assert np.array_equal(bn, b1) and np.array_equal(fn, f1)
+    _, f2 = cnmf.update_background(f, A, C, b=b1, threads=4)
+    assert np.array_equal(f2, cnmf.update_background(f, A, C, b=b1, threads=1)[1])
+
+
+def test_unclipped_background_matches_dense_reference():
+    f, fc, A, C = _setup()
+    Y = _dense(f)
+    Res = Y - A.toarray().astype(np.float64).T @ C
+    b_ref = np.clip(Res.mean(1), 0, None)
+    f_ref = Res.T @ b_ref / (b_ref @ b_ref)
+    b, fb = cnmf.update_background(f, A, C, clip=False)
+    assert np.allclose(b, b_ref, atol=1e-5 * b_ref.max()) and np.allclose(fb, f_ref, rtol=1e-5)
+    _, fb2 = cnmf.update_background(f, A, C, b=b, clip=False)
+    assert np.allclose(fb2, fb, rtol=1e-6)
+    p = Params(dl_wnd=5, size_thres=(9, None), n_iter=1, background_clip=False)
+    res = cnmf.run_cnmf(f, A, C, p, fc.traces_corr)
+    assert np.isfinite(res.f).all() and res.A.shape[0] >= 0.7 * A.shape[0]
+
+
 def test_background_uses_only_units_touching_each_tile():
     f, fc, A, C = _setup()
     Acsc = sps.csc_matrix(A)

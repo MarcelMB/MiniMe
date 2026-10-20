@@ -10,7 +10,9 @@ Every stage reads the movie only through ``Factors`` (``YCt``, ``AtY``,
   footprint maximum).
 * ``update_background``: Minian's ``b = mean_t clip(Y - A C, 0)``,
   ``f_t = clip(Y_t - A C_t, 0) . b / (b . b)``, streamed over reconstructed tile chunks
-  (``bench_passes/candidates/bg_streamed.py``).
+  (``bench_passes/candidates/bg_streamed.py``), one tile per thread. With
+  ``Params.background_clip = False`` the unclipped residual is used instead, computed on the
+  factors without reconstructing the movie.
 * ``compute_trace``: Minian ``compute_trace`` (``trace_shared.py`` algebra).
 * ``run_cnmf``: background, then ``n_iter`` x (spatial, background, traces,
   ``C := YrA``, unit merge). The background footprint ``b`` is computed in full on the
@@ -20,8 +22,10 @@ Every stage reads the movie only through ``Factors`` (``YCt``, ``AtY``,
 
 from __future__ import annotations
 
+import os
 import warnings
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 import cv2
@@ -188,7 +192,7 @@ def f64_spot_check(
             f"update_background: float32 background trace of tile {t}, frames {t0}-{t1} "
             f"differs from float64 by {err:.3g} (relative); f may be wrong",
             RuntimeWarning,
-            stacklevel=3,
+            stacklevel=4,
         )
     return err
 
@@ -198,19 +202,46 @@ def tile_units(Acsc: sps.csc_matrix, rows: np.ndarray) -> np.ndarray:
     return np.flatnonzero(np.diff(sps.csr_matrix(Acsc[:, rows]).indptr))
 
 
-def update_background(
+def _tile_background(
     f: Factors,
-    A: sps.csr_matrix,
-    C: np.ndarray,
-    b: np.ndarray | None = None,
-    chunk: int = 1000,
-) -> tuple[np.ndarray, np.ndarray]:
-    """``(b (P,) float32, f (T,) float32)`` from the clipped residual ``clip(Y - A^T C, 0)``.
+    t: int,
+    Acsc: sps.csc_matrix,
+    C32: np.ndarray,
+    b_out: np.ndarray,
+    given: bool,
+    chunk: int,
+) -> tuple[np.ndarray, tuple]:
+    """One tile of the clipped background: ``(num_t (T,) float64, spot-check arguments)``.
 
-    Pass 1 (skipped when ``b`` is given) ``b = mean_t R``; pass 2 ``f_t = R_t . b / (b . b)``.
-    Both stream ``chunk`` frames of one tile at a time; ``A^T C`` of a tile uses only the
-    units that touch it (all K units made this the slowest CNMF stage). The last chunk of
-    one tile (``T mod n_tiles``) is recomputed in float64 (``f64_spot_check``).
+    Writes ``b_out[rows]`` of the tile (disjoint rows, so tiles can run in threads) unless
+    ``given``. ``num_t = R^T b_tile`` over all frames; the spot-check arguments are those of
+    the tile's last chunk.
+    """
+    rows = f.tile_rows(t)
+    ks = tile_units(Acsc, rows)
+    Ab = Acsc[ks][:, rows].toarray()  # (K_b, P_b) float32
+    Cb = C32[ks]
+    ranges = [(t0, min(f.T, t0 + chunk)) for t0 in range(0, f.T, chunk)]
+    if not given:
+        acc = np.zeros(rows.size, dtype=np.float64)
+        for t0, t1 in ranges:
+            acc += _clipped_residual(f, t, Ab, Cb, t0, t1).sum(axis=1, dtype=np.float64)
+        b_out[rows] = acc / f.T
+    b_tile = b_out[rows]
+    num = np.zeros(f.T, dtype=np.float64)
+    for t0, t1 in ranges:
+        part = _trace_part(_clipped_residual(f, t, Ab, Cb, t0, t1), b_tile)
+        num[t0:t1] = part
+    return num, (f, t, Ab, Cb, t0, t1, b_tile, part)
+
+
+def _background_clipped(
+    f: Factors, A: sps.csr_matrix, C: np.ndarray, b: np.ndarray | None, chunk: int, threads: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Minian's clipped background, one tile per thread (numpy/BLAS release the GIL).
+
+    Each tile's ``R^T b`` is summed into ``num`` in tile order, so the result does not depend
+    on ``threads`` and equals the serial loop bit for bit.
     """
     Acsc = sps.csc_matrix(A, dtype=np.float32)
     C32 = np.ascontiguousarray(C, dtype=np.float32)
@@ -218,26 +249,75 @@ def update_background(
     b_out = np.asarray(b, dtype=np.float32).copy() if given else np.empty(f.P, dtype=np.float32)
     num = np.zeros(f.T, dtype=np.float64)
     check_tile = f.T % len(f.tiles)
-    for t in range(len(f.tiles)):
-        rows = f.tile_rows(t)
-        ks = tile_units(Acsc, rows)
-        Ab = Acsc[ks][:, rows].toarray()  # (K_b, P_b) float32
-        Cb = C32[ks]
-        ranges = [(t0, min(f.T, t0 + chunk)) for t0 in range(0, f.T, chunk)]
-        if not given:
-            acc = np.zeros(rows.size, dtype=np.float64)
-            for t0, t1 in ranges:
-                acc += _clipped_residual(f, t, Ab, Cb, t0, t1).sum(axis=1, dtype=np.float64)
-            b_out[rows] = acc / f.T
-        b_tile = b_out[rows]
-        for t0, t1 in ranges:
-            part = _trace_part(_clipped_residual(f, t, Ab, Cb, t0, t1), b_tile)
-            num[t0:t1] += part
-            if t == check_tile and t1 == f.T:
-                f64_spot_check(f, t, Ab, Cb, t0, t1, b_tile, part)
+    check: tuple = ()
+
+    def one(t: int) -> tuple[np.ndarray, tuple]:
+        return _tile_background(f, t, Acsc, C32, b_out, given, chunk)
+
+    with ThreadPoolExecutor(max_workers=max(1, threads)) as ex:
+        for t, (num_t, args) in enumerate(ex.map(one, range(len(f.tiles)))):
+            num += num_t
+            if t == check_tile:
+                check = args
+    f64_spot_check(*check)
     bb = float(b_out.astype(np.float64) @ b_out.astype(np.float64))
     fb = num / bb if bb > 0 else np.zeros(f.T)
     return b_out, fb.astype(np.float32)
+
+
+def _background_unclipped(
+    f: Factors, A: sps.csr_matrix, C: np.ndarray, b: np.ndarray | None
+) -> tuple[np.ndarray, np.ndarray]:
+    """Rank-1 background of the unclipped residual ``Y - A^T C``, on the factors only.
+
+    ``b = clip(mean_t Y - A^T mean_t C, 0)`` and ``f_t = (Y_t - A^T C_t) . b / (b . b)``
+    with ``Y_t . b = sum_tiles V_t W^T b_tile + mean . b_tile``. No frame is reconstructed.
+    """
+    A64 = sps.csr_matrix(A, dtype=np.float64)
+    C64 = np.asarray(C, dtype=np.float64)
+    if b is None:
+        ymean = np.empty(f.P, dtype=np.float64)
+        for t, tf in enumerate(f.tiles):
+            vm = tf.V.astype(np.float64).mean(axis=0)
+            ymean[f.tile_rows(t)] = tf.W.astype(np.float64) @ vm + tf.mean
+        b64 = np.clip(ymean - A64.T @ C64.mean(axis=1), 0, None)
+    else:
+        b64 = np.asarray(b, dtype=np.float64)
+    num = -(C64.T @ (A64 @ b64))
+    for t, tf in enumerate(f.tiles):
+        bt = b64[f.tile_rows(t)]
+        num += tf.V.astype(np.float64) @ (tf.W.astype(np.float64).T @ bt)
+        num += float(tf.mean.astype(np.float64) @ bt)
+    bb = float(b64 @ b64)
+    fb = num / bb if bb > 0 else np.zeros(f.T)
+    return b64.astype(np.float32), fb.astype(np.float32)
+
+
+def update_background(
+    f: Factors,
+    A: sps.csr_matrix,
+    C: np.ndarray,
+    b: np.ndarray | None = None,
+    chunk: int = 1000,
+    clip: bool = True,
+    threads: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(b (P,) float32, f (T,) float32)``, the rank-1 background of ``Y - A^T C``.
+
+    ``clip=True`` (Minian): on ``R = clip(Y - A^T C, 0)``, pass 1 (skipped when ``b`` is
+    given) ``b = mean_t R``, pass 2 ``f_t = R_t . b / (b . b)``. Both stream ``chunk`` frames
+    of one tile at a time, ``threads`` tiles at once (default: all cores); ``A^T C`` of a
+    tile uses only the units that touch it. The last chunk of one tile (``T mod n_tiles``)
+    is recomputed in float64 (``f64_spot_check``).
+
+    ``clip=False``: the same on the unclipped residual, computed on the factors without
+    reconstructing the movie (``_background_unclipped``); ``b`` is clipped at 0 afterwards.
+    """
+    if not clip:
+        return _background_unclipped(f, A, C, b)
+    if threads is None:
+        threads = min(os.cpu_count() or 1, len(f.tiles))
+    return _background_clipped(f, A, C, b, chunk, threads)
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +373,7 @@ def run_cnmf(
     """Background, then ``params.n_iter`` x (spatial, background, traces, merge)."""
     sn = fac.sigma_flat()
     counts: dict[str, int] = {}
-    b, fb = update_background(fac, A, C)
+    b, fb = update_background(fac, A, C, clip=params.background_clip)
     _check_finite("initial background", b=b, f=fb)
     C_sp = np.asarray(C, dtype=np.float32)
     YrA = C_sp
@@ -305,7 +385,7 @@ def run_cnmf(
         _check_finite(f"spatial update (iteration {it})", A_data=A.data, C=C_sp)
         counts[f"units_after_spatial_{it}"] = A.shape[0]
         last = it == params.n_iter - 1
-        b, fb = update_background(fac, A, C_sp, b=None if last else b)
+        b, fb = update_background(fac, A, C_sp, b=None if last else b, clip=params.background_clip)
         _check_finite(f"background (iteration {it})", b=b, f=fb)
         YrA = compute_trace(fac, A, b, C_sp, fb)
         _check_finite(f"traces (iteration {it})", YrA=YrA)
