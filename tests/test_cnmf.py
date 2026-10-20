@@ -85,7 +85,8 @@ def test_unclipped_background_matches_dense_reference():
     assert np.allclose(b, b_ref, atol=1e-5 * b_ref.max()) and np.allclose(fb, f_ref, rtol=1e-5)
     _, fb2 = cnmf.update_background(f, A, C, b=b, clip=False)
     assert np.allclose(fb2, fb, rtol=1e-6)
-    p = Params(dl_wnd=5, size_thres=(9, None), n_iter=1, background_clip=False)
+    p = Params(dl_wnd=5, size_thres=(9, None), n_iter=1)
+    assert not p.background_clip  # the default
     res = cnmf.run_cnmf(f, A, C, p, fc.traces_corr)
     assert np.isfinite(res.f).all() and res.A.shape[0] >= 0.7 * A.shape[0]
 
@@ -224,7 +225,7 @@ def test_run_cnmf_refreshes_background_on_last_iteration():
     f, fc, A, C = _setup()
     b0, _ = cnmf.update_background(f, A, C)
     # loop_merge_corr 1.0: no merge, so res.A / res.C are the units the last background saw
-    p = Params(dl_wnd=5, size_thres=(9, None), n_iter=2, loop_merge_corr=1.0)
+    p = Params(dl_wnd=5, size_thres=(9, None), n_iter=2, loop_merge_corr=1.0, background_clip=True)
     res = cnmf.run_cnmf(f, A, C, p, fc.traces_corr)
     Y = _dense(f)
     R = np.clip(Y - res.A.toarray().astype(np.float64).T @ res.C.astype(np.float64), 0, None)

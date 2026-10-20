@@ -85,6 +85,11 @@ Peak disk = raw size (tile store) + factors (52 MB / 93 MB). Details and per-sta
   It replaced 1.4826 x MAD of first differences / sqrt 2, which on uint8 tophat frames was
   quantized (WL25: 0 / 1.05 / 2.10, 10 % of pixels 0 and so unpenalized). PNR divides by
   `6.18 sigma`, so it reads 1.33x the white-noise-calibrated value (WL25: 1459 -> 1639 seeds).
+- Background: rank-1 fit of the unclipped residual `Y - A C` on the factors
+  (`b = clip(mean_t (Y - A C), 0)`), not Minian's mean of `clip(Y - A C, 0)`. `b` differs by
+  up to 6 % of its maximum; scores and traces do not change (worst unit trace corr 0.998) and
+  `cnmf` is ~2x faster. `background_clip: true` restores Minian's definition
+  (bench/README.md, "Background speed-up").
 - Footprints carry a long tail of tiny weights: median 1029 px > 0 vs Minian 509 px, but
   329 px > 1 % of the maximum in both, and 5.7 % (ours) vs 5.5 % (Minian) of the footprint
   mass lies outside the true 15 x 15 cell patch.
