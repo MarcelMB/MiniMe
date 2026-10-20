@@ -59,7 +59,9 @@ def main() -> None:
     out = [check_rates(a.run_dir, n, a.minian, checks) for n in a.runs]
     text = json.dumps(out, indent=1)
     print(text)
-    (a.run_dir / "reruns" / at.AUTO / "acceptance.json").write_text(text + "\n")
+    acc = a.run_dir / "reruns" / at.AUTO / "acceptance.json"
+    acc.parent.mkdir(parents=True, exist_ok=True)
+    acc.write_text(text + "\n")
 
 
 if __name__ == "__main__":

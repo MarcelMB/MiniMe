@@ -12,6 +12,7 @@ import pandas as pd
 from cafast.autotune import run as at
 from cafast.autotune import score, sweep
 from cafast.tune import figures
+from cafast.tune.autofig import same_value
 
 if TYPE_CHECKING:
     from cafast.tune.server import TuneApp
@@ -179,7 +180,7 @@ def _proposal(app: TuneApp) -> str:
     rows = []
     for k in sweep.SEARCHED:
         a, b = doc["run_values"][k], doc["proposed"][k]
-        cls = ' class="changed"' if str(a) != str(b) else ""
+        cls = ' class="changed"' if not same_value(a, b) else ""
         edge = '<span class="badge">at edge: extend the grid</span>' if k in doc["at_edge"] else ""
         rows.append(
             f"<tr><td class='l'><b>{k}</b></td><td>{_e(fmt_value(a))}</td>"

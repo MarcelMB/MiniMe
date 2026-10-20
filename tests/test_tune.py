@@ -14,7 +14,7 @@ import scipy.sparse as sps
 
 from cafast import window2
 from cafast.autotune import run as at
-from cafast.autotune import sweep
+from cafast.autotune import score, sweep
 from cafast.params import Params
 
 pytest.importorskip("matplotlib")
@@ -324,3 +324,45 @@ def test_page_has_diameter_measure(tune_server):
     _, base = tune_server
     page_html = _get(base + "/")[2].decode()
     assert 'id="mpimg" src="/maxproj.png"' in page_html and 'id="mpline"' in page_html
+
+
+def test_server_rejects_bad_diameter_and_reserved_name(tune_server):
+    _, base = tune_server
+    _wait(base)
+    for d in ("0", "1000"):
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(base + "/api/autotune", {"diameter": d})
+        assert e.value.code == 400
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _post(base + "/api/run", {"name": "auto"})
+    assert e.value.code == 400
+
+
+def test_proposal_marks_only_numerically_different_values(tmp_path):
+    from types import SimpleNamespace
+
+    from cafast.autotune import sweep as sw
+    from cafast.tune import page
+
+    app = SimpleNamespace(reruns_dir=tmp_path, figure_path=lambda run, fig: None)
+    run_values = {k: 1.0 for k in sw.SEARCHED}
+    proposed = {k: 1.0 for k in sw.SEARCHED}
+    run_values["merge_corr"], proposed["merge_corr"] = 3, 3.0
+    run_values["inita_corr"], proposed["inita_corr"] = 3, 4.0
+    doc = {
+        "score": {"good": 1, "flagged": 0, **{r: 0 for r in score.REASONS}},
+        "run_values": run_values,
+        "proposed": proposed,
+        "at_edge": [],
+        "derived": {},
+        "diameter": 7.0,
+        "n_trials": 1,
+        "wall_s": 1.0,
+    }
+    d = tmp_path / at.AUTO
+    d.mkdir()
+    (d / at.DOC).write_text(json.dumps(doc))
+    html = page._proposal(app)
+    row = lambda k: re.search(rf"<tr><td class='l'><b>{k}</b>.*?</tr>", html, re.S)[0]  # noqa: E731
+    assert 'class="changed"' not in row("merge_corr")
+    assert 'class="changed"' in row("inita_corr")
