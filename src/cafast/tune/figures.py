@@ -31,6 +31,7 @@ from matplotlib.lines import Line2D
 from cafast import window2
 from cafast.autotune.run import load_doc
 from cafast.autotune.score import (
+    REASONS,
     SIZE_FRAC,  # noqa: F401 - kept importable from here
     Checks,
     n_parts,
@@ -136,8 +137,10 @@ def shift_rows(A: sps.csr_matrix, H: int, W: int, off: np.ndarray) -> sps.csr_ma
     return sps.csr_matrix((A.data[ok], (A.row[ok], (r * W + c)[ok])), shape=A.shape)
 
 
-def unit_table(run: RunData, mn: MinianOverlay | None) -> pd.DataFrame:
-    """One row per final unit: position, sizes, pieces, trace PNR, Minian match."""
+def unit_table(
+    run: RunData, mn: MinianOverlay | None, checks: Checks | None = None
+) -> pd.DataFrame:
+    """One row per final unit: position, sizes, pieces, trace PNR, check flags, Minian match."""
     A = run.A
     cent = centroids(A, run.H, run.W) if A.shape[0] else np.zeros((0, 2))
     df = pd.DataFrame(
@@ -152,6 +155,9 @@ def unit_table(run: RunData, mn: MinianOverlay | None) -> pd.DataFrame:
             "pnr": trace_pnr(run.YrA).round(1),
         }
     )
+    if checks is not None:
+        f = unit_flags(run.A, run.YrA, run.H, run.W, checks)
+        df["flag"] = [", ".join(r for r in REASONS if row[r]) for _, row in f.iterrows()]
     if mn is not None:
         df["minian_unit"] = pd.array([pd.NA] * len(df), dtype="Int64")
         df["match_dist"] = np.nan

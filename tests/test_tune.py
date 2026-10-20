@@ -6,6 +6,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import cv2
 import numpy as np
 import pandas as pd
 import pytest
@@ -281,3 +282,31 @@ def test_server_autotune_roundtrip(tune_server, monkeypatch):
         assert r.count("<td") == n_head, r
     heads = re.findall(r"<th[^>]*>(.*?)</th>", table)
     assert heads.index("good / flagged") == heads.index("units") + 1
+
+
+def test_thumb_and_flag_column(tiny_rerun):
+    from cafast.autotune.score import Checks
+    from cafast.tune import autofig
+
+    run = figures.load_run(tiny_rerun)
+    png = autofig.thumb_png(run, 0)
+    img = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+    assert img is not None and img.shape[0] == img.shape[1] == 4 * (2 * 12 + 1)
+    table = figures.unit_table(run, None, Checks(7))
+    assert "flag" in table and len(table) == run.A.shape[0]
+
+
+def test_page_shows_flagged_gallery(tune_server, monkeypatch):
+    app, base = tune_server
+    _wait(base)
+    if app.checks() is None:  # test order: run auto-tune if the roundtrip test has not
+        monkeypatch.setattr(at, "DEFAULT_GRIDS", SMALL_GRIDS)
+        _post(base + "/api/autotune", {"diameter": "7"})
+        _wait(base, timeout=300)
+    page_html = _get(base + "/?run=auto")[2].decode()
+    assert "Flagged units" in page_html and "<th>flag</th>" in page_html
+    status, ctype, png = _get(base + "/thumb/auto/0.png")
+    assert status == 200 and ctype == "image/png"
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _get(base + "/thumb/auto/99999.png")
+    assert e.value.code == 404

@@ -35,6 +35,9 @@ $('#pvform').addEventListener('submit', async e => { e.preventDefault(); const b
   catch(err){ $('#pvmsg').textContent = err.message; } b.disabled = false; });
 document.querySelectorAll('#units tbody tr').forEach(tr => tr.addEventListener('click', () => {
   $('#unitimg').src = '/unit/' + encodeURIComponent(VIEW) + '/' + tr.dataset.k + '.png'; $('#unitimg').hidden = false; }));
+document.querySelectorAll('img.thumb').forEach(im => im.addEventListener('click', () => {
+  $('#unitimg').src = '/unit/' + encodeURIComponent(VIEW) + '/' + im.dataset.k + '.png'; $('#unitimg').hidden = false;
+  $('#unitimg').scrollIntoView({block: 'nearest'}); }));
 document.querySelectorAll('#units th').forEach((th, c) => th.addEventListener('click', () => {
   const tb = $('#units tbody'), rows = [...tb.rows], asc = th.dataset.asc !== '1'; th.dataset.asc = asc ? '1' : '0';
   const v = r => { const t = r.cells[c].textContent; const n = parseFloat(t); return isNaN(n) ? t : n; };

@@ -7,6 +7,7 @@ parameter files to ``RUN_DIR/tune/``.
 
 Routes: ``GET /`` (``?run=NAME&cmp=NAME``), ``GET /api/status``, ``GET /fig/RUN/FILE.png``
 (``RUN`` = ``_shared`` for the shared figures and the preview), ``GET /unit/RUN/K.png``,
+``GET /thumb/RUN/K.png`` (a small crop of one unit, for the flagged gallery),
 ``POST /api/run``, ``POST /api/save``, ``POST /api/preview``, ``POST /api/autotune``
 (``diameter``: sweep, write the proposal as the rerun ``auto``).
 """
@@ -31,7 +32,7 @@ from cafast.autotune import run as at
 from cafast.autotune.score import Checks
 from cafast.autotune.sweep import Trial
 from cafast.params import Params
-from cafast.tune import figures, minian, page, preview
+from cafast.tune import autofig, figures, minian, page, preview
 
 SHARED = "_shared"
 PREVIEW_PNG = "preview.png"
@@ -336,12 +337,18 @@ class Handler(BaseHTTPRequestHandler):
         elif len(parts) == 3 and parts[0] == "fig":
             p = app.figure_path(parts[1], parts[2])
             self._send(200, "image/png", p.read_bytes()) if p else self._not_found()
-        elif len(parts) == 3 and parts[0] == "unit" and parts[1] in app.names():
+        elif len(parts) == 3 and parts[0] in ("unit", "thumb") and parts[1] in app.names():
             m = re.fullmatch(r"(\d+)\.png", parts[2])
             run = app.run_data(parts[1])
             if m is None or int(m[1]) >= run.A.shape[0]:
                 return self._not_found()
-            self._send(200, "image/png", figures.unit_png(run, int(m[1]), app.overlay(run)))
+            k = int(m[1])
+            png = (
+                figures.unit_png(run, k, app.overlay(run))
+                if parts[0] == "unit"
+                else autofig.thumb_png(run, k)
+            )
+            self._send(200, "image/png", png)
         else:
             self._not_found()
 
