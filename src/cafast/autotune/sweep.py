@@ -78,13 +78,18 @@ class Grids:
 
 
 def derived_params(base: Params, diameter: float) -> Params:
-    """``base`` with the size parameters set from the cell ``diameter`` (px)."""
+    """``base`` with the size parameters set from the cell ``diameter`` (px).
+
+    ``size_thres`` has no upper bound: CNMF compares it with the nnz of the *dilated* support
+    (cell plus ``dl_wnd`` halo), not the cell size, so a cell-based bound would drop real units.
+    Oversized units are still flagged by the score's ``bad_size`` check.
+    """
     score.Checks(diameter)  # validates
     d = max(1, round(diameter))
     area = math.pi * (diameter / 2) ** 2
-    lo, hi = max(1, round(0.25 * area)), max(2, round(4 * area))
+    lo = max(1, round(0.25 * area))
     return dataclasses.replace(
-        base, seeds_max_wnd=d, inita_wnd=d, dl_wnd=d, merge_dist=d, size_thres=(lo, hi)
+        base, seeds_max_wnd=d, inita_wnd=d, dl_wnd=d, merge_dist=d, size_thres=(lo, None)
     )
 
 

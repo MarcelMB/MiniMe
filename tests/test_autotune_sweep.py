@@ -8,9 +8,7 @@ from cafast.autotune import score, sweep
 from cafast.params import Params
 from cafast.report import StageTimer
 
-# Gaussian cells of sigma 3 px, but D=7 makes size_thres (10, 154) drop every footprint after the
-# dilated CNMF solve on this tiny session; D=9 gives (16, 254) and a session the sweep can finish.
-D = 9.0
+D = 7.0  # synthetic cells: Gaussian sigma 3 px
 SMALL = sweep.Grids(
     seeds_diff_thres=(2.0, 3.0),
     pnr_thres=("auto", 1.0),
@@ -31,7 +29,7 @@ def _trial(score_: int | None, **values) -> sweep.Trial:
 def test_derived_params_round_and_scale():
     p = sweep.derived_params(Params(), 7.5)
     assert (p.seeds_max_wnd, p.inita_wnd, p.dl_wnd, p.merge_dist) == (8, 8, 8, 8)
-    assert p.size_thres == (11, 177)  # 0.25 and 4 x pi * 3.75^2 = 44.2
+    assert p.size_thres == (11, None)  # 0.25 x pi * 3.75^2 = 44.2; no upper bound
     tiny = sweep.derived_params(Params(), 0.6)
     assert tiny.dl_wnd == 1 and tiny.size_thres[0] >= 1
     with pytest.raises(ValueError, match="diameter"):
@@ -70,7 +68,7 @@ def test_sweep_runs_every_step(tiny_run):
     assert steps.count("sparse") == 2 and steps.count("loop_merge") == 1
     assert seen == sw.trials
     assert len(sw.trials) <= SMALL.n_trials()
-    assert prop.dl_wnd == 9 and prop.size_thres == sweep.derived_params(sess.base, D).size_thres
+    assert prop.dl_wnd == 7 and prop.size_thres == sweep.derived_params(sess.base, D).size_thres
     assert prop.sparse_penal in SMALL.sparse_penal
     assert sw.final is not None and sw.final.score is not None
     for k in window2.FACTOR_PARAMS:
