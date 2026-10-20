@@ -277,9 +277,48 @@ def _figure(app: TuneApp, fig: str, title: str, why: str, view: str, cmp: str | 
     return f'<div class="fig"><h3>{title}</h3><div class="why">changed by: {why}</div>{body}</div>'
 
 
+LABELS = {
+    "low_pnr": "dim trace (PNR)",
+    "in_pieces": "in pieces",
+    "bad_size": "wrong size",
+    "duplicate": "duplicate",
+}
+
+
+def _thumb(f: pd.DataFrame, view: str, k: int) -> str:
+    if f.size10[k] <= 0:  # no footprint pixels: no centroid to crop around
+        return f'<span class="note">unit {k} (empty)</span>'
+    return (
+        f'<img loading="lazy" class="thumb" data-k="{k}" src="/thumb/{_e(view)}/{k}.png" '
+        f'title="unit {k}: pnr {f.pnr[k]:.1f}, size10 {f.size10[k]}, '
+        f'main piece {f.main_piece[k]:.2f}">'
+    )
+
+
+def _flagged(app: TuneApp, view: str) -> str:
+    """Thumbnails of the units the checks flag, grouped by reason; empty without checks."""
+    checks = app.checks()
+    if checks is None:
+        return ""
+    run = app.run_data(view)
+    f = score.unit_flags(run.A, run.YrA, run.H, run.W, checks)
+    groups = []
+    for r in score.REASONS:
+        ks = f.index[f[r]].tolist()
+        if ks:
+            imgs = "".join(_thumb(f, view, k) for k in ks)
+            groups.append(f"<h4>{LABELS[r]} ({len(ks)})</h4><div class='thumbs'>{imgs}</div>")
+    n = int((~f.good).sum())
+    return (
+        f"<div class='fig'><h3>Flagged units ({n} of {len(f)})</h3><div class='why'>checks of "
+        f"the last auto-tune (diameter {fmt_value(checks.diameter)} px); click a unit to show "
+        f"it below</div>{''.join(groups)}</div>"
+    )
+
+
 def _units(app: TuneApp, view: str) -> str:
     run = app.run_data(view)
-    df = figures.unit_table(run, app.overlay(run))
+    df = figures.unit_table(run, app.overlay(run), app.checks())
     ths = "".join(f"<th>{_e(c)}</th>" for c in df.columns)
     rows = []
     for k, r in enumerate(df.itertuples(index=False)):
@@ -311,6 +350,7 @@ def render(app: TuneApp, view: str | None, cmp: str | None) -> str:
     if view and (app.reruns_dir / view / "figures").is_dir():
         main.append(f"<h2>Stages of {_e(view)}" + (f" vs {_e(cmp)}" if cmp else "") + "</h2>")
         main += [_figure(app, f, t, w, view, cmp) for f, t, w in STAGES]
+        main.append(_flagged(app, view))
         main.append(_units(app, view))
     elif view:
         main.append('<p class="note">figures are being drawn ...</p>')
