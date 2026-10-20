@@ -16,7 +16,6 @@ Routes: ``GET /`` (``?run=NAME&cmp=NAME``), ``GET /api/status``, ``GET /fig/RUN/
 from __future__ import annotations
 
 import json
-import math
 import re
 import threading
 import time
@@ -255,14 +254,14 @@ class TuneApp:
     def start_run(self, params: Params, name: str | None = None) -> str:
         name = name or self.next_name()
         self.session.out_dir(name)  # validates the name
+        at.check_not_reserved(name)
         window2.check_factor_params(self.session.fac, params)
         self._start(self._rerun, name, params)
         return name
 
     def start_autotune(self, diameter: float) -> str:
-        Checks(diameter)  # ValueError -> HTTP 400 before the worker starts
-        if not math.isfinite(diameter):
-            raise ValueError(f"diameter must be a finite number of px, got {diameter}")
+        fac = self.session.fac
+        at.check_diameter(diameter, fac.H, fac.W_)  # ValueError -> HTTP 400 before the worker
         self._start(self._autotune, at.AUTO, diameter)
         return at.AUTO
 

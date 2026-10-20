@@ -129,7 +129,9 @@ def ranked(trials: list[Trial], base: Params) -> list[Trial]:
 def best(trials: list[Trial], base: Params, step: str) -> Trial:
     r = ranked(trials, base)
     if not r:
-        raise RuntimeError(f"auto-tune step {step!r}: every setting failed")
+        errors = list(dict.fromkeys(t.error for t in trials if t.error))[:3]
+        detail = f" ({'; '.join(errors)})" if errors else ""
+        raise RuntimeError(f"auto-tune step {step!r}: every setting failed{detail}")
     return r[0]
 
 

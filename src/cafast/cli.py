@@ -44,8 +44,10 @@ def cnmf(
     import json
 
     from cafast import window2
+    from cafast.autotune.run import check_not_reserved
 
     try:
+        check_not_reserved(name)
         out = window2.rerun(run_dir, window2.run_params(run_dir, params), name=name)
     except ValueError as e:
         typer.echo(f"error: {e}", err=True)

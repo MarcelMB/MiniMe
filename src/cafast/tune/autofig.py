@@ -46,7 +46,7 @@ def best_per_value(df: pd.DataFrame, key: str) -> pd.DataFrame:
     return top.sort_values(key, key=lambda s: s.map(order)).reset_index(drop=True)
 
 
-def _same(a: Any, b: Any) -> bool:
+def same_value(a: Any, b: Any) -> bool:
     """``2`` and ``2.0`` and ``"2.0"`` are one value; ``auto`` only equals ``auto``."""
     if _is_num(a) and _is_num(b):
         return float(a) == float(b)
@@ -60,7 +60,7 @@ def _curve(df: pd.DataFrame, key: str, chosen: Any, path: Path) -> None:
     x = np.arange(len(b))
     ax.plot(x, b["good"], "-o", color=GOOD, ms=3, lw=1.2, label="good")
     ax.plot(x, b["flagged"], "-o", color=FLAGGED, ms=3, lw=1.2, label="flagged")
-    hit = [i for i, v in enumerate(b[key]) if _same(v, chosen)]
+    hit = [i for i, v in enumerate(b[key]) if same_value(v, chosen)]
     if hit:
         ax.axvline(hit[0], color=CHOSEN, lw=1, ls="--")
     ax.set_xticks(x, [str(v) for v in b[key]], fontsize=6, color=INK)

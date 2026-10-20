@@ -106,7 +106,7 @@ def test_failed_settings_are_recorded_and_skipped(tiny_run):
 def test_all_failed_step_raises(tiny_run):
     sess = window2.Window2Session(tiny_run)
     grids = dataclasses.replace(SMALL, pnr_thres=(1e9,))
-    with pytest.raises(RuntimeError, match="seeds"):
+    with pytest.raises(RuntimeError, match="seeds.*no seeds survived"):
         sweep.Sweep(sess, score.Checks(D), grids).run()
 
 
@@ -165,7 +165,20 @@ def test_cli_autotune(tiny_run, monkeypatch):
     assert (tiny_run / "reruns" / "auto_cli" / "autotune.json").exists()
 
 
-@pytest.mark.parametrize("d", ["0", "-2"])
+@pytest.mark.parametrize("d", ["0", "-2", "inf", "nan", "1000"])
 def test_cli_autotune_rejects_bad_diameter(tiny_run, d):
     res = CliRunner().invoke(cli.app, ["autotune", str(tiny_run), "--diameter", d])
     assert res.exit_code == 1 and "diameter" in res.output
+
+
+def test_check_diameter_bounds():
+    at.check_diameter(7.0, 64, 64)
+    for d in (float("inf"), float("nan"), 65.0):
+        with pytest.raises(ValueError, match="diameter"):
+            at.check_diameter(d, 64, 64)
+
+
+def test_cli_cnmf_rejects_the_reserved_auto_name(tiny_run):
+    res = CliRunner().invoke(cli.app, ["cnmf", str(tiny_run), "--name", "auto"])
+    assert res.exit_code == 1 and "reserved" in res.output
+    assert not (tiny_run / "reruns" / "auto").exists()

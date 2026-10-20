@@ -7,6 +7,7 @@ Besides the normal rerun files the directory gets ``sweep.csv`` (one row per set
 from __future__ import annotations
 
 import json
+import math
 import time
 from collections.abc import Callable
 from dataclasses import asdict
@@ -63,6 +64,25 @@ def load_doc(rerun_dir: Path) -> dict[str, Any] | None:
 
 
 # ----------------------------------------------------------------------------------------
+# Input checks
+# ----------------------------------------------------------------------------------------
+def check_diameter(diameter: float, H: int, W: int) -> None:
+    """Raise ``ValueError`` unless ``diameter`` is a finite number of px that fits the FOV."""
+    score.Checks(diameter)  # a number > 0
+    if not math.isfinite(diameter) or diameter > min(H, W):
+        raise ValueError(
+            f"diameter must be a finite number of px of at most {min(H, W)} "
+            f"(the smaller field-of-view side), got {diameter}"
+        )
+
+
+def check_not_reserved(name: str) -> None:
+    """Raise ``ValueError`` for the name auto-tune writes its proposal to."""
+    if name == AUTO:
+        raise ValueError(f"run name {AUTO!r} is reserved for auto-tune; pick another name")
+
+
+# ----------------------------------------------------------------------------------------
 # Driver
 # ----------------------------------------------------------------------------------------
 def autotune(
@@ -77,9 +97,10 @@ def autotune(
 ) -> Path:
     """Sweep window 2 of ``run_dir`` and write the proposal to ``run_dir/reruns/name``."""
     t0 = time.perf_counter()
+    session = session or Window2Session(run_dir)
+    check_diameter(diameter, session.fac.H, session.fac.W_)
     checks = checks or score.Checks(diameter)
     grids = grids or DEFAULT_GRIDS
-    session = session or Window2Session(run_dir)
     sw = Sweep(session, checks, grids, on_trial)
     params = sw.run()
     out = session.run(params, name)
