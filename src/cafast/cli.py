@@ -33,6 +33,57 @@ def run(
 
 
 @app.command()
+def cnmf(
+    run_dir: Annotated[Path, typer.Argument(help="A finished run (holds factors/).")],
+    params: Annotated[
+        Path | None, typer.Option(help="Params JSON; keys it leaves out come from the run.")
+    ] = None,
+    name: Annotated[str, typer.Option(help="Output name under RUN_DIR/reruns/.")] = "rerun",
+) -> None:
+    """Rerun window 2 (seeds, init, CNMF) from RUN_DIR's factors into RUN_DIR/reruns/NAME/."""
+    import json
+
+    from cafast import window2
+
+    try:
+        out = window2.rerun(run_dir, window2.run_params(run_dir, params), name=name)
+    except ValueError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(1) from None
+    counts = json.loads((out / "report.json").read_text())["counts"]
+    typer.echo(str(out))
+    typer.echo(json.dumps(counts, indent=1))
+
+
+@app.command()
+def tune(
+    run_dir: Annotated[Path, typer.Argument(help="A finished run (holds factors/).")],
+    minian: Annotated[
+        Path | None, typer.Option(help="Minian result npz (A, C, max_proj) to overlay.")
+    ] = None,
+    port: Annotated[int, typer.Option(help="Port on 127.0.0.1.")] = 8765,
+    browser: Annotated[bool, typer.Option(help="Open the page in the default browser.")] = True,
+) -> None:
+    """Serve a localhost page to rerun window 2 of RUN_DIR and compare every stage."""
+    import webbrowser
+
+    from cafast.tune import server
+
+    app_ = server.TuneApp(run_dir, minian_npz=minian)
+    httpd = server.make_server(app_, port=port)
+    url = f"http://127.0.0.1:{httpd.server_address[1]}/"
+    typer.echo(f"cafast tune: {url}  (Ctrl-C to stop)")
+    if browser:
+        webbrowser.open(url)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()
+
+
+@app.command()
 def synth(
     out: Path, minutes: float = 10.0, fps: int = 30, segment: int = 1000, seed: int = 0
 ) -> None:
