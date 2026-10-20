@@ -1,14 +1,19 @@
 import json
+import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
 import numpy as np
+import pandas as pd
 import pytest
 import scipy.sparse as sps
 
 from cafast import window2
+from cafast.autotune import run as at
+from cafast.autotune import sweep
 from cafast.params import Params
 
 pytest.importorskip("matplotlib")
@@ -210,3 +215,69 @@ def test_params_form_roundtrip(tiny_run):
     assert p2.pnr_thres == "auto" and p2.size_thres == (25, 300)
     with pytest.raises(ValueError, match="dl_wnd"):
         server.form_to_params({"dl_wnd": "abc"}, prm)
+
+
+# ---------------------------------------------------------------------------
+# Auto-tune on the page
+# ---------------------------------------------------------------------------
+
+SMALL_GRIDS = sweep.Grids(
+    seeds_diff_thres=(2.0, 3.0),
+    pnr_thres=("auto", 1.0),
+    merge_corr=(0.8,),
+    init_merge_corr=(0.8,),
+    inita_corr=(0.8,),
+    sparse_penal=(0.003, 0.01),
+    loop_merge_corr=(0.9,),
+    n_confirm=2,
+)
+
+
+def test_best_per_value_and_curves(tmp_path):
+    from cafast.tune import autofig
+
+    df = pd.DataFrame(
+        {
+            "step": ["seeds"] * 4 + ["sparse"] * 2,
+            "seeds_diff_thres": [2.0, 2.0, 3.0, 3.0, 3.0, 3.0],
+            "pnr_thres": ["auto", "1.0", "auto", "1.0", "auto", "auto"],
+            "sparse_penal": [0.01] * 4 + [0.003, 0.01],
+            "score": [3, 5, 4, None, 6, 2],
+            "good": [5, 6, 5, None, 7, 4],
+            "flagged": [2, 1, 1, None, 1, 2],
+        }
+    )
+    b = autofig.best_per_value(df, "seeds_diff_thres")
+    assert b["seeds_diff_thres"].tolist() == [2.0, 3.0] and b["score"].tolist() == [5, 4]
+    csv = tmp_path / "sweep.csv"
+    df.to_csv(csv, index=False)
+    doc = {"proposed": {"seeds_diff_thres": 2.0, "pnr_thres": "1.0", "sparse_penal": 0.003}}
+    names = autofig.sweep_curves(csv, doc, tmp_path)
+    assert names == ["sweep_seeds_diff_thres.png", "sweep_pnr_thres.png", "sweep_sparse_penal.png"]
+    assert (tmp_path / names[0]).read_bytes()[:4] == b"\x89PNG"
+
+
+def test_server_autotune_roundtrip(tune_server, monkeypatch):
+    app, base = tune_server
+    _wait(base)
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _post(base + "/api/autotune", {"diameter": "abc"})
+    assert e.value.code == 400
+    monkeypatch.setattr(at, "DEFAULT_GRIDS", SMALL_GRIDS)
+    assert _post(base + "/api/autotune", {"diameter": "7"})["name"] == "auto"
+    st = _wait(base, timeout=300)
+    assert st["state"] == "done", st
+    assert app.checks() is not None and app.checks().diameter == 7
+    page_html = _get(base + "/?run=auto")[2].decode()
+    assert "Proposal" in page_html and "sweep_sparse_penal.png" in page_html
+    assert "good / flagged" in page_html
+    status, ctype, png = _get(base + "/fig/auto/sweep_sparse_penal.png")
+    assert status == 200 and png[:4] == b"\x89PNG"
+    summ = json.loads((app.reruns_dir / "base" / "summary.json").read_text())
+    assert "good" in summ and "flagged" in summ  # every run rescored with the new checks
+    table = re.search(r"<table><thead>.*?</table>", page_html, re.S)[0]  # the runs table
+    n_head = len(re.findall(r"<th[ >]", table))
+    for r in re.findall(r"<tr class=.*?</tr>", table, re.S):
+        assert r.count("<td") == n_head, r
+    heads = re.findall(r"<th[^>]*>(.*?)</th>", table)
+    assert heads.index("good / flagged") == heads.index("units") + 1
