@@ -6,7 +6,7 @@ CNMF stage after that runs on the stored factors and never rereads the movie.
 
 ## Install
 
-    uv venv -p 3.11 && uv pip install -e ".[dev]"
+    uv venv -p 3.11 && uv pip install -e ".[dev]"    # add ,bench for cafast tune
     .venv/bin/pytest
 
 ## Run
@@ -35,6 +35,39 @@ decoded once more at startup to count its frames.
 | `report.json` | wall seconds per stage, seed/unit counts per stage, bytes, peak RSS |
 
 The temporary tile store (`tiles/`, same size as the raw data) is deleted after pass 2.
+
+## Tuning window 2
+
+Seeds, initialisation and CNMF run on the saved factors, so their parameters can be changed
+without rereading the movie (WL25, 200 x 200 px, 39,822 frames: 16 s instead of 49 s).
+
+    .venv/bin/cafast cnmf RUN_DIR [--params p.json] [--name NAME]
+    .venv/bin/cafast tune RUN_DIR [--minian minian_units.npz] [--port 8765]
+
+**`cafast cnmf`**: `RUN_DIR` = a finished run. `--params` may hold only the keys to change;
+the rest come from `RUN_DIR/params.json`. Output: `RUN_DIR/reruns/NAME/` with `params.json`,
+`report.json` and `cnmf/` as in a full run, `stages/` (seed tables after init / PNR / merge,
+footprints after initA, init merge and every spatial update and merge) and symlinks
+`factors`, `motion` to the source run, so `bench/compare_minian.py` reads it like a run.
+Parameters that shaped the factors (`median_ksize`, `tophat_wnd`, `motion_*`,
+`template_frames`, `tile`, `svd_*`, `rank_*`) are refused; `seeds_wnd` / `seeds_stp` only
+if their windows fall on the block edges pass 1 stored. Same parameters give the same result
+as the full run (tested).
+
+**`cafast tune`**: a page on `http://127.0.0.1:8765/` (standard library server, matplotlib
+PNGs; needs the `bench` extra). On start it reruns the run's own parameters as `base`. The
+form holds the window-2 parameters; *Rerun window 2* writes `reruns/tNNN/` and draws its
+figures: seeds after init / PNR / merge with the PNR histogram, initA and init merge
+footprints, footprints after each spatial update and merge (red: more than one piece above
+10 % of peak), size and fragmentation histograms, example traces, and with `--minian` the
+final overlay (Minian npz with `A`, `C`, `max_proj`; aligned and matched as in
+`bench/compare_minian.py`). Shared figures: max projection, motion, per-pixel noise and mean.
+The run list compares every rerun (changed parameters, counts, median size, units in pieces,
+Minian matches); *view* / *cmp* stack two reruns' figures. Click a units-table row for that
+unit's footprint and trace. *Save params* writes the full set to `RUN_DIR/tune/FILE.json` for
+`cafast run --params`. *Pass-1 preview* shows raw / median / registration image / tophat on
+the first 300 frames for `median_ksize`, `tophat_wnd`, `motion_bandpass` (these need a full
+`cafast run`).
 
 ## Parameters
 
