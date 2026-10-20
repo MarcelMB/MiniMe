@@ -134,8 +134,35 @@ class FactorCorr:
 
 
 def merge_labels(adj: sps.spmatrix) -> np.ndarray:
-    """Connected-component label of every node of the (symmetrised) adjacency ``adj``."""
+    """Connected-component label of every node of the (symmetrised) adjacency ``adj``.
+
+    Used by ``init.unit_merge`` (a few hundred units); ``seeds_merge`` uses
+    ``brightest_parent`` instead.
+    """
     return connected_components(adj, directed=False)[1]
+
+
+def brightest_parent(edges: np.ndarray, bright: np.ndarray) -> np.ndarray:
+    """Parent of each node: its brightest neighbour in ``edges`` that is brighter than it.
+
+    ``edges`` is (m, 2) int; a node with no brighter neighbour is its own parent (a root).
+    Ties in brightness are broken by index (lower index counts as brighter).
+    """
+    n = bright.size
+    parent = np.arange(n)
+    if len(edges) == 0:
+        return parent
+    order = np.lexsort((np.arange(n), -np.asarray(bright, dtype=np.float64)))
+    rank = np.empty(n, dtype=np.int64)
+    rank[order] = np.arange(n)
+    up = rank[edges[:, 0]] < rank[edges[:, 1]]  # is edges[:, 0] the brighter end?
+    par = np.where(up, edges[:, 0], edges[:, 1])
+    child = np.where(up, edges[:, 1], edges[:, 0])
+    srt = np.lexsort((rank[par], child))  # per child, brightest parent first
+    child, par = child[srt], par[srt]
+    first = np.r_[True, child[1:] != child[:-1]]
+    parent[child[first]] = par[first]
+    return parent
 
 
 def seeds_merge(
@@ -145,7 +172,17 @@ def seeds_merge(
     thres_dist: int,
     thres_corr: float,
 ) -> pd.DataFrame:
-    """Add ``mask_mrg``: keep the brightest seed of each group of close, correlated seeds."""
+    """Add ``mask_mrg``: keep the brightest seed of each group of close, correlated seeds.
+
+    Two seeds are linked when they lie within ``thres_dist`` and their traces correlate
+    above ``thres_corr``. Each seed joins the group of its brightest linked neighbour that is
+    brighter than itself (``brightest_parent``), so groups are trees rooted at a local
+    brightness maximum, and the roots are kept. Minian takes the connected components of
+    the same links instead; that merge runs through the dim pixels between two cells once
+    those are seeds too, and on a 2 h session (48k seeds, 280 rolling windows) it collapsed
+    32k seeds into 166 (bench/README.md, "Long recordings"). The tree rule never climbs
+    from a dim seed to a brighter one, so a chain stops at the valley between two cells.
+    """
     out = seeds.copy()
     h = out["height"].to_numpy().astype(np.int64)
     w = out["width"].to_numpy().astype(np.int64)
@@ -155,14 +192,7 @@ def seeds_merge(
         pr = cKDTree(np.stack([h, w], axis=1)).query_pairs(thres_dist, output_type="ndarray")
         if len(pr):
             c = fc.pairs(h[pr[:, 0]] * fc.f.W_ + w[pr[:, 0]], h[pr[:, 1]] * fc.f.W_ + w[pr[:, 1]])
-            e = pr[c > thres_corr]
-            adj = sps.coo_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(n, n))
-            labels = merge_labels(adj)
-            bright = np.asarray(max_proj)[h, w]
-            keep[:] = False
-            # stable sort by label then descending brightness: first row per label wins
-            order = np.lexsort((np.arange(n), -bright, labels))
-            first = np.r_[True, labels[order][1:] != labels[order][:-1]]
-            keep[order[first]] = True
+            parent = brightest_parent(pr[c > thres_corr], np.asarray(max_proj)[h, w])
+            keep = parent == np.arange(n)
     out["mask_mrg"] = keep
     return out

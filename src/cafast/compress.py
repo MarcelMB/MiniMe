@@ -15,7 +15,7 @@ from scipy.linalg import blas as sblas
 from cafast.factors import TileFactors
 
 N_OVERSAMPLES = 10
-MAX_RANK = 100
+MAX_RANK = 300  # a 64 x 64 tile dense with cells passed 176 components at 140k frames
 NOISE_PX_CHUNK = 128
 ADAPT_MARGIN = 10
 SVD_CHUNK = 4096
@@ -82,7 +82,7 @@ class TileMatrix:
         geometric mean of the periodogram ``|rfft(y)|^2 / T`` over bins
         ``[round(noise_freq T), round(T / 2))``. The geometric mean of white-noise periodogram
         bins (exponential) is ``exp(-gamma) sigma^2``, so this is ``0.75 sigma`` on white noise;
-        kept unscaled so ``sparse_penal`` means what it does in Minian. Unlike a median of
+        kept unscaled so ``sparse_snr`` compares with Minian's ``sparse_penal``. Unlike a median of
         integer frame differences it is not quantized on uint8 frames.
         """
         lo, hi = np.around(np.array([noise_freq, 0.5]) * self.T).astype(int)

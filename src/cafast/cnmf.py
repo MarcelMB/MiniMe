@@ -6,8 +6,8 @@ Every stage reads the movie only through ``Factors`` (``YCt``, ``AtY``,
 * ``update_spatial``: Minian ``update_spatial`` with the per-pixel LassoLars replaced by
   the Gram-shared NNQP solver of ``spatial_kernel`` (same objective, true optimum, on unit-norm
   traces as ``LassoLars(normalize=True)`` in the scikit-learn Minian pins; see
-  ``column_norms``), then Minian's post-processing (strict ``size_thres``, divide by the
-  footprint maximum).
+  ``column_norms``) and a penalty that does not grow with ``T`` (``sparse_snr``), then
+  Minian's post-processing (strict ``size_thres``, divide by the footprint maximum).
 * ``update_background``: by default (``Params.background_clip = False``) the rank-1
   background of the unclipped residual, ``b = clip(mean_t (Y - A C), 0)``,
   ``f_t = (Y_t - A C_t) . b / (b . b)``, computed on the factors without reconstructing the
@@ -86,7 +86,7 @@ def column_norms(Cc: np.ndarray) -> np.ndarray:
     to ``normalize=True``: the fit ran on the columns of ``C^T`` scaled to unit norm and the
     coefficients were scaled back. The penalty on ``a_k`` is then ``||Cc_k||`` (about
     ``sqrt(T) std(C_k)``, ~350 on a 40k-frame session) times stronger than in an unscaled
-    fit; without it ``sparse_penal`` is negligible and footprints fill the dilated support.
+    fit; without it the penalty is negligible and footprints fill the dilated support.
     """
     norms = np.linalg.norm(Cc, axis=1)
     norms[norms == 0] = 1.0
@@ -99,10 +99,16 @@ def update_spatial(
     C: np.ndarray,
     sn: np.ndarray,
     dl_wnd: int,
-    sparse_penal: float,
+    sparse_snr: float,
     size_thres: tuple[float | None, float | None],
 ) -> tuple[sps.csr_matrix, np.ndarray, np.ndarray]:
     """New footprints on the dilated supports of ``A``.
+
+    The penalty on pixel ``i`` is ``lam_i = sqrt(T) * sparse_snr * sn_i`` on unit-norm
+    traces, so a pixel keeps unit ``k`` only where ``a_ik std(C_k) > sparse_snr * sn_i``,
+    whatever ``T``. Minian's ``LassoLars(alpha = sparse_penal * sn)`` is ``lam_i = T *
+    sparse_penal * sn_i``, a threshold that grows as ``sqrt(T)``: on a 2 h session it dropped
+    almost every unit (bench/README.md, "Long recordings").
 
     Returns ``(A_new (K', P) float32 with row maxima 1, mask (K,) bool of kept units,
     norm_fac (K',) float32 row maxima before normalisation)``.
@@ -122,7 +128,7 @@ def update_spatial(
     Cc /= scale[:, None]
     G = Cc @ Cc.T
     B = f.YCt(Cc)[active].astype(np.float64)
-    lam = f.T * sparse_penal * np.asarray(sn, dtype=np.float64)[active]
+    lam = np.sqrt(f.T) * sparse_snr * np.asarray(sn, dtype=np.float64)[active]
     values = solve_nnqp(G, B, lam, indptr, indices) / scale[indices]
 
     pix = np.repeat(active, counts[active])
@@ -380,7 +386,7 @@ def run_cnmf(
     YrA = C_sp
     for it in range(params.n_iter):
         A, mask, nf = update_spatial(
-            fac, A, C, sn, params.dl_wnd, params.sparse_penal, params.size_thres
+            fac, A, C, sn, params.dl_wnd, params.sparse_snr, params.size_thres
         )
         C_sp = (np.asarray(C)[mask] * nf[:, None]).astype(np.float32)
         _check_finite(f"spatial update (iteration {it})", A_data=A.data, C=C_sp)

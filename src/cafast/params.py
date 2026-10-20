@@ -49,7 +49,11 @@ class Params:
     loop_merge_corr: float = 0.9
     # CNMF
     dl_wnd: int = 10
-    sparse_penal: float = 0.01
+    # sparseness penalty of the spatial update as a per-pixel signal-to-noise threshold: a
+    # pixel keeps a unit only where its std along the unit's trace exceeds sparse_snr x sn.
+    # Minian's sparse_penal is sparse_snr / sqrt(T) (0.01 on 10,000 frames = sparse_snr 1),
+    # so Minian's penalty grows with the length of the recording; this one does not
+    sparse_snr: float = 1.0
     size_thres: tuple[float | None, float | None] = (25, None)
     n_iter: int = 2
     # background of the unclipped residual Y - A C, computed on the factors without
@@ -87,6 +91,11 @@ class Params:
         d = dict(json.loads(Path(path).read_text()))
         for k in RUN_METADATA_KEYS:
             d.pop(k, None)
+        if "sparse_penal" in d:
+            raise ValueError(
+                f"{path}: sparse_penal was replaced by sparse_snr = sparse_penal * sqrt(T) "
+                "(T = frames of the session it was tuned on)"
+            )
         unknown = sorted(set(d) - {f.name for f in fields(cls)})
         if unknown:
             raise ValueError(f"unknown parameter(s) in {path}: {', '.join(unknown)}")

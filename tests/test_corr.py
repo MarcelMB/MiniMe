@@ -139,3 +139,51 @@ def test_cross_tile_correlations_match_reconstruct_then_lowpass():
     c = fc.pairs(s, d)
     assert np.abs(c - ref(s, d)).max() < 1e-10
     assert np.abs(c - fc.pairs(d, s)).max() < 1e-12  # symmetric across tiles
+
+
+def test_brightest_parent_stops_at_the_valley_between_cells():
+    # A (bright) - b (dim, between) - B (medium): b links to both, A and B are not linked
+    bright = np.array([10.0, 2.0, 6.0])
+    edges = np.array([[0, 1], [1, 2]])
+    parent = corr.brightest_parent(edges, bright)
+    assert parent.tolist() == [0, 0, 2]  # b joins A; B stays a root
+    # the same links as connected components would merge all three
+    adj = sps.coo_matrix((np.ones(2), (edges[:, 0], edges[:, 1])), shape=(3, 3))
+    assert len(set(corr.merge_labels(adj))) == 1
+    # a chain downhill from one maximum is absorbed entirely
+    assert corr.brightest_parent(
+        np.array([[0, 1], [1, 2]]), np.array([3.0, 2.0, 1.0])
+    ).tolist() == [0, 0, 1]
+    # ties break by index, no edges: everyone is a root
+    assert corr.brightest_parent(np.array([[0, 1]]), np.array([1.0, 1.0])).tolist() == [0, 0]
+    assert corr.brightest_parent(np.empty((0, 2), int), np.array([1.0, 2.0])).tolist() == [0, 1]
+
+
+def test_seeds_merge_does_not_percolate_through_boundary_seeds():
+    """Two cells with a seed on the dim pixel between them: Minian's connected components
+    merge the cells through it; the tree merge keeps both."""
+    T = 1500
+    rng = np.random.default_rng(3)
+    c1 = np.convolve(rng.random(T) < 0.01, np.exp(-np.arange(60) / 15.0))[:T]
+    c2 = np.convolve(rng.random(T) < 0.01, np.exp(-np.arange(60) / 15.0))[:T]
+    Y = 0.05 * rng.standard_normal((64, T))  # one 8 x 8 tile
+    Y[0] += 10 * c1  # cell A at (0, 0)
+    Y[2] += 5 * c1 + 5 * c2  # boundary pixel (0, 2): a mixture of both
+    Y[4] += 8 * c2  # cell B at (0, 4)
+    mean = Y.mean(axis=1)
+    U, s, Vt = np.linalg.svd(Y - mean[:, None], full_matrices=False)
+    tf = fm.TileFactors(
+        (U[:, :3] * s[:3]).astype(np.float32),
+        Vt[:3].T.astype(np.float32),
+        mean.astype(np.float32),
+        np.full(64, 0.05, np.float32),
+        ((Y - mean[:, None]) ** 2).sum(axis=1),
+    )
+    mp = Y.max(1).reshape(8, 8)
+    f = fm.Factors(8, 8, T, tiles.tile_grid(8, 8, 8), [tf], mp, mp[None], np.array([0, T]), {})
+    fc = corr.FactorCorr(f, 0.06)
+    c = fc.pairs(np.array([0, 2, 0]), np.array([2, 4, 4]))
+    assert c[0] > 0.6 and c[1] > 0.6 and c[2] < 0.6  # A-b, b-B linked; A-B not
+    seeds_df = pd.DataFrame({"height": [0, 0, 0], "width": [0, 2, 4]})
+    out = corr.seeds_merge(fc, seeds_df, mp, thres_dist=3, thres_corr=0.6)
+    assert out["mask_mrg"].tolist() == [True, False, True]
