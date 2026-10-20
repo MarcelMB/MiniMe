@@ -56,6 +56,38 @@ def cnmf(
 
 
 @app.command()
+def autotune(
+    run_dir: Annotated[Path, typer.Argument(help="A finished run (holds factors/).")],
+    diameter: Annotated[float, typer.Option(help="Cell diameter in px (factor frame).")],
+    name: Annotated[str, typer.Option(help="Output name under RUN_DIR/reruns/.")] = "auto",
+) -> None:
+    """Propose window-2 parameters for RUN_DIR (sweep, then a rerun in RUN_DIR/reruns/NAME/)."""
+    import json
+
+    from cafast.autotune import run as at
+    from cafast.autotune.sweep import Trial
+
+    def show(t: Trial) -> None:
+        res = (
+            t.error if t.score is None else f"good {t.score['good']}  flagged {t.score['flagged']}"
+        )
+        typer.echo(f"{t.step:<10} {res}  ({t.seconds:.1f} s)")
+
+    try:
+        out = at.autotune(run_dir, diameter, name=name, on_trial=show)
+    except (ValueError, RuntimeError) as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(1) from None
+    doc = json.loads((out / at.DOC).read_text())
+    typer.echo(str(out))
+    for k, v in doc["proposed"].items():
+        edge = "  [at edge]" if k in doc["at_edge"] else ""
+        typer.echo(f"{k:<17} {doc['run_values'][k]!s:>8} -> {v!s:<8}{edge}")
+    s = doc["score"]
+    typer.echo(f"good {s['good']}  flagged {s['flagged']}  ({doc['wall_s']} s)")
+
+
+@app.command()
 def tune(
     run_dir: Annotated[Path, typer.Argument(help="A finished run (holds factors/).")],
     minian: Annotated[

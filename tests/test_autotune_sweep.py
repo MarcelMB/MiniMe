@@ -1,9 +1,14 @@
 import dataclasses
+import json
 
 import numpy as np
+import pandas as pd
 import pytest
+import scipy.sparse as sps
+from typer.testing import CliRunner
 
-from cafast import window2
+from cafast import cli, window2
+from cafast.autotune import run as at
 from cafast.autotune import score, sweep
 from cafast.params import Params
 from cafast.report import StageTimer
@@ -103,3 +108,37 @@ def test_all_failed_step_raises(tiny_run):
     grids = dataclasses.replace(SMALL, pnr_thres=(1e9,))
     with pytest.raises(RuntimeError, match="seeds"):
         sweep.Sweep(sess, score.Checks(D), grids).run()
+
+
+def test_autotune_writes_a_rerun_whose_score_matches(tiny_run):
+    out = at.autotune(tiny_run, D, grids=SMALL, name="auto_t")
+    assert out == tiny_run / "reruns" / "auto_t"
+    doc = json.loads((out / "autotune.json").read_text())
+    assert doc["diameter"] == D and set(doc["proposed"]) == set(sweep.SEARCHED)
+    assert doc["derived"]["dl_wnd"] == 7
+    assert set(doc["at_edge"]) <= set(sweep.SEARCHED)
+    # the cached sweep and the fresh rerun agree
+    A = sps.load_npz(out / "cnmf" / "A.npz")
+    YrA = np.load(out / "cnmf" / "YrA.npy")
+    fresh = score.summarize(score.unit_flags(A, YrA, 64, 64, at.checks_of(doc)))
+    assert fresh == doc["score"]
+    table = pd.read_csv(out / "sweep.csv")
+    assert len(table) == doc["n_trials"] and {"step", "score", "sparse_penal"} <= set(table)
+    flags = pd.read_csv(out / "unit_flags.csv")
+    assert len(flags) == A.shape[0] and "good" in flags
+
+
+def test_cli_autotune(tiny_run, monkeypatch):
+    monkeypatch.setattr(at, "DEFAULT_GRIDS", SMALL)
+    res = CliRunner().invoke(
+        cli.app, ["autotune", str(tiny_run), "--diameter", "7", "--name", "auto_cli"]
+    )
+    assert res.exit_code == 0, res.output
+    assert "sparse_penal" in res.output and "good" in res.output
+    assert (tiny_run / "reruns" / "auto_cli" / "autotune.json").exists()
+
+
+@pytest.mark.parametrize("d", ["0", "-2"])
+def test_cli_autotune_rejects_bad_diameter(tiny_run, d):
+    res = CliRunner().invoke(cli.app, ["autotune", str(tiny_run), "--diameter", d])
+    assert res.exit_code == 1 and "diameter" in res.output
