@@ -1,4 +1,4 @@
-"""CNMF stages on factors: spatial update, clipped background, residual traces, the loop.
+"""CNMF stages on factors: spatial update, background, residual traces, the loop.
 
 Every stage reads the movie only through ``Factors`` (``YCt``, ``AtY``,
 ``reconstruct_chunk``); nothing the size of the movie is held or written.
@@ -8,11 +8,12 @@ Every stage reads the movie only through ``Factors`` (``YCt``, ``AtY``,
   traces as ``LassoLars(normalize=True)`` in the scikit-learn Minian pins; see
   ``column_norms``), then Minian's post-processing (strict ``size_thres``, divide by the
   footprint maximum).
-* ``update_background``: Minian's ``b = mean_t clip(Y - A C, 0)``,
+* ``update_background``: by default (``Params.background_clip = False``) the rank-1
+  background of the unclipped residual, ``b = clip(mean_t (Y - A C), 0)``,
+  ``f_t = (Y_t - A C_t) . b / (b . b)``, computed on the factors without reconstructing the
+  movie. ``background_clip = True`` gives Minian's ``b = mean_t clip(Y - A C, 0)``,
   ``f_t = clip(Y_t - A C_t, 0) . b / (b . b)``, streamed over reconstructed tile chunks
-  (``bench_passes/candidates/bg_streamed.py``), one tile per thread. With
-  ``Params.background_clip = False`` the unclipped residual is used instead, computed on the
-  factors without reconstructing the movie.
+  (``bench_passes/candidates/bg_streamed.py``), one tile per thread.
 * ``compute_trace``: Minian ``compute_trace`` (``trace_shared.py`` algebra).
 * ``run_cnmf``: background, then ``n_iter`` x (spatial, background, traces,
   ``C := YrA``, unit merge). The background footprint ``b`` is computed in full on the

@@ -239,8 +239,7 @@ Synth score (`cafast score`): base, threads and unclipped all F1 0.9587 (403 uni
 Minian (`compare_minian.py`): 124 of 158 matched for base and unclipped, trace corr median
 0.813 / 0.812.
 
-**Recommendation.** Keep the threaded clipped background as the default: Minian's definition,
-bit-identical results, `cnmf` 2.4-2.7x faster. `background_clip = False` takes the background
-to ~0 s (`cnmf` another ~2x faster) and changes no score here (worst unit trace corr 0.998);
-use it for window-2 sweeps, and it is a safe candidate for the default if Minian parity of
-`b` itself is not needed.
+**Default changed: `background_clip = False`.** It takes the background to ~0 s (`cnmf`
+another ~2x faster than threads) and changes no score here (worst unit trace corr 0.998);
+Minian parity of `b` itself is not needed. `background_clip = True` keeps Minian's definition,
+now threaded (bit-identical to the old loop, `cnmf` 2.4-2.7x faster than before).

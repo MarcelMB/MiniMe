@@ -52,9 +52,10 @@ class Params:
     sparse_penal: float = 0.01
     size_thres: tuple[float | None, float | None] = (25, None)
     n_iter: int = 2
-    # background of clip(Y - A C, 0) as Minian (True), or of the unclipped residual computed
-    # on the factors without reconstructing the movie (False; bench/README.md)
-    background_clip: bool = True
+    # background of the unclipped residual Y - A C, computed on the factors without
+    # reconstructing the movie (False), or of clip(Y - A C, 0) as Minian (True, ~2x slower
+    # cnmf); same scores on synth, WL25, WL27 (bench/README.md)
+    background_clip: bool = False
     # execution
     workers: int = 1
     sub_batch: int = 100
