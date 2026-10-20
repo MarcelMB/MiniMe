@@ -24,6 +24,15 @@ $('#runform').addEventListener('submit', async e => { e.preventDefault();
 $('#atform').addEventListener('submit', async e => { e.preventDefault();
   try { const j = await post('/api/autotune', e.target); say('auto-tune started'); poll(j.name, true); }
   catch(err){ say(err.message, true); } });
+(() => { const im = $('#mpimg'), ln = $('#mpline line'); if(!im) return; let a = null;
+  const pt = e => { const r = im.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  const set = (p, q) => { ln.setAttribute('x1', p[0]); ln.setAttribute('y1', p[1]); ln.setAttribute('x2', q[0]); ln.setAttribute('y2', q[1]); };
+  im.addEventListener('mousedown', e => { a = pt(e); set(a, a); });
+  im.addEventListener('mousemove', e => { if(a) set(a, pt(e)); });
+  window.addEventListener('mouseup', e => { if(!a) return; const b = pt(e);
+    const px = Math.hypot(b[0] - a[0], b[1] - a[1]) * im.naturalWidth / im.clientWidth;
+    if(px >= 1) $('#atform [name=diameter]').value = px.toFixed(1); a = null; });
+})();
 $('#saveform').addEventListener('submit', async e => { e.preventDefault();
   try { const j = await post('/api/save', e.target);
     $('#saved').textContent = 'saved: ' + j.path + '  ->  cafast run RAW --params ' + j.path; }

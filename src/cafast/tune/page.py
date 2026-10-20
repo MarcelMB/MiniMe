@@ -115,6 +115,9 @@ def _propose_form(app: TuneApp) -> str:
         '<label><b>cell diameter (px)</b><input type="text" name="diameter" '
         f'value="{_e(d)}" placeholder="e.g. 8"><span class="hint">in the factor frame; '
         "sets dl_wnd, merge_dist, seeds_max_wnd, inita_wnd, size_thres</span></label>"
+        '<div id="measure"><img id="mpimg" src="/maxproj.png" draggable="false">'
+        '<svg id="mpline"><line x1="0" y1="0" x2="0" y2="0"/></svg></div>'
+        '<div class="note">drag across one cell to measure its diameter</div>'
         '<button type="submit">Propose parameters (~5 min)</button></form>'
     )
 

@@ -310,3 +310,17 @@ def test_page_shows_flagged_gallery(tune_server, monkeypatch):
     with pytest.raises(urllib.error.HTTPError) as e:
         _get(base + "/thumb/auto/99999.png")
     assert e.value.code == 404
+
+
+def test_maxproj_png_native_size(tune_server):
+    app, base = tune_server
+    status, ctype, png = _get(base + "/maxproj.png")
+    img = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_UNCHANGED)
+    assert status == 200 and ctype == "image/png"
+    assert img.shape == (app.session.fac.H, app.session.fac.W_) and img.dtype == np.uint8
+
+
+def test_page_has_diameter_measure(tune_server):
+    _, base = tune_server
+    page_html = _get(base + "/")[2].decode()
+    assert 'id="mpimg" src="/maxproj.png"' in page_html and 'id="mpline"' in page_html

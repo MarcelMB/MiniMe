@@ -57,3 +57,7 @@ td.changed{color:var(--orange);font-weight:600}
 .badge{background:#e0245e22;color:var(--red);padding:0 4px;border-radius:3px;font-size:11px}
 .thumbs{display:flex;flex-wrap:wrap;gap:4px}
 img.thumb{width:100px;cursor:pointer;image-rendering:pixelated}
+#measure{position:relative;user-select:none}
+#mpimg{width:100%;display:block;image-rendering:pixelated;cursor:crosshair}
+#mpline{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+#mpline line{stroke:var(--orange);stroke-width:2}
