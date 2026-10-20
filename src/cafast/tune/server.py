@@ -8,6 +8,7 @@ parameter files to ``RUN_DIR/tune/``.
 Routes: ``GET /`` (``?run=NAME&cmp=NAME``), ``GET /api/status``, ``GET /fig/RUN/FILE.png``
 (``RUN`` = ``_shared`` for the shared figures and the preview), ``GET /unit/RUN/K.png``,
 ``GET /thumb/RUN/K.png`` (a small crop of one unit, for the flagged gallery),
+``GET /maxproj.png`` (the max projection at native size, to measure a cell),
 ``POST /api/run``, ``POST /api/save``, ``POST /api/preview``, ``POST /api/autotune``
 (``diameter``: sweep, write the proposal as the rerun ``auto``).
 """
@@ -329,6 +330,8 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/":
             html = page.render(app, q.get("run"), q.get("cmp"))
             self._send(200, "text/html; charset=utf-8", html.encode())
+        elif url.path == "/maxproj.png":
+            self._send(200, "image/png", autofig.max_proj_png(app.session.fac.max_proj))
         elif url.path == "/api/status":
             st = dict(app.status)
             if st.get("state") == "running":

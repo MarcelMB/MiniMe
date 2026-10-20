@@ -111,3 +111,13 @@ def thumb_png(run: Any, k: int, pad: int = 12) -> bytes:
     cs, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     cv2.drawContours(rgb, cs, -1, _bgr(CAFAST), 1)
     return cv2.imencode(".png", rgb)[1].tobytes()
+
+
+# ---------------------------------------------------------------------------
+# Max projection for measuring
+# ---------------------------------------------------------------------------
+
+
+def max_proj_png(max_proj: np.ndarray) -> bytes:
+    """The max projection as an 8-bit PNG, one image pixel per factor pixel."""
+    return cv2.imencode(".png", _gray8(np.asarray(max_proj, np.float32)))[1].tobytes()
