@@ -123,7 +123,34 @@ def test_autotune_writes_a_rerun_whose_score_matches(tiny_run):
     fresh = score.summarize(score.unit_flags(A, YrA, 64, 64, at.checks_of(doc)))
     assert fresh == doc["score"]
     table = pd.read_csv(out / "sweep.csv")
-    assert len(table) == doc["n_trials"] and {"step", "score", "sparse_penal"} <= set(table)
+    assert list(table.columns) == [
+        "step",
+        *sweep.SEARCHED,
+        "good",
+        "flagged",
+        "score",
+        "low_pnr",
+        "in_pieces",
+        "bad_size",
+        "duplicate",
+        "seeds_init",
+        "seeds_pnr",
+        "seeds_merged",
+        "units_init_merge",
+        "units_final",
+        "size10_median",
+        "seconds",
+        "error",
+    ]
+    assert len(table) == doc["n_trials"]
+    same = table["step"].isin(["sparse", "loop_merge"])
+    for k, v in doc["proposed"].items():
+        same &= table[k].astype(str) == str(v)
+    assert same.any(), "no sweep row matches the proposal"
+    row = table[same].iloc[0]
+    assert {k: int(row[k]) for k in ("good", "flagged", "score")} == {
+        k: doc["score"][k] for k in ("good", "flagged", "score")
+    }
     flags = pd.read_csv(out / "unit_flags.csv")
     assert len(flags) == A.shape[0] and "good" in flags
 
