@@ -21,6 +21,9 @@ async function poll(name, reload){
 $('#runform').addEventListener('submit', async e => { e.preventDefault();
   try { const j = await post('/api/run', e.target); say('started ' + j.name); poll(j.name, true); }
   catch(err){ say(err.message, true); } });
+$('#atform').addEventListener('submit', async e => { e.preventDefault();
+  try { const j = await post('/api/autotune', e.target); say('auto-tune started'); poll(j.name, true); }
+  catch(err){ say(err.message, true); } });
 $('#saveform').addEventListener('submit', async e => { e.preventDefault();
   try { const j = await post('/api/save', e.target);
     $('#saved').textContent = 'saved: ' + j.path + '  ->  cafast run RAW --params ' + j.path; }

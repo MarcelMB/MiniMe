@@ -52,3 +52,6 @@ details summary{cursor:pointer;color:var(--muted);font-weight:600}
 .err{color:var(--red)}
 .note{color:var(--muted);font-size:11px}
 .scroll{overflow-x:auto;max-width:100%}
+table.proposal img{width:260px}
+td.changed{color:var(--orange);font-weight:600}
+.badge{background:#e0245e22;color:var(--red);padding:0 4px;border-radius:3px;font-size:11px}

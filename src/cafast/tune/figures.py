@@ -29,11 +29,15 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
 from cafast import window2
+from cafast.autotune.run import load_doc
 from cafast.autotune.score import (
     SIZE_FRAC,  # noqa: F401 - kept importable from here
+    Checks,
     n_parts,
     size_above,
+    summarize,
     trace_pnr,
+    unit_flags,
 )
 from cafast.autotune.score import footprint_image as _image
 from cafast.autotune.score import peak_mask as _mask
@@ -569,7 +573,7 @@ def unit_png(run: RunData, k: int, mn: MinianOverlay | None, pad: int = 18) -> b
 # ---------------------------------------------------------------------------
 
 
-def summary(run: RunData, mn: MinianOverlay | None) -> dict[str, Any]:
+def summary(run: RunData, mn: MinianOverlay | None, checks: Checks | None = None) -> dict[str, Any]:
     c = run.report["counts"]
     size10 = size_above(run.A)
     out: dict[str, Any] = {
@@ -587,11 +591,21 @@ def summary(run: RunData, mn: MinianOverlay | None) -> dict[str, Any]:
             "trace_corr_median": float(np.nanmedian(mn.corr)) if len(mn.corr) else None,
             "minian_size10_median": float(np.median(mn.size10)),
         }
+    if checks is not None:
+        s = summarize(unit_flags(run.A, run.YrA, run.H, run.W, checks))
+        out |= {"good": s["good"], "flagged": s["flagged"]}
     return out
 
 
-def make_run_figures(run: RunData, mn: MinianOverlay | None) -> dict[str, Any]:
-    """Write ``RUN_FIGURES`` (and ``minian.png``) to ``run.dir/figures``; returns the summary."""
+def make_run_figures(
+    run: RunData, mn: MinianOverlay | None, checks: Checks | None = None
+) -> dict[str, Any]:
+    """Write ``RUN_FIGURES`` (and ``minian.png``, the sweep curves) to ``run.dir/figures``.
+
+    Returns the summary, with ``good`` / ``flagged`` when ``checks`` is given.
+    """
+    from cafast.tune import autofig  # here: autofig reads the palette from this module
+
     out = run.dir / "figures"
     out.mkdir(exist_ok=True)
     fig_seeds(run, out / "seeds.png")
@@ -601,6 +615,14 @@ def make_run_figures(run: RunData, mn: MinianOverlay | None) -> dict[str, Any]:
     fig_traces(run, mn, out / "traces.png")
     if mn is not None:
         fig_minian(run, mn, out / "minian.png")
-    s = summary(run, mn)
+    sweep_csv, doc = run.dir / "sweep.csv", load_doc(run.dir)
+    if sweep_csv.exists() and doc is not None:
+        autofig.sweep_curves(sweep_csv, doc, out)
+    s = summary(run, mn, checks)
     (run.dir / "summary.json").write_text(json.dumps(s, indent=1))
     return s
+
+
+def write_summary(run: RunData, mn: MinianOverlay | None, checks: Checks | None) -> None:
+    """Rewrite ``summary.json`` only (after new checks), without drawing figures."""
+    (run.dir / "summary.json").write_text(json.dumps(summary(run, mn, checks), indent=1))

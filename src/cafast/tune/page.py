@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
+from cafast.autotune import run as at
+from cafast.autotune import score, sweep
 from cafast.tune import figures
 
 if TYPE_CHECKING:
@@ -105,9 +107,25 @@ def _field(key: str, hint: str, value: Any, base: Any) -> str:
     )
 
 
+def _propose_form(app: TuneApp) -> str:
+    ch = app.checks()
+    d = "" if ch is None else fmt_value(ch.diameter)
+    return (
+        '<form id="atform"><h2>Auto-tune</h2>'
+        '<label><b>cell diameter (px)</b><input type="text" name="diameter" '
+        f'value="{_e(d)}" placeholder="e.g. 8"><span class="hint">in the factor frame; '
+        "sets dl_wnd, merge_dist, seeds_max_wnd, inita_wnd, size_thres</span></label>"
+        '<button type="submit">Propose parameters (~5 min)</button></form>'
+    )
+
+
 def _sidebar(app: TuneApp, view: str | None) -> str:
     p, base = app.params_of(view), app.session.base
-    out = ['<form id="runform">', f"<h2>Window 2 parameters (from {_e(view or 'run')})</h2>"]
+    out = [
+        _propose_form(app),
+        '<form id="runform">',
+        f"<h2>Window 2 parameters (from {_e(view or 'run')})</h2>",
+    ]
     for group, keys in FORM:
         out.append(f"<h2>{group}</h2>")
         out += [_field(k, h, getattr(p, k), getattr(base, k)) for k, h in keys]
@@ -149,8 +167,40 @@ def _num(v: Any, fmt: str = "{:.0f}") -> str:
     return "" if v is None else fmt.format(v)
 
 
+def _proposal(app: TuneApp) -> str:
+    doc = at.load_doc(app.reruns_dir / at.AUTO)
+    if doc is None:
+        return ""
+    s = doc["score"]
+    reasons = ", ".join(f"{s[r]} {r.replace('_', ' ')}" for r in score.REASONS if s[r])
+    rows = []
+    for k in sweep.SEARCHED:
+        a, b = doc["run_values"][k], doc["proposed"][k]
+        cls = ' class="changed"' if str(a) != str(b) else ""
+        edge = '<span class="badge">at edge: extend the grid</span>' if k in doc["at_edge"] else ""
+        rows.append(
+            f"<tr><td class='l'><b>{k}</b></td><td>{_e(fmt_value(a))}</td>"
+            f"<td{cls}>{_e(fmt_value(b))}</td><td>{_img(app, at.AUTO, f'sweep_{k}.png')}</td>"
+            f"<td class='l'>{edge}</td></tr>"
+        )
+    derived = ", ".join(f"{k} {fmt_value(v)}" for k, v in doc["derived"].items())
+    return (
+        f"<h2>Proposal ({at.AUTO})</h2><div class='note'>{s['good']} good / {s['flagged']} "
+        f"flagged ({_e(reasons) or 'none'}) &middot; diameter {_e(fmt_value(doc['diameter']))} px "
+        f"&middot; derived: {_e(derived)} &middot; {doc['n_trials']} settings in "
+        f"{doc['wall_s']} s</div>"
+        "<div class='note'>Curves: best good (blue) and flagged (red) count at each value; "
+        "dashed = proposed. To override: view auto (its values fill the form), edit, Rerun; "
+        "the new run opens compared with auto.</div>"
+        "<table class='proposal'><thead><tr><th class='l'>parameter</th><th>run</th>"
+        f"<th>proposed</th><th>sweep</th><th></th></tr></thead><tbody>{''.join(rows)}"
+        "</tbody></table>"
+    )
+
+
 def _runs_table(app: TuneApp, view: str | None, cmp: str | None) -> str:
     mn = app.minian_npz is not None
+    scored = app.checks() is not None
     head = [
         "view",
         "cmp",
@@ -159,12 +209,12 @@ def _runs_table(app: TuneApp, view: str | None, cmp: str | None) -> str:
         "seeds init / PNR / merged",
         "initA",
         "units",
+        *(["good / flagged"] if scored else []),
         "size >10 % (median px)",
         "in pieces",
+        *(["Minian matched", "trace corr"] if mn else []),
         "wall s",
     ]
-    if mn:
-        head[9:9] = ["Minian matched", "trace corr"]  # after "in pieces"
     rows = []
     for r in app.runs():
         n = r["name"]
@@ -185,6 +235,7 @@ def _runs_table(app: TuneApp, view: str | None, cmp: str | None) -> str:
                 f"{r['seeds_init']} / {r['seeds_pnr']} / {r['seeds_merged']}",
                 _num(r.get("units_initA")),
                 _num(r.get("units_final")),
+                *([f"{_num(r.get('good'))} / {_num(r.get('flagged'))}"] if scored else []),
                 _num(r.get("size10_median")),
                 _num(r.get("in_pieces")),
             ]
@@ -248,7 +299,7 @@ def render(app: TuneApp, view: str | None, cmp: str | None) -> str:
     names = app.names()
     view = view if view in names else (names[-1] if names else None)
     cmp = cmp if cmp in names and cmp != view else None
-    main = ["<h2>Runs</h2>", _runs_table(app, view, cmp)]
+    main = [_proposal(app), "<h2>Runs</h2>", _runs_table(app, view, cmp)]
     main.append("<details><summary>Pass 1 (shared by every rerun)</summary>")
     main += [_figure(app, f, t, w, "_shared", None) for f, t, w in SHARED]
     pv = app.figure_path("_shared", "preview.png")

@@ -7,12 +7,14 @@ parameter files to ``RUN_DIR/tune/``.
 
 Routes: ``GET /`` (``?run=NAME&cmp=NAME``), ``GET /api/status``, ``GET /fig/RUN/FILE.png``
 (``RUN`` = ``_shared`` for the shared figures and the preview), ``GET /unit/RUN/K.png``,
-``POST /api/run``, ``POST /api/save``, ``POST /api/preview``.
+``POST /api/run``, ``POST /api/save``, ``POST /api/preview``, ``POST /api/autotune``
+(``diameter``: sweep, write the proposal as the rerun ``auto``).
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
 import threading
 import time
@@ -25,6 +27,9 @@ from pathlib import Path
 from typing import Any
 
 from cafast import pipeline, window2
+from cafast.autotune import run as at
+from cafast.autotune.score import Checks
+from cafast.autotune.sweep import Trial
 from cafast.params import Params
 from cafast.tune import figures, minian, page, preview
 
@@ -198,11 +203,37 @@ class TuneApp:
     def _figures(self, name: str) -> None:
         self._set(stage="figures")
         run = self.run_data(name)
-        figures.make_run_figures(run, self.overlay(run))
+        figures.make_run_figures(run, self.overlay(run), self.checks())
 
     def _rerun(self, name: str, params: Params) -> None:
         self.session.run(params, name, on_stage=lambda s: self._set(stage=s))
         self._figures(name)
+
+    def checks(self) -> Checks | None:
+        """The unit checks of the last auto-tune (``reruns/auto/autotune.json``), if any."""
+        doc = at.load_doc(self.reruns_dir / at.AUTO)
+        return at.checks_of(doc) if doc is not None else None
+
+    def _autotune(self, name: str, diameter: float) -> None:
+        n = at.DEFAULT_GRIDS.n_trials()
+        done: list[Trial] = []
+
+        def progress(t: Trial) -> None:
+            done.append(t)
+            self._set(stage=f"{t.step}: setting {len(done)} of ~{n}")
+
+        at.autotune(self.run_dir, diameter, name=name, session=self.session, on_trial=progress)
+        self._figures(name)
+        self._rescore()
+
+    def _rescore(self) -> None:
+        """Rewrite every run's summary with the current checks (good / flagged columns)."""
+        self._set(stage="rescoring runs")
+        checks = self.checks()
+        for d in sorted(self.reruns_dir.glob("*")):
+            if (d / "report.json").exists() and (d / "stages" / "index.json").exists():
+                run = self.run_data(d.name)
+                figures.write_summary(run, self.overlay(run), checks)
 
     def _startup(self, name: str) -> None:
         self._set(stage="shared figures")
@@ -211,7 +242,11 @@ class TuneApp:
             self._rerun(name, self.session.base)
         for d in sorted(self.reruns_dir.glob("*")):
             s = d / "summary.json"
-            stale = s.exists() and self.minian_npz and "minian_matched" not in s.read_text()
+            text = s.read_text() if s.exists() else ""
+            stale = s.exists() and (
+                (self.minian_npz and "minian_matched" not in text)
+                or (self.checks() is not None and '"good"' not in text)
+            )
             if (d / "stages" / "index.json").exists() and (not s.exists() or stale):
                 self._figures(d.name)
 
@@ -221,6 +256,13 @@ class TuneApp:
         window2.check_factor_params(self.session.fac, params)
         self._start(self._rerun, name, params)
         return name
+
+    def start_autotune(self, diameter: float) -> str:
+        Checks(diameter)  # ValueError -> HTTP 400 before the worker starts
+        if not math.isfinite(diameter):
+            raise ValueError(f"diameter must be a finite number of px, got {diameter}")
+        self._start(self._autotune, at.AUTO, diameter)
+        return at.AUTO
 
     def save_params(self, name: str, file: str) -> Path:
         pipeline.check_run_name(file)
@@ -315,6 +357,12 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/preview":
                 prm = form_to_params(form, app.params_of(form.pop("from", None)))
                 self._json({"path": str(app.make_preview(prm))})
+            elif self.path == "/api/autotune":
+                try:
+                    d = float(form.get("diameter", ""))
+                except ValueError:
+                    raise ValueError("diameter: expected a number of px") from None
+                self._json({"name": app.start_autotune(d)})
             else:
                 self._not_found()
         except Busy as e:
