@@ -12,6 +12,7 @@ import numpy as np
 from caanfast import io
 from caanfast.factors import Factors
 from caanfast.serve.runs import RunView
+from caanfast.tiles import Tile
 
 SOURCES = ("raw", "pre", "recon")
 
@@ -62,10 +63,10 @@ def recon_frame(fac: Factors, t: int) -> np.ndarray:
     return out
 
 
-def tile_map(fac: Factors, values: list[float]) -> np.ndarray:
-    """(H, W) image with each tile filled with its value (e.g. its rank)."""
-    out = np.zeros((fac.H, fac.W_), np.float32)
-    for tl, v in zip(fac.grid, values, strict=True):
+def tile_map(grid: list[Tile], h: int, w: int, values: list[float]) -> np.ndarray:
+    """(h, w) image with each tile filled with its value (e.g. its rank)."""
+    out = np.zeros((h, w), np.float32)
+    for tl, v in zip(grid, values, strict=True):
         out[tl.y0 : tl.y1, tl.x0 : tl.x1] = v
     return out
 

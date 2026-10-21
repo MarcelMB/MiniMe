@@ -46,7 +46,9 @@ starts a local server on 127.0.0.1 and opens the browser. It lists the runs unde
 (default: your home folder), shows every stage of a run, and starts new runs. Runs are only
 read; results it has to compute for older runs go to `~/.cache/caanfast/` (or
 `$CAANFAST_CACHE`). On a remote machine, start it with `--no-browser --port 8765` and open
-an SSH tunnel: `ssh -L 8765:127.0.0.1:8765 host`, then the printed URL.
+an SSH tunnel: `ssh -L 8765:127.0.0.1:8765 host`, then the printed URL (a different local
+port works too, e.g. `ssh -L 9000:127.0.0.1:8765 host` and the URL with `:9000`). Stopping
+the server (Ctrl+C) also stops a run it started; only one server runs per cache folder.
 
 ## Parameters
 

@@ -15,8 +15,9 @@ from typing import Any
 class StageTimer:
     """``with timer("name"): ...`` appends ``{"stage", "seconds"}`` (wall) to ``rows``.
 
-    After ``attach_progress(path)`` every stage start and end is also appended to ``path``
-    as one JSON line, so another process (the ``caanfast serve`` job runner) can follow.
+    After ``attach_progress(path)`` every stage start and end (``error`` if the stage
+    raised) is also appended to ``path`` as one JSON line, so another process (the
+    ``caanfast serve`` job runner) can follow.
     """
 
     def __init__(self) -> None:
@@ -47,10 +48,14 @@ class StageTimer:
         t0 = time.perf_counter()
         try:
             yield
-        finally:
+        except BaseException:
             dt = time.perf_counter() - t0
             self.rows.append({"stage": stage, "seconds": dt})
-            self._log(stage, "end", dt)
+            self._log(stage, "error", dt)
+            raise
+        dt = time.perf_counter() - t0
+        self.rows.append({"stage": stage, "seconds": dt})
+        self._log(stage, "end", dt)
 
     def to_json(self, path: Path, extra: dict[str, Any]) -> None:
         doc = {"stages": self.rows, "counts": self.counts, **extra}

@@ -150,3 +150,78 @@ def test_registry_replaces_a_stale_view(run_copy, cache_dir):
     _rewrite_report(run_copy)
     assert reg.get(v.id) is not v
     assert reg.open(run_copy) is reg.get(v.id)
+
+
+def test_find_runs_skips_library(tmp_path, tiny_run):
+    lib = tmp_path / "Library" / "x"
+    lib.mkdir(parents=True)
+    for m in ("params.json", "report.json"):
+        (lib / m).write_text("{}")
+    shutil.copytree(tiny_run, tmp_path / "data" / "t")
+    assert find_runs(tmp_path) == [tmp_path / "data" / "t"]
+
+
+def test_only_the_two_most_recent_runs_keep_their_heavy_data(run_copy, cache_dir):
+    reg = Registry(cache_dir)
+    paths = [run_copy]
+    for i in (1, 2):
+        dst = run_copy.parent / f"t{i}"
+        shutil.copytree(run_copy, dst)
+        paths.append(dst)
+    views = []
+    for p in paths:
+        v = reg.open(p)
+        assert v.factors.H == v.H and v.A.shape[1] == v.H * v.W and v.sidecar is not None
+        views.append(v)
+    first = views[0]
+    assert first._factors is None and first._A is None and first._sidecar is None
+    assert all(v._factors is not None for v in views[1:])
+    assert reg.get(first.id) is first  # still registered; the parts load again on use
+    assert first.factors is not None
+    assert views[1]._factors is None  # now the least recent of three
+
+
+def test_heavy_parts_load_once_under_concurrency(run_copy, cache_dir, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from caanfast import factors as factors_mod
+
+    calls = []
+    real = factors_mod.Factors.load
+
+    def slow_load(d):
+        calls.append(1)
+        time.sleep(0.2)
+        return real(d)
+
+    monkeypatch.setattr(factors_mod.Factors, "load", staticmethod(slow_load))
+    v = RunView(run_copy, cache_dir)
+    with ThreadPoolExecutor(4) as ex:
+        got = list(ex.map(lambda _: v.factors, range(4)))
+    assert calls == [1] and len({id(f) for f in got}) == 1
+    v.release()
+    assert v._factors is None
+
+
+def test_background_failures_expire_and_are_retried():
+    bg = Background(failed_ttl=0.1)
+    calls = []
+
+    def boom():
+        calls.append(1)
+        raise RuntimeError("no")
+
+    bg.ensure("k", boom)
+    time.sleep(0.05)
+    assert bg.ensure("k", boom)["status"] == "failed"
+    time.sleep(0.15)
+    assert bg.ensure("k", boom)["status"] == "computing"
+    time.sleep(0.05)
+    assert calls == [1, 1]
+
+
+def test_run_stamp_is_a_string(run_copy, cache_dir):
+    v = RunView(run_copy, cache_dir)
+    assert isinstance(v.stamp, str) and v.stamp
+    _rewrite_report(run_copy)
+    assert RunView(run_copy, cache_dir).stamp != v.stamp

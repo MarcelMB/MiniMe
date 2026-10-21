@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import secrets
+import signal
 import socket
+import sys
 import threading
 import webbrowser
 from pathlib import Path
@@ -33,9 +36,23 @@ def serve_forever(
 
     port = port or free_port()
     token = token or secrets.token_urlsafe(16)
-    app = create_app(token, port=port, jobs=JobManager())
+    try:
+        jobs = JobManager()
+    except RuntimeError as e:
+        print(f"{e}; stop it first or use that one.", file=sys.stderr, flush=True)
+        raise SystemExit(1) from None
+    app = create_app(token, port=port, jobs=jobs)
     url = start_url(port, token, Path(folder).resolve() if folder else None)
     print(f"CaAnFast is running at {url}\nPress Ctrl+C to stop.", flush=True)
     if open_browser:
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning", access_log=False)
+    # closing the terminal (SIGHUP) stops like Ctrl+C, so the running job is stopped too
+    signal.signal(signal.SIGHUP, lambda *_: os.kill(os.getpid(), signal.SIGTERM))
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+        access_log=False,
+        timeout_graceful_shutdown=2,
+    )

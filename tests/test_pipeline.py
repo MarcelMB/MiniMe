@@ -95,6 +95,18 @@ def test_stage_timer_progress(tmp_path):
     assert lines[2]["seconds"] >= 0 and "seconds" not in lines[1]
 
 
+def test_a_failed_stage_is_logged_as_error(tmp_path):
+    from caanfast.report import StageTimer
+
+    timer = StageTimer()
+    timer.attach_progress(tmp_path / "progress.jsonl")
+    with pytest.raises(RuntimeError), timer("cnmf"):
+        raise RuntimeError("boom")
+    lines = [json.loads(s) for s in (tmp_path / "progress.jsonl").read_text().splitlines()]
+    assert [(x["stage"], x["event"]) for x in lines] == [("cnmf", "start"), ("cnmf", "error")]
+    assert lines[1]["seconds"] >= 0 and lines[1]["t"] > 0
+
+
 def test_pipeline_refuses_out_dir_containing_raw(tmp_path):
     raw = tmp_path / "proc" / "t" / "raw"
     raw.mkdir(parents=True)

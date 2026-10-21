@@ -34,6 +34,11 @@ def test_wrong_host_is_rejected(cache_dir, tmp_path):
     assert c.get("/api/fs", headers=h).status_code == 200
     assert c.get("/api/fs", headers={**h, "Host": "localhost:8123"}).status_code == 200
     assert c.get("/api/fs", headers={**h, "Host": "evil.example:8123"}).status_code == 403
+    # an SSH tunnel to another local port keeps a loopback name with another port
+    assert c.get("/api/fs", headers={**h, "Host": "127.0.0.1:9000"}).status_code == 200
+    assert c.get("/api/fs", headers={**h, "Host": "localhost"}).status_code == 200
+    assert c.get("/api/fs", headers={**h, "Host": "127.0.0.1.evil:8123"}).status_code == 403
+    assert c.get("/api/fs", headers={**h, "Host": "localhost:x"}).status_code == 403
 
 
 def test_static_page_and_missing_build(cache_dir, tmp_path):
@@ -90,3 +95,23 @@ def test_unplugged_raw_and_user_fps(client, run_copy):
 def test_non_ascii_token_is_401(client):
     r = client.get("/api/params/defaults", headers={"X-Token": ""}, params={"token": "é"})
     assert r.status_code == 401
+
+
+def test_a_missing_file_is_404_without_the_full_path(client, run_copy):
+    import shutil
+
+    shutil.rmtree(run_copy / "motion")
+    rid = _open(client, run_copy)
+    r = client.get(f"/api/runs/{rid}/motion")
+    assert r.status_code == 404
+    assert r.json()["detail"].startswith("file not found: ")
+    assert str(run_copy) not in r.json()["detail"]
+
+
+def test_cache_root_ignores_an_empty_env_var(monkeypatch):
+    from pathlib import Path
+
+    from caanfast.serve.cache import cache_root
+
+    monkeypatch.setenv("CAANFAST_CACHE", "")
+    assert cache_root() == Path.home() / ".cache" / "caanfast"

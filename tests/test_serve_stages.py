@@ -83,3 +83,24 @@ def test_missing_background_file_is_404(client, run_copy):
     (run_copy / "cnmf" / "b.npy").unlink()
     rid = _open(client, run_copy)
     assert client.get(f"/api/runs/{rid}/image/background").status_code == 404
+
+
+def test_lowpass_without_a_frame_rate_is_400(client, run_copy):
+    import json
+
+    pj = run_copy / "params.json"
+    pj.write_text(json.dumps({**json.loads(pj.read_text()), "raw_dir": "/nowhere/raw"}))
+    rid = _open(client, run_copy)
+    assert client.get(f"/api/runs/{rid}/summary").json()["fps"] is None
+    assert client.get(f"/api/runs/{rid}/traces/0").status_code == 200
+    assert client.get(f"/api/runs/{rid}/traces/0?lowpass_hz=5").status_code == 400
+
+
+def test_rank_image_does_not_load_the_factors(client, run_copy):
+    rid = _open(client, run_copy)
+    r = client.get(f"/api/runs/{rid}/image/rank")
+    assert r.status_code == 200
+    run = client.app.state.registry.get(rid)
+    assert _arr(r).shape == (run.H, run.W)
+    assert set(np.unique(_arr(r))) <= set(map(float, run.ranks))
+    assert run._factors is None
