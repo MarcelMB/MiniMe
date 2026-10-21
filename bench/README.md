@@ -312,6 +312,56 @@ quality 0.47. Pass 2 is now the longest stage on both; it grew with the rank cap
 Tile store of the 2 h session kept at `/Volumes/Extreme SSD/cafast_v4_2h/processed/store/`
 (50 GB) for further pass-2 experiments.
 
+## PNR refine and pass-2 variants (2026-10-21)
+
+Measured on the 3 h V4 run (`cafast_v4_3h/processed/cafast_3h_rerun`, 216,000 frames, tile
+store kept), M1 Max. cala ran on one core alongside for all of these, so absolute seconds
+are a little high. Scripts: `bench/pnr_variants.py`, `bench/pass2_variants.py`,
+`bench/window2_rerun.py` (window 2 from saved factors with `--set key=value`).
+
+**Why `pnr_refine` is slow on long sessions.** It rebuilds each seed's full denoised trace
+and takes two percentiles, so it costs seeds x frames, and the rolling-window seed count itself
+grows with T (7.9k at 10k frames, 48k at 2 h, 59.5k at 3 h): 64 s at 2 h, 123 s at 3 h (ratio
+1.92, seeds x frames predicts 1.90). It ran on one thread.
+
+| PNR score (V4 3 h, 59,504 seeds) | seconds | seeds kept | units final |
+|---|---|---|---|
+| ptp, one thread (before) | 119.6 | 39,769 | 503 |
+| **ptp, threaded (now default)** | **20.7** | 39,769 (identical mask) | 503 |
+| std from the factors (tried, removed) | 0.007 | 29,402 | **367** |
+
+The std score (`||W[p]|| / sqrt(T) / sn`, no traces) ranks seeds like the ptp (Spearman 0.96)
+but the 2-GMM split keeps 10,440 fewer seeds: synth is unchanged (F1 0.9651 vs 0.9638, 410
+units), but V4 3 h drops to 367 units and WL27 3 h to **53 of 112**. As expected, the std
+penalises sparsely active cells (it scales with the square root of the active fraction). Not
+usable as is; removed from the code (it was `||W[p]|| / sqrt(T)`, which `||W||` per pixel gives
+directly if it is wanted again).
+
+**Pass 2, 8 tiles single-threaded** (the 4 highest-rank tiles + 4 spread over the rest):
+
+| variant | seconds (8 tiles) | ranks | captured energy |
+|---|---|---|---|
+| base | 180.6 | - | - |
+| noise from 20k frames (`noise_frames=20000`) | 131.8 (-27 %) | identical | identical |
+| extend basis on rank doubling (tried, removed) | 183.8 (+2 %) | differ by up to 18 | +0.003 on tile 63 |
+| both | 138.1 | as extend | as extend |
+
+Tile reads were 7.2 s of 180 s, so the preallocated read is a minor gain. The basis extension
+saves time on some tiles but its slightly better basis lets more components pass the
+autocorrelation cut on the densest one (tile 63: rank 161 vs 143, 38.8 s vs 24.8 s); no gain
+overall, removed (it was the randQB block step, Martinsson & Voronin 2016). The subset noise matches the full estimate on bright pixels (median |ratio - 1|
+0.8-4.8 % per tile) but differs by up to 97 % on near-black pixels whose tophat output is mostly
+0, which a 20k-frame sample can miss.
+
+Effect on units (sigma recomputed from the store, window 2 rerun): V4 3 h **522** units (503),
+seeds after merge 661 (582); synth with `noise_frames=3000` of 9000: F1 **0.9489** (0.9638),
+precision 0.950 (0.980), 420 units. The noise level enters the PNR and the spatial penalty, so
+the subset changes results; kept opt-in, default all frames.
+
+Always-on changes, checked on synth: one read pass for mean and energy, tile read into one
+preallocated buffer, threaded `seed_ptp`. Full pipeline gives the same score as before
+(407 units, F1 0.9638, trace corr median 0.9941).
+
 ## Background speed-up (2026-10-19)
 
 `update_background` was ~80 % of the `cnmf` stage (three calls, five reconstructions of the

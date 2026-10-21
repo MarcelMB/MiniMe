@@ -37,6 +37,7 @@ def pass2_worker(
             z=params.rank_z,
             seed=i,
             noise_freq=params.noise_freq,
+            noise_frames=params.noise_frames,
         )
         for i in indices
     ]
