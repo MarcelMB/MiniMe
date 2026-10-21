@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { getArray, getJSON, postJSON, type NDArray } from "../../api";
+import { Computing, getArray, getJSON, postJSON, type NDArray } from "../../api";
 import { Chart } from "../../Chart";
+import { useDebounced } from "../../debounce";
 import { Loading, Segmented, Slider, Toggle } from "../../controls";
 import { fmtClock } from "../../format";
 import { useResource } from "../../poll";
@@ -34,27 +35,46 @@ function UnitTrace(p: {
   const { summary: s, t } = useRun();
   const [win, setWin] = useState<Win | null>(null);
   const [err, setErr] = useState("");
+  const [note, setNote] = useState("");
+  const [retry, setRetry] = useState(0);
   const [a, b] = p.range;
   const { id, fps, T } = s;
 
   useEffect(() => {
-    if (!p.full) return;
+    if (!p.full) {
+      setErr("");
+      setNote("");
+      return;
+    }
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    setErr("");
     const q = `start=${a}&stop=${b}&kind=${p.kind}${p.lowpassHz ? `&lowpass_hz=${p.lowpassHz}` : ""}`;
     getArray(`/runs/${id}/traces/${p.unit}?${q}`).then(
       (arr) => {
         if (cancelled) return;
         setWin({ start: a, arr });
         setErr("");
+        setNote("");
       },
-      (e: Error) => {
-        if (!cancelled) setErr(e.message);
+      (e: unknown) => {
+        if (cancelled) return;
+        if (e instanceof Computing) {
+          setNote(`Computing… ${e.elapsed.toFixed(0)} s`);
+          timer = setTimeout(() => {
+            if (!cancelled) setRetry((n) => n + 1);
+          }, 1500);
+        } else {
+          setNote("");
+          setErr(e instanceof Error ? e.message : String(e));
+        }
       },
     );
     return () => {
       cancelled = true;
+      if (timer !== undefined) clearTimeout(timer);
     };
-  }, [p.full, a, b, p.kind, p.lowpassHz, p.unit, id]);
+  }, [p.full, a, b, p.kind, p.lowpassHz, p.unit, id, retry]);
 
   const scale = fps ? 1 / fps : 1;
   const data = useMemo(() => {
@@ -79,11 +99,12 @@ function UnitTrace(p: {
       </p>
     );
   }
-  if (!data) return <p className="muted">Loading unit {p.unit}…</p>;
+  if (!data) return <p className="muted">{note ? `Unit ${p.unit}: ${note}` : `Loading unit ${p.unit}…`}</p>;
   const band = data.length === 3;
   return (
     <div>
       <span className="label mono">Unit {p.unit}</span>
+      {note && p.full && <span className="muted"> {note}</span>}
       <Chart
         data={data}
         series={band ? SERIES_BAND : SERIES_LINE}
@@ -139,6 +160,8 @@ export function Traces() {
   );
   const [extra, setExtra] = useState<number[]>([]);
   const lp = lowpassState(s.fps, lpOn, hz);
+  const hzApplied = useDebounced(hz, 250);
+  const lpHz = lowpassState(s.fps, lpOn, hzApplied).hz;
   const full = traceMode(range, s.T) === "window";
   const r: Range = range ?? [0, s.T];
   const shown = useMemo(() => {
@@ -242,7 +265,7 @@ export function Traces() {
             overview={overview.data}
             range={r}
             full={full}
-            lowpassHz={lp.hz}
+            lowpassHz={lpHz}
             setRange={setRange}
             zoomed={range !== null}
           />
