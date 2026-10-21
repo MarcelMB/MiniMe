@@ -5,3 +5,8 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 processed/
+web/node_modules/
+web/test-results/
+web/playwright-report/
+web/e2e/.data/
+src/caanfast/serve/static/
