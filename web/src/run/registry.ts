@@ -5,6 +5,7 @@ import { Frames } from "./pages/Frames";
 import { Motion } from "./pages/Motion";
 import { Overview } from "./pages/Overview";
 import { Seeds } from "./pages/Seeds";
+import { Traces } from "./pages/Traces";
 import { Units } from "./pages/Units";
 
 export const PAGE_LABELS: Record<Page, string> = {
@@ -25,4 +26,5 @@ export const PAGE_VIEWS: Partial<Record<Page, () => JSX.Element>> = {
   compression: Compression,
   seeds: Seeds,
   units: Units,
+  traces: Traces,
 };
