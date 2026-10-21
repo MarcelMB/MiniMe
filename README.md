@@ -63,7 +63,7 @@ During development run the back end and Vite's dev server side by side:
     cd web && npm run dev      # then open http://localhost:5173/?token=dev
 
 Checks: `npm run typecheck`, `npm test` (unit tests), `npm run e2e` (smoke test in Chromium
-against a tiny synthetic run; set `CAANFAST_PYTHON` if the venv is not `../.venv`).
+against a tiny synthetic run; run `npx playwright install chromium` once first; set `CAANFAST_PYTHON` if the venv is not `../.venv`).
 
 ## Parameters
 
