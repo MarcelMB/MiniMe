@@ -6,7 +6,13 @@ import { FolderPicker } from "../home/FolderPicker";
 import { useResource } from "../poll";
 import { go } from "../router";
 import type { Job, ParamMeta, RawInfo } from "../types";
-import { changedOnly, defaultRunName } from "./params";
+import {
+  changedOnly,
+  defaultRunName,
+  failingCount,
+  offersOverwrite,
+  overwriteAfterError,
+} from "./params";
 import { ParamsForm } from "./ParamsForm";
 
 export function NewRun() {
@@ -23,6 +29,7 @@ export function NewRun() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [keep, setKeep] = useState(false);
   const [overwrite, setOverwrite] = useState(false);
+  const [offered, setOffered] = useState(false);
   const [submitErr, setSubmitErr] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -31,7 +38,13 @@ export function NewRun() {
     for (const m of defaults.data?.params ?? []) d[m.name] = m.default;
     return { ...d, ...values };
   }, [defaults.data, values]);
-  const invalid = Object.values(errors).some(Boolean);
+  const failing = failingCount(errors);
+  const invalid = failing > 0;
+  const resetOverwrite = () => {
+    setOverwrite(false);
+    setOffered(false);
+    setSubmitErr("");
+  };
   const outDir = raw
     ? `${raw.replace(/\/+$/, "").split("/").slice(0, -1).join("/")}/processed/${name}`
     : "";
@@ -49,6 +62,8 @@ export function NewRun() {
       (job) => go({ name: "job", id: job.id }),
       (e: Error) => {
         setSubmitErr(e.message);
+        setOverwrite(overwriteAfterError(e.message, overwrite));
+        setOffered(offered || offersOverwrite(e.message));
         setBusy(false);
       },
     );
@@ -95,6 +110,7 @@ export function NewRun() {
             accept={(e) => e.has_avi}
             onPick={(p) => {
               setRaw(p);
+              resetOverwrite();
               setPicking(false);
             }}
             onClose={() => setPicking(false)}
@@ -107,7 +123,10 @@ export function NewRun() {
             <input
               type="text"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                setName(e.target.value);
+                resetOverwrite();
+              }}
             />
           </label>
           {outDir && <span className="muted mono">{outDir}</span>}
@@ -125,8 +144,10 @@ export function NewRun() {
                 metas={d.params}
                 groups={d.groups}
                 values={merged}
+                errors={errors}
                 onChange={(n, v, e) => {
-                  setValues((x) => ({ ...x, [n]: v }));
+                  // undefined: the field unmounted; only clear its error
+                  if (v !== undefined) setValues((x) => ({ ...x, [n]: v }));
                   setErrors((x) => ({ ...x, [n]: e }));
                 }}
               />
@@ -135,7 +156,7 @@ export function NewRun() {
         </section>
       </div>
       {submitErr && <ErrorNote message={submitErr} />}
-      {submitErr.includes("already holds a run") && (
+      {offered && (
         <Toggle
           label="Overwrite the existing run"
           checked={overwrite}
@@ -144,6 +165,12 @@ export function NewRun() {
       )}
       <div className="row">
         <span className="spacer" />
+        {invalid && (
+          <span className="error" role="status">
+            {failing} {failing === 1 ? "parameter needs" : "parameters need"}{" "}
+            fixing
+          </span>
+        )}
         <button
           className="btn primary"
           type="button"

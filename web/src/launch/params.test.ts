@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { changedOnly, defaultRunName, parseValue, stageRows } from "./params";
+import {
+  changedOnly,
+  defaultRunName,
+  failingCount,
+  isFinal,
+  overwriteAfterError,
+  parseValue,
+  stageRows,
+} from "./params";
 
 describe("parameter values", () => {
   it("parses each parameter type", () => {
@@ -54,5 +62,29 @@ describe("launcher helpers", () => {
     expect(rows).toEqual([
       { stage: "pass1", seconds: 3, running: false, failed: true },
     ]);
+  });
+});
+
+describe("launcher state rules", () => {
+  it("knows final job states", () => {
+    expect(isFinal("running")).toBe(false);
+    expect(isFinal("queued")).toBe(false);
+    for (const s of ["done", "failed", "cancelled", "interrupted"])
+      expect(isFinal(s)).toBe(true);
+  });
+  it("keeps overwrite only after the already-holds-a-run refusal", () => {
+    expect(
+      overwriteAfterError(
+        "x already holds a run; choose another name or overwrite",
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      overwriteAfterError("a queued or running job already writes to x", true),
+    ).toBe(false);
+    expect(overwriteAfterError("network down", true)).toBe(false);
+  });
+  it("counts invalid parameters", () => {
+    expect(failingCount({ a: "bad", b: "", c: "worse" })).toBe(2);
   });
 });

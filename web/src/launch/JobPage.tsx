@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getJSON, postJSON, tokenQuery } from "../api";
 import { ErrorNote } from "../controls";
 import { fmtDuration, stageLabel } from "../format";
 import { go } from "../router";
 import type { Job, RunListing } from "../types";
-import { stageRows, type ProgressEvent } from "./params";
+import { isFinal, stageRows, type ProgressEvent } from "./params";
 
 export function JobPage({ id }: { id: string }) {
   const [job, setJob] = useState<Job | null>(null);
@@ -13,8 +13,19 @@ export function JobPage({ id }: { id: string }) {
   const [err, setErr] = useState("");
   const [now, setNow] = useState(Date.now() / 1000);
 
+  const gotStatus = useRef(false);
+  const final = job !== null && isFinal(job.status);
+  const [lost, setLost] = useState(false);
+
   useEffect(() => {
-    getJSON<Job>(`/jobs/${id}`).then(setJob, (e: Error) => setErr(e.message));
+    gotStatus.current = false;
+    setLost(false);
+    getJSON<Job>(`/jobs/${id}`).then(
+      (j) => {
+        if (!gotStatus.current) setJob(j);
+      },
+      (e: Error) => setErr(e.message),
+    );
     const es = new EventSource(`/api/jobs/${id}/events?${tokenQuery()}`);
     es.addEventListener("stage", (e) =>
       setEvents((x) => [...x, JSON.parse((e as MessageEvent).data)]),
@@ -22,16 +33,31 @@ export function JobPage({ id }: { id: string }) {
     es.addEventListener("log", (e) =>
       setLog((x) => [...x.slice(-299), JSON.parse((e as MessageEvent).data)]),
     );
-    es.addEventListener("status", (e) =>
-      setJob(JSON.parse((e as MessageEvent).data)),
-    );
-    es.onerror = () => es.close();
-    const tick = setInterval(() => setNow(Date.now() / 1000), 1000);
-    return () => {
+    es.addEventListener("status", (e) => {
+      const j = JSON.parse((e as MessageEvent).data) as Job;
+      gotStatus.current = true;
+      setJob(j);
+      if (isFinal(j.status)) es.close();
+    });
+    es.onerror = () => {
       es.close();
-      clearInterval(tick);
+      getJSON<Job>(`/jobs/${id}`).then(
+        (j) => {
+          gotStatus.current = true;
+          setJob(j);
+          if (!isFinal(j.status)) setLost(true);
+        },
+        () => setLost(true),
+      );
     };
+    return () => es.close();
   }, [id]);
+
+  useEffect(() => {
+    if (final) return;
+    const tick = setInterval(() => setNow(Date.now() / 1000), 1000);
+    return () => clearInterval(tick);
+  }, [final]);
 
   const openRun = () =>
     getJSON<{ runs: RunListing[] }>(
@@ -88,8 +114,12 @@ export function JobPage({ id }: { id: string }) {
           {stageRows(events).map((r) => (
             <div className="barrow" key={r.stage}>
               <span>
-                {r.running ? (
+                {r.running && !final ? (
                   "…"
+                ) : r.running ? (
+                  <span role="img" aria-label="stopped">
+                    –
+                  </span>
                 ) : r.failed ? (
                   <span role="img" aria-label="failed">
                     ✗
@@ -120,6 +150,9 @@ export function JobPage({ id }: { id: string }) {
           <pre className="log">{log.slice(-40).join("\n")}</pre>
         </section>
       </div>
+      {lost && !final && (
+        <ErrorNote message="Live updates lost — reload to reconnect." />
+      )}
       {job.status === "failed" && (
         <ErrorNote message={job.error || "the run failed"} />
       )}

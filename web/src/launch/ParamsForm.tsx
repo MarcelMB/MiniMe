@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ParamMeta } from "../types";
 import { parseValue } from "./params";
 
@@ -35,6 +35,14 @@ function Field({
     }
   };
   const id = `p-${m.name}`;
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  // a field that disappears must not keep blocking Start
+  useEffect(() => () => onChangeRef.current(undefined, ""), []);
+  const aria = {
+    "aria-invalid": !!err,
+    "aria-describedby": err ? `${id}-help ${id}-err` : `${id}-help`,
+  };
   return (
     <div className="field">
       <label htmlFor={id} className="mono">
@@ -45,6 +53,7 @@ function Field({
           id={id}
           type="checkbox"
           role="switch"
+          {...aria}
           checked={raw as boolean}
           onChange={(e) => set(e.target.checked)}
         />
@@ -53,6 +62,7 @@ function Field({
           <input
             id={id}
             type="text"
+            {...aria}
             aria-label={`${m.name} first`}
             value={(raw as [string, string])[0]}
             onChange={(e) =>
@@ -61,6 +71,7 @@ function Field({
           />
           <input
             type="text"
+            {...aria}
             aria-label={`${m.name} second`}
             value={(raw as [string, string])[1]}
             onChange={(e) =>
@@ -73,12 +84,19 @@ function Field({
           id={id}
           type="text"
           inputMode="decimal"
+          {...aria}
           value={raw as string}
           onChange={(e) => set(e.target.value)}
         />
       )}
-      <span className="muted">{m.help}</span>
-      {err && <span className="error">{err}</span>}
+      <span className="muted" id={`${id}-help`}>
+        {m.help}
+      </span>
+      {err && (
+        <span className="error" id={`${id}-err`} role="alert">
+          {err}
+        </span>
+      )}
     </div>
   );
 }
@@ -87,8 +105,14 @@ export function ParamsForm(p: {
   metas: ParamMeta[];
   groups: string[];
   values: Record<string, unknown>;
+  errors: Record<string, string>;
   onChange: (name: string, v: unknown, err: string) => void;
 }) {
+  const hiddenInvalid = p.metas.some((m) => !m.common && p.errors[m.name]);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (hiddenInvalid) setOpen(true);
+  }, [hiddenInvalid]);
   const common = p.metas.filter((m) => m.common);
   return (
     <>
@@ -105,7 +129,7 @@ export function ParamsForm(p: {
           />
         ))}
       </div>
-      <details>
+      <details open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
         <summary className="label" style={{ cursor: "pointer" }}>
           All parameters
         </summary>

@@ -82,3 +82,27 @@ export function stageRows(events: ProgressEvent[]): StageRow[] {
   }
   return [...rows.values()];
 }
+
+const FINAL = ["done", "failed", "cancelled", "interrupted"];
+
+/** The job will not change any more. */
+export function isFinal(status: string): boolean {
+  return FINAL.includes(status);
+}
+
+/** The back end refused because the output folder already holds a run. */
+export function offersOverwrite(message: string): boolean {
+  return message.includes("already holds a run");
+}
+
+/** Whether ``overwrite`` stays set after a failed start (only the "already holds a run" refusal keeps it). */
+export function overwriteAfterError(
+  message: string,
+  current: boolean,
+): boolean {
+  return offersOverwrite(message) && current;
+}
+
+export function failingCount(errors: Record<string, string>): number {
+  return Object.values(errors).filter(Boolean).length;
+}
