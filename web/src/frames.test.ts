@@ -37,4 +37,13 @@ describe("latest", () => {
     expect(await second).toBe(2);
     expect(await first).toBe(STALE);
   });
+  it("turns a stale rejection into STALE and keeps a current one", async () => {
+    const wrap = latest();
+    let rejectFirst!: (e: Error) => void;
+    const first = wrap(new Promise<number>((_, r) => (rejectFirst = r)));
+    const second = wrap(Promise.reject(new Error("now")));
+    rejectFirst(new Error("late"));
+    expect(await first).toBe(STALE);
+    await expect(second).rejects.toThrow("now");
+  });
 });

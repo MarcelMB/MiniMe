@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fillImageData, percentile, pickUnit, pointInPolygon } from "./draw";
+import { clientToPixel, fillImageData, percentile, pickUnit, pointInPolygon } from "./draw";
 import { sourceOptions } from "./run/RunContext";
 import type { Unit } from "./types";
 
@@ -44,5 +44,23 @@ describe("draw helpers", () => {
     expect(raw.disabled).toBe(true);
     expect(raw.title).toMatch(/raw videos/);
     expect(opts.find((o) => o.value === "recon")!.disabled).toBeFalsy();
+  });
+});
+
+describe("clientToPixel", () => {
+  it("maps inside a wide, letterboxed box", () => {
+    const rect = { left: 100, top: 0, width: 400, height: 100 }; // 100x100 image -> 100 px wide, spans x 250..350
+    expect(clientToPixel(rect, 100, 100, 300, 50)).toEqual([49.5, 49.5]);
+    expect(clientToPixel(rect, 100, 100, 250, 0)).toEqual([-0.5, -0.5]);
+    expect(clientToPixel(rect, 100, 100, 200, 50)).toBeNull(); // left bar
+    expect(clientToPixel(rect, 100, 100, 360, 50)).toBeNull(); // right bar
+  });
+  it("maps inside a tall box", () => {
+    const rect = { left: 0, top: 50, width: 100, height: 300 };
+    expect(clientToPixel(rect, 200, 100, 100, 200)).toEqual([199.5, 49.5]); // 100x50 image spans y 175..225
+    expect(clientToPixel(rect, 200, 100, 50, 100)).toBeNull(); // top bar
+  });
+  it("returns null in the bar", () => {
+    expect(clientToPixel({ left: 0, top: 0, width: 400, height: 100 }, 100, 100, 10, 10)).toBeNull();
   });
 });
