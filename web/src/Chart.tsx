@@ -1,10 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 
-export function cssVar(name: string): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "#2563eb";
-}
+import { cssVar, fullExtent, resolveSeries } from "./chartUtil";
+
+export { cssVar };
 
 export type ChartProps = {
   data: uPlot.AlignedData;
@@ -24,6 +24,17 @@ export function Chart(p: ChartProps) {
   const plot = useRef<uPlot | null>(null);
   const props = useRef(p);
   props.current = p;
+  const [theme, setTheme] = useState(0);
+  const pinned = useRef(false);
+  const lo = p.xRange?.[0];
+  const hi = p.xRange?.[1];
+
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const on = () => setTheme((n) => n + 1);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
 
   useEffect(() => {
     const el = host.current!;
@@ -31,7 +42,8 @@ export function Chart(p: ChartProps) {
     const opts: uPlot.Options = {
       width: el.clientWidth || 600,
       height: p.height ?? 180,
-      series: [{ label: p.xLabel ?? "x" }, ...p.series],
+      scales: { x: { time: false } },
+      series: [{ label: p.xLabel ?? "x" }, ...resolveSeries(p.series)],
       bands: p.bands,
       legend: { show: false },
       cursor: {
@@ -80,14 +92,23 @@ export function Chart(p: ChartProps) {
     };
     // the chart is rebuilt only when its layout changes; data and range update in place
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p.series.length, p.height, p.sync, p.bands?.length]);
+  }, [p.series.length, p.height, p.sync, p.bands?.length, theme]);
 
   useEffect(() => {
     plot.current?.setData(p.data);
   }, [p.data]);
   useEffect(() => {
-    if (plot.current && p.xRange) plot.current.setScale("x", { min: p.xRange[0], max: p.xRange[1] });
-  }, [p.xRange, p.data]);
+    const u = plot.current;
+    if (!u) return;
+    if (lo != null && hi != null) {
+      pinned.current = true;
+      u.setScale("x", { min: lo, max: hi });
+    } else if (pinned.current) {
+      pinned.current = false;
+      const e = fullExtent(props.current.data);
+      if (e) u.setScale("x", { min: e[0], max: e[1] });
+    }
+  }, [lo, hi, p.data, theme]);
   useEffect(() => {
     plot.current?.redraw(false);
   }, [p.cursorX]);
