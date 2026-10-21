@@ -1,5 +1,6 @@
 import { Home } from "./home/Home";
 import { href, useRoute } from "./router";
+import { RunPage } from "./run/RunPage";
 
 export function App() {
   const route = useRoute();
@@ -19,6 +20,7 @@ export function App() {
         </nav>
       </header>
       {route.name === "home" && <Home />}
+      {route.name === "run" && <RunPage key={route.id} id={route.id} page={route.page} />}
     </>
   );
 }
