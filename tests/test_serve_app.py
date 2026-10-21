@@ -85,3 +85,8 @@ def test_unplugged_raw_and_user_fps(client, run_copy):
     assert client.post(f"/api/runs/{rid}/fps", json={"fps": 20}).status_code == 200
     assert client.get(f"/api/runs/{rid}/summary").json()["fps"] == 20.0
     assert client.post(f"/api/runs/{rid}/fps", json={"fps": -1}).status_code == 400
+
+
+def test_non_ascii_token_is_401(client):
+    r = client.get("/api/params/defaults", headers={"X-Token": ""}, params={"token": "é"})
+    assert r.status_code == 401
