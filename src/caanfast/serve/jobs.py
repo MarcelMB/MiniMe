@@ -176,18 +176,27 @@ class JobManager:
         while True:
             job = self._next()
             pfile = self.dir / f"{job.id}.params.json"
-            with self.log_path(job.id).open("wb") as log:
-                proc = subprocess.Popen(
-                    self.command(job, pfile),
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
-                )
+            try:
+                with self.log_path(job.id).open("wb") as log:
+                    proc = subprocess.Popen(
+                        self.command(job, pfile),
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                    )
+                    with self._cv:
+                        self._proc = proc
+                        if job.id in self._cancel:  # cancelled between "running" and Popen
+                            self._terminate()
+                    rc = proc.wait()
+            except Exception as e:  # noqa: BLE001 - keep the worker alive
                 with self._cv:
-                    self._proc = proc
-                    if job.id in self._cancel:  # cancelled between "running" and Popen
-                        self._terminate()
-                rc = proc.wait()
+                    self._proc = None
+                    job.status, job.ended = "failed", time.time()
+                    job.error = f"could not start the run: {e}"
+                    self._save()
+                    self._cv.notify_all()
+                continue
             with self._cv:
                 self._proc = None
                 job.ended = time.time()
