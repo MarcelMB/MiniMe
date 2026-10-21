@@ -17,13 +17,13 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sps
 
-import cafast
-from cafast import corr, init, io, motion, pass1, pass2, seeds
-from cafast.cnmf import CnmfResult, run_cnmf
-from cafast.factors import Factors
-from cafast.params import Params
-from cafast.report import StageTimer, dir_bytes, peak_rss
-from cafast.tiles import TileStore, tile_grid
+import caanfast
+from caanfast import corr, init, io, motion, pass1, pass2, seeds
+from caanfast.cnmf import CnmfResult, run_cnmf
+from caanfast.factors import Factors
+from caanfast.params import Params
+from caanfast.report import StageTimer, dir_bytes, peak_rss
+from caanfast.tiles import TileStore, tile_grid
 
 # ---------------------------------------------------------------------------
 # Output directory
@@ -55,10 +55,11 @@ def _check_out_dir(raw_dir: Path, out: Path) -> None:
         raise ValueError(f"output dir {o} would contain the raw dir {raw}; choose another")
 
 
-def _is_cafast_run(out: Path) -> bool:
-    """``out`` holds a ``params.json`` or ``report.json`` that a cafast run wrote."""
+def _is_caanfast_run(out: Path) -> bool:
+    """``out`` holds a ``params.json`` or ``report.json`` that a caanfast run wrote."""
     for name, keys in (
-        ("params.json", {"cafast_version", "fastminian_version"}),  # older runs: fastminian
+        # older runs: cafast, fastminian
+        ("params.json", {"caanfast_version", "cafast_version", "fastminian_version"}),
         ("report.json", {"stages"}),
     ):
         try:
@@ -71,14 +72,14 @@ def _is_cafast_run(out: Path) -> bool:
 
 
 def _check_wipe(out: Path) -> None:
-    """Refuse to delete ``out`` unless it is missing, empty, or a previous cafast run."""
+    """Refuse to delete ``out`` unless it is missing, empty, or a previous caanfast run."""
     if not out.exists():
         return
     if not out.is_dir():
         raise ValueError(f"output path {out} exists and is not a directory")
-    if any(out.iterdir()) and not _is_cafast_run(out):
+    if any(out.iterdir()) and not _is_caanfast_run(out):
         raise ValueError(
-            f"output dir {out} is not empty and holds no cafast params.json / report.json; "
+            f"output dir {out} is not empty and holds no caanfast params.json / report.json; "
             "refusing to delete it (choose another --name)"
         )
 
@@ -207,7 +208,7 @@ def _write_params(out: Path, params: Params, raw_dir: Path, raw_hash: str) -> No
         **params.asdict(),
         "raw_dir": str(Path(raw_dir).resolve()),
         "raw_hash": raw_hash,
-        "cafast_version": cafast.__version__,
+        "caanfast_version": caanfast.__version__,
     }
     (out / "params.json").write_text(json.dumps(doc, indent=1))
 
@@ -220,7 +221,7 @@ def _write_params(out: Path, params: Params, raw_dir: Path, raw_hash: str) -> No
 def run(
     raw_dir: Path,
     params: Params,
-    run_name: str = "cafast",
+    run_name: str = "caanfast",
     out_root: Path | None = None,
     keep_store: bool = False,
     workers: int | None = None,
@@ -241,7 +242,7 @@ def run(
     # read a valid sidecar into memory before the output dir is wiped
     sc = motion.load_if_valid(out / "motion", raw_hash, params.motion_params(), info.frames)
     _reset_dir(out)
-    _write_params(out, params, raw_dir, raw_hash)  # first: marks the dir as a cafast run
+    _write_params(out, params, raw_dir, raw_hash)  # first: marks the dir as a caanfast run
 
     with timer("template"):
         if sc is None:
@@ -297,7 +298,7 @@ def run(
             "peak_rss_children": peak_rss(children=True),
             "wall_total": time.perf_counter() - t_start,
             "workers": workers,
-            "version": cafast.__version__,
+            "version": caanfast.__version__,
         },
     )
     return out

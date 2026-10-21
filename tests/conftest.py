@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from cafast.testing import synth
+from caanfast.testing import synth
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 

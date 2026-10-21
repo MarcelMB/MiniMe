@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 from sklearn.mixture import GaussianMixture
 
-from cafast.factors import Factors
+from caanfast.factors import Factors
 
 # ---------------------------------------------------------------------------
 # Windows and blocks

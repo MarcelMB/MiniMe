@@ -7,10 +7,10 @@ import pytest
 import scipy.sparse as sps
 from numba import njit, prange
 
-from cafast import cnmf, compress, corr, init, tiles
-from cafast import factors as fm
-from cafast.params import Params
-from cafast.testing import synth
+from caanfast import cnmf, compress, corr, init, tiles
+from caanfast import factors as fm
+from caanfast.params import Params
+from caanfast.testing import synth
 
 
 def _dense(f):

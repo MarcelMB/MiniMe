@@ -12,7 +12,7 @@ import scipy.fft as sfft
 import scipy.linalg as sla
 from scipy.linalg import blas as sblas
 
-from cafast.factors import TileFactors
+from caanfast.factors import TileFactors
 
 N_OVERSAMPLES = 10
 MAX_RANK = 300  # a 64 x 64 tile dense with cells passed 176 components at 140k frames

@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Any
 
 # keys a run's params.json carries besides the parameters; ignored when it is read back
-RUN_METADATA_KEYS = frozenset({"raw_dir", "raw_hash", "cafast_version", "fastminian_version"})
+# older runs: cafast_version / fastminian_version
+RUN_METADATA_KEYS = frozenset(
+    {"raw_dir", "raw_hash", "caanfast_version", "cafast_version", "fastminian_version"}
+)
 
 
 @dataclass

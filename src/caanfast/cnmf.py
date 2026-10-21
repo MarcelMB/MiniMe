@@ -33,10 +33,10 @@ import cv2
 import numpy as np
 import scipy.sparse as sps
 
-from cafast import init
-from cafast.factors import Factors
-from cafast.params import Params
-from cafast.spatial_kernel import solve_nnqp
+from caanfast import init
+from caanfast.factors import Factors
+from caanfast.params import Params
+from caanfast.spatial_kernel import solve_nnqp
 
 # ---------------------------------------------------------------------------
 # Spatial update

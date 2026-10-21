@@ -12,11 +12,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from cafast import motion, preprocess
-from cafast.io import RawInfo, iter_avi, read_avi
-from cafast.motion import Template
-from cafast.params import Params
-from cafast.tiles import Tile, TileStore, pack_tiles, tile_offsets
+from caanfast import motion, preprocess
+from caanfast.io import RawInfo, iter_avi, read_avi
+from caanfast.motion import Template
+from caanfast.params import Params
+from caanfast.tiles import Tile, TileStore, pack_tiles, tile_offsets
 
 STAGES = (
     "read_avi",

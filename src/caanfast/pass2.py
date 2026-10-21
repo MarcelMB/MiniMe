@@ -8,12 +8,12 @@ from pathlib import Path
 
 import numpy as np
 
-from cafast.compress import compress_tile
-from cafast.factors import Factors, TileFactors
-from cafast.io import RawInfo
-from cafast.params import Params
-from cafast.pass1 import Pass1Result
-from cafast.tiles import Tile, TileStore
+from caanfast.compress import compress_tile
+from caanfast.factors import Factors, TileFactors
+from caanfast.io import RawInfo
+from caanfast.params import Params
+from caanfast.pass1 import Pass1Result
+from caanfast.tiles import Tile, TileStore
 
 _THREAD_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
 
