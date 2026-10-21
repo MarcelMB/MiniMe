@@ -57,3 +57,29 @@ def run_copy(tiny_run, tmp_path):
 @pytest.fixture
 def cache_dir(tmp_path):
     return tmp_path / "cache"
+
+
+import time as _time
+
+
+@pytest.fixture
+def client(cache_dir, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from caanfast.serve.app import create_app
+
+    app = create_app("tok", cache_root=cache_dir, static_dir=tmp_path / "no-static")
+    c = TestClient(app)
+    c.headers["X-Token"] = "tok"
+    return c
+
+
+def wait_ok(client, url, timeout=120):
+    """GET ``url`` until it stops answering 202 (a background computation)."""
+    t0 = _time.time()
+    while True:
+        r = client.get(url)
+        if r.status_code != 202:
+            return r
+        assert _time.time() - t0 < timeout, f"{url} still computing"
+        _time.sleep(0.2)
