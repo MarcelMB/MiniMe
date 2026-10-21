@@ -29,7 +29,7 @@ def _run(request: Request, rid: str) -> RunView:
 
 def _frames(request: Request, run: RunView) -> FrameSource:
     fr = request.app.state.frames
-    if run.id not in fr:
+    if run.id not in fr or fr[run.id].run is not run:
         fr[run.id] = FrameSource(run)
     return fr[run.id]
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
+import threading
 from functools import cached_property
 from pathlib import Path
 from typing import Any
@@ -47,6 +49,11 @@ def find_runs(root: Path, max_depth: int = 3) -> list[Path]:
 
     walk(Path(root), 0)
     return sorted(found, key=lambda p: (p / "report.json").stat().st_mtime, reverse=True)
+
+
+def report_stamp(path: Path) -> list[int]:
+    st = (Path(path) / "report.json").stat()
+    return [st.st_mtime_ns, st.st_size]
 
 
 def _leading_number(v: Any) -> float | None:
@@ -93,6 +100,8 @@ class RunView:
             raise FileNotFoundError(f"not a caanfast run: {path}")
         self.id = run_id(self.path)
         self.cache = RunCache(self.id, cache_root)
+        self.stamp = report_stamp(self.path)
+        self._invalidate_stale_cache()
         self.params: dict[str, Any] = json.loads((self.path / "params.json").read_text())
         self.report: dict[str, Any] = json.loads((self.path / "report.json").read_text())
         m = json.loads((self.path / "factors" / "meta.json").read_text())
@@ -101,6 +110,25 @@ class RunView:
         self.tile: int = int(m["tile"])
         raw = self.params.get("raw_dir")
         self.raw_dir: Path | None = Path(raw) if raw else None
+
+    def _invalidate_stale_cache(self) -> None:
+        """Drop the cache of a run folder that was rewritten (keeps the user's frame rate)."""
+        old = self.cache.load_json("stamp.json")
+        if old is not None and old != self.stamp:
+            fps = self.cache.load_json("fps.json")
+            if self.cache.dir.is_dir():
+                shutil.rmtree(self.cache.dir)
+            if fps is not None:
+                self.cache.save_json("fps.json", fps)
+        if old != self.stamp:
+            self.cache.save_json("stamp.json", self.stamp)
+
+    def is_current(self) -> bool:
+        """False once ``report.json`` changed on disk since this view was opened."""
+        try:
+            return report_stamp(self.path) == self.stamp
+        except OSError:
+            return False
 
     @property
     def has_raw(self) -> bool:
@@ -203,28 +231,32 @@ class Registry:
     def __init__(self, cache_root_: Path | None = None) -> None:
         self.root = Path(cache_root_ or cache_root())
         self._runs: dict[str, RunView] = {}
+        self._lock = threading.RLock()
 
     def _known(self) -> dict[str, str]:
         p = self.root / "runs.json"
         return json.loads(p.read_text()) if p.exists() else {}
 
     def open(self, path: Path) -> RunView:
-        rid = run_id(path)
-        if rid not in self._runs:
-            self._runs[rid] = RunView(path, self.root)
-            known = self._known()
-            if known.get(rid) != str(self._runs[rid].path):
-                known[rid] = str(self._runs[rid].path)
-                self.root.mkdir(parents=True, exist_ok=True)
-                tmp = self.root / "runs.json.tmp"
-                tmp.write_text(json.dumps(known))
-                tmp.replace(self.root / "runs.json")
-        return self._runs[rid]
+        with self._lock:
+            rid = run_id(path)
+            if rid not in self._runs or not self._runs[rid].is_current():
+                self._runs[rid] = RunView(path, self.root)
+                known = self._known()
+                if known.get(rid) != str(self._runs[rid].path):
+                    known[rid] = str(self._runs[rid].path)
+                    self.root.mkdir(parents=True, exist_ok=True)
+                    tmp = self.root / "runs.json.tmp"
+                    tmp.write_text(json.dumps(known))
+                    tmp.replace(self.root / "runs.json")
+            return self._runs[rid]
 
     def get(self, rid: str) -> RunView:
-        if rid in self._runs:
-            return self._runs[rid]
-        path = self._known().get(rid)
-        if path is None or not is_run(Path(path)):
-            raise KeyError(rid)
-        return self.open(Path(path))
+        with self._lock:
+            run = self._runs.get(rid)
+            if run is not None and run.is_current():
+                return run
+            path = run.path if run is not None else self._known().get(rid)
+            if path is None or not is_run(Path(path)):
+                raise KeyError(rid)
+            return self.open(Path(path))
