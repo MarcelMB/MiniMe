@@ -1,3 +1,24 @@
+import { Home } from "./home/Home";
+import { href, useRoute } from "./router";
+
 export function App() {
-  return <main>CaAnFast</main>;
+  const route = useRoute();
+  return (
+    <>
+      <header className="topbar">
+        <a className="brand" href={href({ name: "home" })}>
+          CaAnFast
+        </a>
+        <nav aria-label="Main">
+          <a className="btn" href={href({ name: "home" })}>
+            Runs
+          </a>
+          <a className="btn" href={href({ name: "new" })}>
+            New run
+          </a>
+        </nav>
+      </header>
+      {route.name === "home" && <Home />}
+    </>
+  );
 }
