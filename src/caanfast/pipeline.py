@@ -137,8 +137,16 @@ def _filter(df: pd.DataFrame, col: str) -> pd.DataFrame:
     return df[df[col].to_numpy(bool)].reset_index(drop=True)
 
 
-def _seeds(fac: Factors, fc: corr.FactorCorr, params: Params, timer: StageTimer) -> pd.DataFrame:
+def _seeds(
+    fac: Factors,
+    fc: corr.FactorCorr,
+    params: Params,
+    timer: StageTimer,
+    keep: dict[str, np.ndarray] | None = None,
+) -> pd.DataFrame:
+    """Seeds through init -> PNR (-> GMM) -> merge; ``keep`` gets each step's positions."""
     p, n = params, timer.counts
+    keep = {} if keep is None else keep
     with timer("seeds_init"):
         s = seeds.seeds_init(
             fac.block_max,
@@ -150,9 +158,11 @@ def _seeds(fac: Factors, fc: corr.FactorCorr, params: Params, timer: StageTimer)
             p.seeds_diff_thres,
         )
     n["seeds_init"] = len(s)
+    keep["init"] = _positions(s)
     with timer("pnr_refine"):
         s = _filter(seeds.pnr_refine(fac, s, thres=p.pnr_thres), "mask_pnr")
     n["seeds_pnr"] = len(s)
+    keep["pnr"] = _positions(s)
     if p.gmm_refine:
         with timer("gmm_refine"):
             s = _filter(seeds.gmm_refine(fac, s), "mask_gmm")
@@ -160,7 +170,12 @@ def _seeds(fac: Factors, fc: corr.FactorCorr, params: Params, timer: StageTimer)
     with timer("seeds_merge"):
         s = _filter(corr.seeds_merge(fc, s, fac.max_proj, p.merge_dist, p.merge_corr), "mask_mrg")
     n["seeds_merged"] = len(s)
+    keep["merged"] = _positions(s)
     return s
+
+
+def _positions(s: pd.DataFrame) -> np.ndarray:
+    return s[["height", "width"]].to_numpy(np.float32).reshape(-1, 2)
 
 
 def _init_units(
@@ -180,6 +195,17 @@ def _init_units(
 # ---------------------------------------------------------------------------
 # Outputs
 # ---------------------------------------------------------------------------
+
+
+def _write_seeds(d: Path, kept: dict[str, np.ndarray]) -> None:
+    d.mkdir(parents=True, exist_ok=True)
+    for name, pos in kept.items():
+        np.save(d / f"{name}.npy", pos)
+
+
+def _write_init(d: Path, A: sps.csr_matrix) -> None:
+    d.mkdir(parents=True, exist_ok=True)
+    sps.save_npz(d / "A.npz", sps.csr_matrix(A, dtype=np.float32))
 
 
 def _write_cnmf(d: Path, res: CnmfResult, H: int, W: int) -> None:
@@ -243,6 +269,7 @@ def run(
     sc = motion.load_if_valid(out / "motion", raw_hash, params.motion_params(), info.frames)
     _reset_dir(out)
     _write_params(out, params, raw_dir, raw_hash)  # first: marks the dir as a caanfast run
+    timer.attach_progress(out / "progress.jsonl")
 
     with timer("template"):
         if sc is None:
@@ -270,8 +297,11 @@ def run(
 
     with timer("corr_setup"):
         fc = corr.FactorCorr(fac, params.noise_freq)
-    s = _seeds(fac, fc, params, timer)
+    kept: dict[str, np.ndarray] = {}
+    s = _seeds(fac, fc, params, timer, keep=kept)
+    _write_seeds(out / "seeds", kept)
     A, C = _init_units(fac, fc, s, params, timer)
+    _write_init(out / "init", A)
     with timer("cnmf"):
         res = run_cnmf(fac, A, C, params, fc.traces_corr)
     timer.counts.update(res.counts)

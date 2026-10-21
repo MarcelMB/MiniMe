@@ -13,19 +13,44 @@ from typing import Any
 
 
 class StageTimer:
-    """``with timer("name"): ...`` appends ``{"stage", "seconds"}`` (wall) to ``rows``."""
+    """``with timer("name"): ...`` appends ``{"stage", "seconds"}`` (wall) to ``rows``.
+
+    After ``attach_progress(path)`` every stage start and end is also appended to ``path``
+    as one JSON line, so another process (the ``caanfast serve`` job runner) can follow.
+    """
 
     def __init__(self) -> None:
         self.rows: list[dict[str, Any]] = []
         self.counts: dict[str, int] = {}
+        self.progress: Path | None = None
+
+    def attach_progress(self, path: Path) -> None:
+        """Start logging to ``path`` (overwritten); stages already finished come first."""
+        self.progress = Path(path)
+        now = time.time()
+        with self.progress.open("w") as f:
+            for r in self.rows:
+                f.write(json.dumps({"stage": r["stage"], "event": "end", "t": now, **r}) + "\n")
+
+    def _log(self, stage: str, event: str, seconds: float | None = None) -> None:
+        if self.progress is None:
+            return
+        doc: dict[str, Any] = {"stage": stage, "event": event, "t": time.time()}
+        if seconds is not None:
+            doc["seconds"] = seconds
+        with self.progress.open("a") as f:
+            f.write(json.dumps(doc) + "\n")
 
     @contextmanager
     def __call__(self, stage: str) -> Iterator[None]:
+        self._log(stage, "start")
         t0 = time.perf_counter()
         try:
             yield
         finally:
-            self.rows.append({"stage": stage, "seconds": time.perf_counter() - t0})
+            dt = time.perf_counter() - t0
+            self.rows.append({"stage": stage, "seconds": dt})
+            self._log(stage, "end", dt)
 
     def to_json(self, path: Path, extra: dict[str, Any]) -> None:
         doc = {"stages": self.rows, "counts": self.counts, **extra}

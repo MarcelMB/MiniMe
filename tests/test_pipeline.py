@@ -60,6 +60,14 @@ def test_pipeline_end_to_end_tiny(tiny_session):
     assert rep["bytes"]["store_peak"] > 0 and rep["bytes"]["factors"] > 0
     assert rep["workers"] == 2 and rep["counts"]["seeds_init"] >= rep["counts"]["seeds_pnr"]
     assert "cnmf" in {r["stage"] for r in rep["stages"]}
+    for k in ("init", "pnr", "merged"):
+        pos = np.load(out / "seeds" / f"{k}.npy")
+        assert pos.dtype == np.float32 and pos.shape == (rep["counts"][f"seeds_{k}"], 2)
+    A0 = sps.load_npz(out / "init" / "A.npz")
+    assert A0.shape == (rep["counts"]["units_init_merge"], 64 * 64)
+    events = [json.loads(s) for s in (out / "progress.jsonl").read_text().splitlines()]
+    ends = [e["stage"] for e in events if e["event"] == "end"]
+    assert ends == [r["stage"] for r in rep["stages"]]
     (out / "stale.txt").write_text("from a previous run")
     # second run reuses the sidecar and overwrites
     out2 = pipeline.run(tiny_session["raw_dir"], p, run_name="t", workers=1)
@@ -67,6 +75,24 @@ def test_pipeline_end_to_end_tiny(tiny_session):
     assert rep2["motion"]["sidecar_reused"] is True
     assert not (out2 / "stale.txt").exists()
     assert np.array_equal(sps.load_npz(out2 / "cnmf" / "A.npz").toarray(), A.toarray())
+
+
+def test_stage_timer_progress(tmp_path):
+    from caanfast.report import StageTimer
+
+    timer = StageTimer()
+    with timer("probe"):
+        pass
+    timer.attach_progress(tmp_path / "progress.jsonl")
+    with timer("pass1"):
+        pass
+    lines = [json.loads(s) for s in (tmp_path / "progress.jsonl").read_text().splitlines()]
+    assert [(x["stage"], x["event"]) for x in lines] == [
+        ("probe", "end"),
+        ("pass1", "start"),
+        ("pass1", "end"),
+    ]
+    assert lines[2]["seconds"] >= 0 and "seconds" not in lines[1]
 
 
 def test_pipeline_refuses_out_dir_containing_raw(tmp_path):
