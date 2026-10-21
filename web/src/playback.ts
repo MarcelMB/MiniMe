@@ -7,9 +7,22 @@ export function advance(
   dtMs: number,
   carry: number,
 ): { t: number; carry: number; ended: boolean } {
-  const step = (speed * fps * dtMs) / 1000 + carry;
+  const step = Math.max(0, (speed * fps * Math.max(0, dtMs)) / 1000 + carry);
   const whole = Math.floor(step);
-  const next = Math.min(T - 1, t + whole);
+  const next = Math.max(0, Math.min(T - 1, t + whole));
   const ended = next >= T - 1;
   return { t: next, carry: ended ? 0 : step - whole, ended };
+}
+
+/** One playback tick: wait (null) until the frame for ``t`` is drawn, then advance. */
+export function playStep(
+  t: number,
+  drawn: number | null,
+  T: number,
+  speed: number,
+  fps: number,
+  dtMs: number,
+  carry: number,
+): { t: number; carry: number; ended: boolean } | null {
+  return drawn === t ? advance(t, T, speed, fps, dtMs, carry) : null;
 }

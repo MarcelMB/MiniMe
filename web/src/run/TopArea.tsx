@@ -5,7 +5,7 @@ import type { Img } from "../draw";
 import { STALE, latest } from "../frames";
 import { fmtClock } from "../format";
 import { ImageView } from "../ImageView";
-import { advance } from "../playback";
+import { playStep } from "../playback";
 import { sourceOptions, useRun, type Source } from "./RunContext";
 
 const SPEEDS = ["1", "4", "16"] as const;
@@ -54,7 +54,10 @@ export function TopArea() {
           timer = setTimeout(() => {
             if (!cancelled) setRetry((r) => r + 1);
           }, 1500);
-        } else setNote(e instanceof Error ? e.message : String(e));
+        } else {
+          setNote(e instanceof Error ? e.message : String(e));
+          setPlaying(false);
+        }
       },
     );
     if (playing) {
@@ -73,11 +76,12 @@ export function TopArea() {
   useEffect(() => {
     if (!playing) return;
     let raf = 0;
-    let last = performance.now();
+    let last: number | null = null;
     let carry = 0;
     const tick = (now: number) => {
-      if (drawn.current === tRef.current) {
-        const a = advance(tRef.current, summary.T, Number(speed), fps, now - last, carry);
+      if (last === null) last = now;
+      const a = playStep(tRef.current, drawn.current, summary.T, Number(speed), fps, now - last, carry);
+      if (a) {
         last = now;
         carry = a.carry;
         if (a.t !== tRef.current) setT(a.t);
