@@ -5,7 +5,7 @@ import type { Img } from "../draw";
 import { STALE, latest } from "../frames";
 import { fmtClock } from "../format";
 import { ImageView } from "../ImageView";
-import { playStep } from "../playback";
+import { playStep, prefetchTiming } from "../playback";
 import { sourceOptions, useRun, type Source } from "./RunContext";
 
 const SPEEDS = ["1", "4", "16"] as const;
@@ -60,18 +60,34 @@ export function TopArea() {
         }
       },
     );
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [source, t, run.cache, summary.W, summary.H, retry]);
+
+  // Neighbouring frames: play-ahead while playing, prefetch around ``t`` when stepping, and only
+  // after the position settles when the slider jumped (so a drag does not flood the server).
+  const prevT = useRef<number | null>(null);
+  useEffect(() => {
+    if (source === "max") return;
+    const prev = prevT.current;
+    prevT.current = t;
     if (playing) {
       const step = Math.max(1, Math.round((Number(speed) * fps) / 60));
       for (let k = 1; k <= 8; k++) {
         const u = t + k * step;
         if (u < summary.T && !run.cache.has(source, u)) run.cache.get(source, u).catch(() => {});
       }
-    } else run.cache.prefetch(source, t, summary.T, 12, 3);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [source, t, run.cache, summary.W, summary.H, summary.T, playing, speed, fps, retry]);
+      return;
+    }
+    if (prefetchTiming(prev, t) === "now") {
+      run.cache.prefetch(source, t, summary.T, 12, 3);
+      return;
+    }
+    const timer = setTimeout(() => run.cache.prefetch(source, t, summary.T, 12, 3), 150);
+    return () => clearTimeout(timer);
+  }, [source, t, run.cache, summary.T, playing, speed, fps]);
 
   useEffect(() => {
     if (!playing) return;
@@ -124,7 +140,10 @@ export function TopArea() {
             aria-label={playing ? "Pause" : "Play"}
             disabled={source === "max" && !playing}
             title={source === "max" ? "choose Raw, Preprocessed or Reconstruction to play" : undefined}
-            onClick={() => setPlaying(!playing)}
+            onClick={() => {
+              if (!playing && t >= summary.T - 1) setT(0);
+              setPlaying(!playing);
+            }}
             style={{ background: "rgba(255,255,255,0.92)", color: "#0b1220", width: 44, padding: 0, justifyContent: "center" }}
           >
             {playing ? "❚❚" : "▶"}

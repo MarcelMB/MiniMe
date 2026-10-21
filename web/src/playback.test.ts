@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { advance, playStep } from "./playback";
+import { advance, playStep, prefetchTiming } from "./playback";
 
 describe("advance", () => {
   it("moves by speed x fps x dt and keeps the fraction", () => {
@@ -26,5 +26,16 @@ describe("playStep", () => {
     expect(playStep(10, 9, 1000, 1, 20, 100, 0)).toBeNull();
     expect(playStep(10, null, 1000, 1, 20, 100, 0)).toBeNull();
     expect(playStep(10, 10, 1000, 1, 20, 100, 0)?.t).toBe(12);
+  });
+});
+
+describe("prefetchTiming", () => {
+  it("prefetches at once when stepping or playing, later after a jump", () => {
+    expect(prefetchTiming(null, 100)).toBe("later");
+    expect(prefetchTiming(100, 101)).toBe("now");
+    expect(prefetchTiming(100, 90, 15)).toBe("now");
+    expect(prefetchTiming(100, 115, 15)).toBe("now");
+    expect(prefetchTiming(100, 116, 15)).toBe("later");
+    expect(prefetchTiming(100, 5000)).toBe("later");
   });
 });

@@ -1,7 +1,12 @@
 import type { NDArray } from "./api";
 
+/** Most prefetch requests allowed in flight at once; ``get()`` is never capped. */
+export const MAX_PREFETCH = 4;
+
 export class FrameCache {
   private lru = new Map<string, Promise<NDArray>>();
+  private pending = new Set<string>();
+  private prefetching = 0;
 
   constructor(
     private fetcher: (source: string, t: number) => Promise<NDArray>,
@@ -25,22 +30,37 @@ export class FrameCache {
       return hit;
     }
     const p = this.fetcher(source, t);
-    p.catch(() => {
-      if (this.lru.get(k) === p) this.lru.delete(k);
-    });
+    this.pending.add(k);
+    p.then(
+      () => this.pending.delete(k),
+      () => {
+        this.pending.delete(k);
+        if (this.lru.get(k) === p) this.lru.delete(k);
+      },
+    );
     this.lru.set(k, p);
-    while (this.lru.size > this.capacity) {
-      this.lru.delete(this.lru.keys().next().value as string);
-    }
+    this.evict();
     return p;
   }
 
-  /** Start loading the frames around ``t`` that are not cached yet. */
+  /** Drop the oldest settled entries; pending ones stay, so the size may exceed the capacity. */
+  private evict(): void {
+    if (this.lru.size <= this.capacity) return;
+    for (const k of this.lru.keys()) {
+      if (this.lru.size <= this.capacity) break;
+      if (!this.pending.has(k)) this.lru.delete(k);
+    }
+  }
+
+  /** Start loading the frames around ``t`` that are not cached yet (at most 4 in flight). */
   prefetch(source: string, t: number, T: number, ahead = 12, behind = 3): void {
     for (let d = -behind; d <= ahead; d++) {
+      if (this.prefetching >= MAX_PREFETCH) return;
       const u = t + d;
       if (d !== 0 && u >= 0 && u < T && !this.has(source, u)) {
-        this.get(source, u).catch(() => {});
+        this.prefetching++;
+        const release = () => void this.prefetching--;
+        this.get(source, u).then(release, release);
       }
     }
   }

@@ -22,15 +22,23 @@ let token = "";
 
 export function readToken(search: string, store: Pick<Storage, "getItem" | "setItem">): string {
   const t = new URLSearchParams(search).get("token");
-  if (t) {
-    store.setItem(KEY, t);
-    return t;
+  try {
+    if (t) {
+      store.setItem(KEY, t);
+      return t;
+    }
+    return store.getItem(KEY) ?? "";
+  } catch {
+    return t ?? ""; // sessionStorage blocked: the URL token still works for this page load
   }
-  return store.getItem(KEY) ?? "";
 }
 
 export function initToken(): void {
-  token = readToken(window.location.search, window.sessionStorage);
+  try {
+    token = readToken(window.location.search, window.sessionStorage);
+  } catch {
+    token = new URLSearchParams(window.location.search).get("token") ?? "";
+  }
 }
 
 export function tokenQuery(): string {
@@ -61,6 +69,9 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
       msg = j.detail ?? j.error ?? msg;
     } catch {
       /* plain text body */
+    }
+    if (r.status === 401) {
+      msg = "This page's access key is no longer valid. Open the link that `caanfast serve` printed again.";
     }
     throw new ApiError(r.status, String(msg));
   }
