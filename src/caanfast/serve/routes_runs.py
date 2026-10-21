@@ -20,6 +20,7 @@ from caanfast.serve.frames import SOURCES, FrameSource, tile_map
 from caanfast.serve.paramsmeta import GROUPS, defaults
 from caanfast.serve.runs import RunView, find_runs, is_run
 from caanfast.serve.traces import window, zooms
+from caanfast.tiles import tile_grid
 
 router = APIRouter()
 
@@ -34,14 +35,24 @@ def _run(request: Request, rid: str) -> RunView:
 
 
 def _frames(request: Request, run: RunView) -> FrameSource:
-    fr = request.app.state.frames
-    if run.id not in fr or fr[run.id].run is not run:
-        fr[run.id] = FrameSource(run)
-    return fr[run.id]
+    """The run's FrameSource (one per run); those of runs no longer recent are dropped."""
+    state = request.app.state
+    with state.frames_lock:
+        fr = state.frames
+        if run.id not in fr or fr[run.id].run is not run:
+            fr[run.id] = FrameSource(run)
+        keep = set(state.registry.recent()) | {run.id}
+        for rid in [r for r in fr if r not in keep]:
+            del fr[rid]
+        return fr[run.id]
 
 
-def computing(request: Request, key: str, fn: Callable[[], None]) -> JSONResponse:
-    """202 while ``fn`` runs in the background (500 if it failed)."""
+def computing(request: Request, run: RunView, what: str, fn: Callable[[], None]) -> JSONResponse:
+    """202 while ``fn`` runs in the background (500 if it failed).
+
+    The key carries the run's version, so a rewritten run never sees an old failure.
+    """
+    key = f"{run.id}:{run.stamp}:{what}"
     st = request.app.state.background.ensure(key, fn)
     return JSONResponse(st, status_code=500 if st["status"] == "failed" else 202)
 
@@ -75,7 +86,7 @@ def runs(request: Request, root: str | None = None) -> dict[str, Any]:
     out = []
     for p in find_runs(base):
         try:
-            out.append(reg.open(p).listing())
+            out.append(reg.open(p, touch=False).listing())
         except (OSError, ValueError, KeyError) as e:
             out.append({"path": str(p), "name": p.name, "error": f"{type(e).__name__}: {e}"})
     return {"root": str(base.resolve()), "runs": out}
@@ -111,7 +122,7 @@ def image(request: Request, rid: str, name: str) -> Response:
         elif name == "background":
             a = np.load(run.path / "cnmf" / "b.npy")
         elif name == "rank":
-            a = tile_map(run.factors, run.ranks)
+            a = tile_map(tile_grid(run.H, run.W, run.tile), run.H, run.W, run.ranks)
         else:
             a = run.factors.sigma_flat().reshape(run.H, run.W)
     except FileNotFoundError as e:
@@ -133,7 +144,7 @@ def frame(request: Request, rid: str, t: int, source: str = "recon") -> Response
         except LookupError as e:
             raise HTTPException(404, str(e)) from None
     if not fs_.has_contrast(source):
-        return computing(request, f"{rid}:contrast:{source}", lambda: fs_.contrast(source))
+        return computing(request, run, f"contrast:{source}", lambda: fs_.contrast(source))
     return array_response(fs_.frame(source, t))
 
 
@@ -154,7 +165,7 @@ def motion_residual(request: Request, rid: str) -> Response:
     run = _run(request, rid)
     r = derived.residual(run)
     if r is None:
-        return computing(request, f"{rid}:residual", lambda: derived.compute_residual(run))
+        return computing(request, run, "residual", lambda: derived.compute_residual(run))
     return array_response(r)
 
 
@@ -163,7 +174,7 @@ def seeds_(request: Request, rid: str) -> Response | dict[str, Any]:
     run = _run(request, rid)
     s = derived.seeds(run)
     if s is None:
-        return computing(request, f"{rid}:seeds", lambda: derived.compute_seeds_and_init(run))
+        return computing(request, run, "seeds", lambda: derived.compute_seeds_and_init(run))
     return {k: np.round(v, 1).tolist() for k, v in s.items()}
 
 
@@ -176,7 +187,7 @@ def units(request: Request, rid: str, stage: str = "final") -> Response | dict[s
     elif stage == "init":
         A = derived.init_A(run)
         if A is None:
-            return computing(request, f"{rid}:seeds", lambda: derived.compute_seeds_and_init(run))
+            return computing(request, run, "seeds", lambda: derived.compute_seeds_and_init(run))
         peak = None
     else:
         raise HTTPException(400, f"stage must be final or init, got {stage!r}")
@@ -212,8 +223,8 @@ def traces_overview(request: Request, rid: str, kind: str = "C", bins: int = 200
         raise HTTPException(400, "bins must be in 1..20000")
     ov = derived.traces_overview(run, kind, bins)
     if ov is None:
-        key = f"{rid}:overview:{kind}:{bins}"
-        return computing(request, key, lambda: derived.compute_overview(run, kind, bins))
+        key = f"overview:{kind}:{bins}"
+        return computing(request, run, key, lambda: derived.compute_overview(run, kind, bins))
     return array_response(ov)
 
 
@@ -244,6 +255,6 @@ def zooms_(request: Request, rid: str) -> Response | dict[str, Any]:
     run = _run(request, rid)
     ov = derived.traces_overview(run, "C", 2000)
     if ov is None:
-        key = f"{rid}:overview:C:2000"
-        return computing(request, key, lambda: derived.compute_overview(run, "C", 2000))
+        key = "overview:C:2000"
+        return computing(request, run, key, lambda: derived.compute_overview(run, "C", 2000))
     return zooms(ov[:, 1].max(axis=1), run.T, run.fps)

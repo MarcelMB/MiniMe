@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import secrets
+import threading
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,6 +26,20 @@ NOT_BUILT = """<!doctype html><meta charset="utf-8"><title>CaAnFast</title>
 <code>cd web &amp;&amp; npm install &amp;&amp; npm run build</code>, then restart
 <code>caanfast serve</code>.</p>"""
 
+LOCAL_HOSTS = ("127.0.0.1", "localhost")
+
+
+def host_ok(host: str) -> bool:
+    """A Host header naming this machine by loopback name, with any port or none.
+
+    The check stops DNS rebinding; the port is free so an SSH tunnel to another local
+    port (``ssh -L 9000:127.0.0.1:8765``) still works.
+    """
+    name, sep, port = host.rpartition(":")
+    if not sep:
+        name, port = host, ""
+    return name in LOCAL_HOSTS and (port == "" or port.isdigit())
+
 
 def create_app(
     token: str,
@@ -35,16 +52,29 @@ def create_app(
     from caanfast.serve.routes_jobs import router as jobs_router
     from caanfast.serve.routes_runs import router as runs_router
 
-    app = FastAPI(title="CaAnFast", docs_url=None, redoc_url=None, openapi_url=None)
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        yield
+        if jobs is not None:
+            jobs.shutdown()  # a running job must not outlive the server
+
+    app = FastAPI(
+        title="CaAnFast", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan
+    )
     app.state.registry = Registry(cache_root)
     app.state.frames = {}
+    app.state.frames_lock = threading.Lock()
     app.state.background = Background()
     app.state.jobs = jobs
-    hosts = {f"127.0.0.1:{port}", f"localhost:{port}"} if port else None
+
+    @app.exception_handler(FileNotFoundError)
+    async def file_not_found(request: Request, exc: FileNotFoundError) -> JSONResponse:
+        name = Path(str(exc.filename)).name if exc.filename else "unknown"
+        return JSONResponse({"detail": f"file not found: {name}"}, status_code=404)
 
     @app.middleware("http")
     async def guard(request: Request, call_next):  # noqa: ANN202
-        if hosts is not None and request.headers.get("host", "") not in hosts:
+        if port and not host_ok(request.headers.get("host", "")):
             return PlainTextResponse("wrong host", status_code=403)
         if request.url.path.startswith("/api/"):
             given = request.headers.get("x-token") or request.query_params.get("token") or ""
