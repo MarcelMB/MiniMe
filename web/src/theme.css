@@ -130,7 +130,7 @@ a { color: var(--accent); }
   justify-content: space-between; gap: 12px; pointer-events: none; }
 .overlay > * { pointer-events: auto; }
 .player { display: flex; align-items: center; gap: 12px; padding: 6px 16px 6px 6px; flex-wrap: wrap; }
-.player input[type="range"] { flex: 1 1 160px; accent-color: var(--on-accent); }
+.player input[type="range"] { flex: 1 1 160px; accent-color: #fff; }
 
 .imageview { display: block; width: 100%; height: auto; image-rendering: pixelated; border-radius: 14px; background: var(--map); }
 
