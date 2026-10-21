@@ -26,3 +26,13 @@ export function playStep(
 ): { t: number; carry: number; ended: boolean } | null {
   return drawn === t ? advance(t, T, speed, fps, dtMs, carry) : null;
 }
+
+export const PREFETCH_WINDOW = 15;
+
+/**
+ * Prefetch neighbours at once while stepping or playing (``t`` moved within the window);
+ * after a jump (scrubbing) wait until the position settles.
+ */
+export function prefetchTiming(prev: number | null, t: number, window = PREFETCH_WINDOW): "now" | "later" {
+  return prev !== null && Math.abs(t - prev) <= window ? "now" : "later";
+}

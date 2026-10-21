@@ -97,7 +97,9 @@ export function JobPage({ id }: { id: string }) {
           <button
             className="btn"
             type="button"
-            onClick={() => postJSON<Job>(`/jobs/${id}/cancel`, {}).then(setJob)}
+            onClick={() =>
+              postJSON<Job>(`/jobs/${id}/cancel`, {}).then(setJob, (e: Error) => setErr(e.message))
+            }
           >
             Cancel
           </button>

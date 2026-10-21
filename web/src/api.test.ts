@@ -12,6 +12,18 @@ describe("token", () => {
     expect(readToken("?token=abc&root=/x", s)).toBe("abc");
     expect(readToken("", s)).toBe("abc");
   });
+  it("falls back to the URL token when sessionStorage throws", () => {
+    const bad = {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
+    };
+    expect(readToken("?token=abc", bad)).toBe("abc");
+    expect(readToken("", bad)).toBe("");
+  });
   it("is empty without one", () => {
     expect(readToken("", memStore())).toBe("");
   });
@@ -47,6 +59,14 @@ describe("requests", () => {
     const e = (await getJSON("/c").catch((x) => x)) as Error;
     expect(e).toBeInstanceOf(ApiError);
     expect(e.message).toBe("boom");
+  });
+
+  it("explains a 401", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "bad token" }), { status: 401 })));
+    await expect(getJSON("/a")).rejects.toMatchObject({
+      status: 401,
+      message: "This page's access key is no longer valid. Open the link that `caanfast serve` printed again.",
+    });
   });
 
   it("decodes array responses from the headers", async () => {

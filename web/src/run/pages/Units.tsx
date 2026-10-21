@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getJSON } from "../../api";
 import { Loading } from "../../controls";
 import { ImageView } from "../../ImageView";
@@ -40,6 +40,29 @@ export function Units() {
   const [sortKey, setSortKey] = useState<SortKey>("peak");
   const [desc, setDesc] = useState(true);
   const rows = useMemo(() => sortUnits(units, sortKey, desc), [units, sortKey, desc]);
+  const body = useRef<HTMLTableSectionElement>(null);
+  useEffect(() => {
+    if (sel === null) return;
+    const row = body.current?.querySelector('[aria-current="true"]');
+    if (row && "scrollIntoView" in row) (row as HTMLElement).scrollIntoView({ block: "nearest" });
+  }, [sel, rows]);
+  const tableRows = useMemo(
+    () =>
+      rows.map((u) => (
+        <tr key={u.id} className="clickable" aria-current={u.id === sel ? "true" : undefined} onClick={() => setSel(u.id)}>
+          <td className="mono">
+            <button type="button" aria-pressed={u.id === sel} onClick={() => setSel(u.id)}>
+              {u.id}
+            </button>
+          </td>
+          <td className="mono">{u.size_px}</td>
+          <td className="mono">{u.peak?.toFixed(2) ?? "–"}</td>
+          <td className="mono">{u.centroid[0].toFixed(0)}</td>
+          <td className="mono">{u.centroid[1].toFixed(0)}</td>
+        </tr>
+      )),
+    [rows, sel, setSel],
+  );
   const onSort = (k: SortKey) => {
     if (sortKey === k) setDesc(!desc);
     else {
@@ -73,26 +96,7 @@ export function Units() {
                 ))}
               </tr>
             </thead>
-            <tbody>
-              {rows.map((u) => (
-                <tr
-                  key={u.id}
-                  className="clickable"
-                  aria-current={u.id === sel ? "true" : undefined}
-                  onClick={() => setSel(u.id)}
-                >
-                  <td className="mono">
-                    <button type="button" aria-pressed={u.id === sel} onClick={() => setSel(u.id)}>
-                      {u.id}
-                    </button>
-                  </td>
-                  <td className="mono">{u.size_px}</td>
-                  <td className="mono">{u.peak?.toFixed(2) ?? "–"}</td>
-                  <td className="mono">{u.centroid[0].toFixed(0)}</td>
-                  <td className="mono">{u.centroid[1].toFixed(0)}</td>
-                </tr>
-              ))}
-            </tbody>
+            <tbody ref={body}>{tableRows}</tbody>
           </table>
         </div>
       </section>

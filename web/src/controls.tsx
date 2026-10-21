@@ -30,10 +30,11 @@ export function Slider(p: {
   value: number;
   onChange: (v: number) => void;
   disabled?: boolean;
+  title?: string;
   format?: (v: number) => string;
 }) {
   return (
-    <label className="slider">
+    <label className="slider" title={p.title}>
       <span>{p.label}</span>
       <input
         type="range"

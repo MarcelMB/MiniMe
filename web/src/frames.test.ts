@@ -27,6 +27,69 @@ describe("FrameCache", () => {
   });
 });
 
+describe("FrameCache limits", () => {
+  const deferred = () => {
+    let resolve!: (a: NDArray) => void;
+    const promise = new Promise<NDArray>((r) => (resolve = r));
+    return { promise, resolve };
+  };
+
+  it("keeps at most 4 prefetches in flight but never caps get()", async () => {
+    const pending: ((a: NDArray) => void)[] = [];
+    const f = vi.fn(
+      () =>
+        new Promise<NDArray>((r) => {
+          pending.push(r);
+        }),
+    );
+    const c = new FrameCache(f, 100);
+    c.prefetch("raw", 50, 1000, 12, 3);
+    expect(f).toHaveBeenCalledTimes(4);
+    c.prefetch("raw", 50, 1000, 12, 3);
+    expect(f).toHaveBeenCalledTimes(4);
+    void c.get("raw", 500); // the current frame is never capped
+    expect(f).toHaveBeenCalledTimes(5);
+    pending[0](arr(0));
+    await Promise.resolve();
+    await Promise.resolve();
+    c.prefetch("raw", 50, 1000, 12, 3);
+    expect(f.mock.calls.length).toBeGreaterThan(5);
+  });
+
+  it("frees the prefetch slot when a fetch fails", async () => {
+    const f = vi.fn(() => Promise.reject(new Error("x")));
+    const c = new FrameCache(f, 100);
+    c.prefetch("raw", 50, 1000, 12, 3);
+    expect(f).toHaveBeenCalledTimes(4);
+    await new Promise((r) => setTimeout(r, 0));
+    c.prefetch("raw", 50, 1000, 12, 3);
+    expect(f.mock.calls.length).toBeGreaterThan(4);
+  });
+
+  it("never evicts a pending entry; the oldest settled one goes instead", async () => {
+    const d = deferred();
+    const f = vi.fn((_: string, t: number) => (t === 1 ? d.promise : Promise.resolve(arr(t))));
+    const c = new FrameCache(f, 2);
+    void c.get("raw", 1); // pending and oldest
+    await c.get("raw", 2);
+    await c.get("raw", 3); // over capacity: 2 is the oldest settled
+    expect(c.has("raw", 1)).toBe(true);
+    expect(c.has("raw", 2)).toBe(false);
+    expect(c.has("raw", 3)).toBe(true);
+    await c.get("raw", 4);
+    await c.get("raw", 5);
+    expect(c.has("raw", 1)).toBe(true);
+    d.resolve(arr(1));
+  });
+
+  it("lets the size exceed capacity while everything is pending", () => {
+    const f = vi.fn(() => new Promise<NDArray>(() => {}));
+    const c = new FrameCache(f, 2);
+    for (let t = 0; t < 4; t++) void c.get("raw", t);
+    for (let t = 0; t < 4; t++) expect(c.has("raw", t)).toBe(true);
+  });
+});
+
 describe("latest", () => {
   it("lets only the most recent request through", async () => {
     const wrap = latest();

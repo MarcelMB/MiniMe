@@ -15,6 +15,9 @@ export function FolderPicker(p: {
   const res = useResource(`fs:${path}`, () =>
     getJSON<FsListing>(`/fs${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   );
+  // kept outside Loading so a folder that fails to load (privacy-protected) can still be left
+  const shown = res.data?.path ?? path;
+  const parent = res.data?.parent ?? (shown ? shown.replace(/[\\/][^\\/]*[\\/]?$/, "") || "/" : undefined);
   return (
     <section className="card span4" aria-label="Choose a folder">
       <div className="row">
@@ -30,12 +33,14 @@ export function FolderPicker(p: {
           </button>
         )}
       </div>
+      {parent !== undefined && (
+        <button className="btn" type="button" onClick={() => setPath(parent)}>
+          ↑ {parent}
+        </button>
+      )}
       <Loading res={res} what="folder">
         {(fs) => (
           <div className="picker">
-            <button className="btn" type="button" onClick={() => setPath(fs.parent)}>
-              ↑ {fs.parent}
-            </button>
             {fs.entries.map((e) => (
               <div className="row" key={e.path}>
                 <button className="btn" type="button" onClick={() => setPath(e.path)}>

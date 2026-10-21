@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { getArray, getJSON } from "../api";
-import { ErrorNote, Loading, Segmented } from "../controls";
+import { ComputingNote, ErrorNote, Segmented } from "../controls";
 import { imgFrom } from "../draw";
 import { FrameCache } from "../frames";
 import { fmtDuration, fmtInt } from "../format";
@@ -22,14 +22,29 @@ export function RunPage({ id, page }: { id: string; page: Page }) {
     [id],
   );
   const maxImg = useMemo(() => (maxProj.data ? imgFrom(maxProj.data) : null), [maxProj.data]);
+  const state = useMemo<RunState | null>(
+    () =>
+      summary.data && units.data && maxImg
+        ? { summary: summary.data, units: units.data.units, maxProj: maxImg, t, setT, sel, setSel, cache }
+        : null,
+    [summary.data, units.data, maxImg, t, sel, cache],
+  );
 
   if (summary.error) return <div className="page"><ErrorNote message={summary.error} /></div>;
   if (units.error) return <div className="page"><ErrorNote message={units.error} /></div>;
-  if (!summary.data || !units.data || !maxImg) {
-    return <div className="page"><Loading res={summary} what="run">{() => <p className="muted">Loading units…</p>}</Loading></div>;
+  if (maxProj.error) return <div className="page"><ErrorNote message={maxProj.error} /></div>;
+  if (!state) {
+    return (
+      <div className="page">
+        {maxProj.computing ? (
+          <ComputingNote elapsed={maxProj.elapsed} what="the max projection" />
+        ) : (
+          <p className="muted">Loading the run…</p>
+        )}
+      </div>
+    );
   }
-  const s = summary.data;
-  const state: RunState = { summary: s, units: units.data.units, maxProj: maxImg, t, setT, sel, setSel, cache };
+  const s = state.summary;
   const View = PAGE_VIEWS[page];
   const pages = PAGES.filter((p) => PAGE_VIEWS[p]);
   return (

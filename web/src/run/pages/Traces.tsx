@@ -3,11 +3,11 @@ import { Computing, getArray, getJSON, postJSON, type NDArray } from "../../api"
 import { Chart } from "../../Chart";
 import { useDebounced } from "../../debounce";
 import { Loading, Segmented, Slider, Toggle } from "../../controls";
-import { fmtClock } from "../../format";
+import { fmtClock, fmtDuration, fmtInt } from "../../format";
 import { useResource } from "../../poll";
 import type { Zooms } from "../../types";
 import { useRun } from "../RunContext";
-import { clampRange, lowpassState, overviewColumns, traceMode } from "../traceMode";
+import { FULL_RES_MAX, clampRange, lowpassState, overviewColumns, traceMode } from "../traceMode";
 
 type Kind = "C" | "YrA";
 type Range = [number, number];
@@ -164,6 +164,10 @@ export function Traces() {
   const lpHz = lowpassState(s.fps, lpOn, hzApplied).hz;
   const full = traceMode(range, s.T) === "window";
   const r: Range = range ?? [0, s.T];
+  const lpHint =
+    lpOn && lp.enabled && !full
+      ? `The low-pass applies when you zoom in to ≤ ${s.fps ? fmtDuration(FULL_RES_MAX / s.fps) : `${fmtInt(FULL_RES_MAX)} frames`} (${fmtInt(FULL_RES_MAX)} frames): drag across a trace or use Jump to.`
+      : "";
   const shown = useMemo(() => {
     const base = sel !== null ? [sel] : (zooms.data?.units.slice(0, 3) ?? []);
     return [...new Set([...base, ...extra])].slice(0, 8);
@@ -197,6 +201,7 @@ export function Traces() {
               step={0.5}
               value={Math.min(hz, lp.max)}
               disabled={!lp.enabled || !lpOn}
+              title={lpHint || undefined}
               onChange={setHz}
               format={(v) => `${v.toFixed(1)} Hz`}
             />
@@ -213,6 +218,7 @@ export function Traces() {
             : "Overview (min/max per bin); drag across a chart to zoom in to full resolution."}{" "}
           {fmtClock(r[0], s.fps)} – {fmtClock(r[1], s.fps)}
         </span>
+        {lpHint && <span className="muted">{lpHint}</span>}
         <Loading res={zooms} what="zoom suggestions">
           {(z) => (
             <div className="row">

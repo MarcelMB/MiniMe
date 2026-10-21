@@ -56,6 +56,8 @@ export function Chart(p: ChartProps) {
           (u) => {
             const x = props.current.cursorX;
             if (x == null) return;
+            const { min, max } = u.scales.x;
+            if (min != null && max != null && (x < min || x > max)) return;
             const cx = u.valToPos(x, "x", true);
             const ctx = u.ctx;
             ctx.save();

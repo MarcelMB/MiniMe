@@ -37,6 +37,16 @@ test("opens a run and every stage page without errors", async ({ page }) => {
   await page.getByRole("group", { name: "Image" }).getByRole("button", { name: "Reconstruction" }).click();
   await page.getByRole("slider", { name: "Scrub recording" }).fill("150");
   await expect(page.getByText(/0:00:05/)).toBeVisible();
+  await page.getByRole("group", { name: "Stage" }).getByRole("button", { name: "Units" }).click();
+  const firstRow = page.locator("table.data tbody tr").first();
+  await firstRow.getByRole("button").click();
+  await expect(firstRow).toHaveAttribute("aria-current", "true");
+  await page.getByRole("group", { name: "Stage" }).getByRole("button", { name: "Traces" }).click();
+  const lowpass = page.waitForResponse(
+    (r) => r.url().includes("/traces/") && r.url().includes("lowpass_hz=") && r.status() === 200,
+  );
+  await page.getByRole("switch", { name: "Low-pass" }).check();
+  await lowpass;
   expect(errors).toEqual([]);
   expect(failed).toEqual([]);
   expect(consoleErrors).toEqual([]);
