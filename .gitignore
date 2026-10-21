@@ -10,3 +10,4 @@ web/test-results/
 web/playwright-report/
 web/e2e/.data/
 src/caanfast/serve/static/
+dist/

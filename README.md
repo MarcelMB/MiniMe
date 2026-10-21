@@ -50,6 +50,21 @@ an SSH tunnel: `ssh -L 8765:127.0.0.1:8765 host`, then the printed URL (a differ
 port works too, e.g. `ssh -L 9000:127.0.0.1:8765 host` and the URL with `:9000`). Stopping
 the server (Ctrl+C) also stops a run it started; only one server runs per cache folder.
 
+### Building the front end
+
+The browser app lives in `web/` (React + TypeScript, Vite). `caanfast serve` serves the
+build in `src/caanfast/serve/static/`, which is not in git:
+
+    cd web && npm install && npm run build
+
+During development run the back end and Vite's dev server side by side:
+
+    caanfast serve FOLDER --no-browser --port 8765 --token dev
+    cd web && npm run dev      # then open http://localhost:5173/?token=dev
+
+Checks: `npm run typecheck`, `npm test` (unit tests), `npm run e2e` (smoke test in Chromium
+against a tiny synthetic run; set `CAANFAST_PYTHON` if the venv is not `../.venv`).
+
 ## Parameters
 
 `src/caanfast/params.py` holds every parameter with its default (Minian notebook values).
