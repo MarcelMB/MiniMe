@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Computing } from "../api";
 import { Segmented, Slider, Toggle } from "../controls";
 import type { Img } from "../draw";
@@ -26,25 +26,49 @@ export function TopArea() {
   tRef.current = t;
   const fps = summary.fps ?? 20;
 
+  // The frame index last drawn; playback only advances once the current frame is on screen.
+  const drawn = useRef<number | null>(null);
+
+  useEffect(() => {
+    setFrame(null);
+    setNote("");
+    drawn.current = null;
+    if (source === "max") setPlaying(false);
+  }, [source]);
+
   useEffect(() => {
     if (source === "max") return;
-    setNote("");
+    let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     wrap.current(run.cache.get(source, t)).then(
       (a) => {
-        if (a === STALE) return;
+        if (cancelled || a === STALE) return;
+        setNote("");
+        drawn.current = t;
         setFrame({ data: a.data, W: summary.W, H: summary.H, lo: 0, hi: 255 });
       },
       (e: unknown) => {
+        if (cancelled) return;
         if (e instanceof Computing) {
           setNote("Computing the frame contrast…");
-          timer = setTimeout(() => setRetry((r) => r + 1), 1500);
+          timer = setTimeout(() => {
+            if (!cancelled) setRetry((r) => r + 1);
+          }, 1500);
         } else setNote(e instanceof Error ? e.message : String(e));
       },
     );
-    run.cache.prefetch(source, t, summary.T, playing ? 24 : 12, playing ? 0 : 3);
-    return () => clearTimeout(timer);
-  }, [source, t, run.cache, summary.W, summary.H, summary.T, playing, retry]);
+    if (playing) {
+      const step = Math.max(1, Math.round((Number(speed) * fps) / 60));
+      for (let k = 1; k <= 8; k++) {
+        const u = t + k * step;
+        if (u < summary.T && !run.cache.has(source, u)) run.cache.get(source, u).catch(() => {});
+      }
+    } else run.cache.prefetch(source, t, summary.T, 12, 3);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [source, t, run.cache, summary.W, summary.H, summary.T, playing, speed, fps, retry]);
 
   useEffect(() => {
     if (!playing) return;
@@ -52,19 +76,24 @@ export function TopArea() {
     let last = performance.now();
     let carry = 0;
     const tick = (now: number) => {
-      const a = advance(tRef.current, summary.T, Number(speed), fps, now - last, carry);
-      last = now;
-      carry = a.carry;
-      if (a.t !== tRef.current) setT(a.t);
-      if (a.ended) setPlaying(false);
-      else raf = requestAnimationFrame(tick);
+      if (drawn.current === tRef.current) {
+        const a = advance(tRef.current, summary.T, Number(speed), fps, now - last, carry);
+        last = now;
+        carry = a.carry;
+        if (a.t !== tRef.current) setT(a.t);
+        if (a.ended) {
+          setPlaying(false);
+          return;
+        }
+      }
+      raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [playing, speed, fps, summary.T, setT]);
 
   const base = source === "max" ? run.maxProj : frame;
-  const shown = base && { ...base, hi: base.lo + (base.hi - base.lo) / gain };
+  const shown = useMemo(() => base && { ...base, hi: base.lo + (base.hi - base.lo) / gain }, [base, gain]);
   return (
     <section className="map" aria-label="Field of view" style={{ aspectRatio: `${summary.W} / ${summary.H}`, maxHeight: "72vh" }}>
       <ImageView
@@ -89,7 +118,7 @@ export function TopArea() {
             type="button"
             className="btn"
             aria-label={playing ? "Pause" : "Play"}
-            disabled={source === "max"}
+            disabled={source === "max" && !playing}
             title={source === "max" ? "choose Raw, Preprocessed or Reconstruction to play" : undefined}
             onClick={() => setPlaying(!playing)}
             style={{ background: "rgba(255,255,255,0.92)", color: "#0b1220", width: 44, padding: 0, justifyContent: "center" }}

@@ -53,6 +53,12 @@ export function latest(): <T>(p: Promise<T>) => Promise<T | typeof STALE> {
   let n = 0;
   return <T>(p: Promise<T>) => {
     const mine = ++n;
-    return p.then((v) => (mine === n ? v : STALE));
+    return p.then(
+      (v) => (mine === n ? v : STALE),
+      (e: unknown) => {
+        if (mine === n) throw e;
+        return STALE;
+      },
+    );
   };
 }

@@ -124,3 +124,22 @@ export function drawPoints(ctx: CanvasRenderingContext2D, pts: number[][], scale
     ctx.fill();
   }
 }
+
+type Box = { left: number; top: number; width: number; height: number };
+
+/** Client point -> pixel-centre coords of a W x H image shown with object-fit: contain in ``rect``; null outside the image. */
+export function clientToPixel(
+  rect: Box,
+  W: number,
+  H: number,
+  clientX: number,
+  clientY: number,
+): [number, number] | null {
+  const k = Math.min(rect.width / W, rect.height / H);
+  const cw = W * k;
+  const ch = H * k;
+  const dx = clientX - (rect.left + (rect.width - cw) / 2);
+  const dy = clientY - (rect.top + (rect.height - ch) / 2);
+  if (dx < 0 || dy < 0 || dx > cw || dy > ch) return null;
+  return [(dx / cw) * W - 0.5, (dy / ch) * H - 0.5];
+}

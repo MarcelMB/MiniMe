@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
-import { drawPoints, drawPolygons, fillImageData, pickUnit, type Img } from "./draw";
+import { clientToPixel, drawPoints, drawPolygons, fillImageData, pickUnit, type Img } from "./draw";
 import type { Unit } from "./types";
+
+const NO_UNITS: Unit[] = [];
 
 export function ImageView(p: {
   image: Img | null;
@@ -17,7 +19,7 @@ export function ImageView(p: {
   const ref = useRef<HTMLCanvasElement>(null);
   const buf = useRef<HTMLCanvasElement | null>(null);
   const scale = p.scale ?? 2;
-  const units = p.units ?? [];
+  const units = p.units ?? NO_UNITS;
 
   useEffect(() => {
     const c = ref.current;
@@ -50,9 +52,8 @@ export function ImageView(p: {
       onClick={(e) => {
         if (!p.onPick) return;
         const r = e.currentTarget.getBoundingClientRect();
-        const x = ((e.clientX - r.left) / r.width) * img.W - 0.5;
-        const y = ((e.clientY - r.top) / r.height) * img.H - 0.5;
-        p.onPick(pickUnit(units, x, y));
+        const at = clientToPixel(r, img.W, img.H, e.clientX, e.clientY);
+        if (at) p.onPick(pickUnit(units, at[0], at[1]));
       }}
     />
   );
