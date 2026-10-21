@@ -6,6 +6,7 @@
   --text: #111318;
   --muted: #4b5263;
   --accent: #2563eb;
+  --on-accent: #ffffff;
   --hot: #ea580c;
   --ok: #15803d;
   --bad: #b91c1c;
@@ -31,6 +32,7 @@
     --text: #e8eaef;
     --muted: #a4abb9;
     --accent: #7aa2ff;
+    --on-accent: #0b1220;
     --hot: #fb923c;
     --ok: #4ade80;
     --bad: #f87171;
@@ -102,7 +104,7 @@ a { color: var(--accent); }
   backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
 }
 .btn:hover { background: var(--card-solid); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .seg { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 4px; border-radius: 999px;
@@ -128,7 +130,7 @@ a { color: var(--accent); }
   justify-content: space-between; gap: 12px; pointer-events: none; }
 .overlay > * { pointer-events: auto; }
 .player { display: flex; align-items: center; gap: 12px; padding: 6px 16px 6px 6px; flex-wrap: wrap; }
-.player input[type="range"] { flex: 1 1 160px; accent-color: #fff; }
+.player input[type="range"] { flex: 1 1 160px; accent-color: var(--on-accent); }
 
 .imageview { display: block; width: 100%; height: auto; image-rendering: pixelated; border-radius: 14px; background: var(--map); }
 
