@@ -1,4 +1,6 @@
 import { Home } from "./home/Home";
+import { JobPage } from "./launch/JobPage";
+import { NewRun } from "./launch/NewRun";
 import { href, useRoute } from "./router";
 import { RunPage } from "./run/RunPage";
 
@@ -20,7 +22,11 @@ export function App() {
         </nav>
       </header>
       {route.name === "home" && <Home />}
-      {route.name === "run" && <RunPage key={route.id} id={route.id} page={route.page} />}
+      {route.name === "new" && <NewRun />}
+      {route.name === "job" && <JobPage key={route.id} id={route.id} />}
+      {route.name === "run" && (
+        <RunPage key={route.id} id={route.id} page={route.page} />
+      )}
     </>
   );
 }
