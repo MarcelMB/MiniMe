@@ -19,6 +19,8 @@ SOURCES = ("raw", "pre", "recon")
 def raw_frame(info: io.RawInfo, t: int) -> np.ndarray:
     """Frame ``t`` of the raw session, decoded by seeking inside its segment."""
     edges = np.cumsum([0, *info.segment_frames])
+    if not 0 <= t < edges[-1]:
+        raise IndexError(f"frame {t} is beyond the {edges[-1]} raw frames")
     s = int(np.searchsorted(edges, t, side="right") - 1)
     k = t - int(edges[s])
     cap = io._open(info.segments[s], info.bgr)
@@ -39,6 +41,8 @@ def store_frame(store: Path, fac: Factors, t: int) -> np.ndarray | None:
         return None
     n_per = [p.stat().st_size // fac.grid[0].pixels for p in parts]
     edges = np.cumsum([0, *n_per])
+    if not 0 <= t < edges[-1]:
+        raise IndexError(f"frame {t} is beyond the {edges[-1]} stored frames")
     p = int(np.searchsorted(edges, t, side="right") - 1)
     k = t - int(edges[p])
     out = np.zeros((fac.H, fac.W_), np.float32)
@@ -74,6 +78,7 @@ class FrameSource:
         self.capacity = capacity
         self._lru: OrderedDict[tuple[str, int], np.ndarray] = OrderedDict()
         self._lock = threading.Lock()
+        self._contrast_lock = threading.Lock()
 
     def available(self, source: str) -> bool:
         if source not in SOURCES:
@@ -107,13 +112,15 @@ class FrameSource:
         """1st / 99.9th percentile of <= 50 frames spread over the run (cached)."""
         doc = self.run.cache.load_json("contrast.json", {})
         if source not in doc:
-            self._check(source, 0)
-            ts = np.linspace(0, self.run.T - 1, min(50, self.run.T)).astype(int)
-            vals = np.stack([self._float(source, int(t)) for t in ts])
-            lo, hi = (float(x) for x in np.percentile(vals, [1, 99.9]))
-            doc = self.run.cache.load_json("contrast.json", {})
-            doc[source] = [lo, hi if hi > lo else lo + 1.0]
-            self.run.cache.save_json("contrast.json", doc)
+            with self._contrast_lock:
+                doc = self.run.cache.load_json("contrast.json", {})
+                if source not in doc:
+                    self._check(source, 0)
+                    ts = np.linspace(0, self.run.T - 1, min(50, self.run.T)).astype(int)
+                    vals = np.stack([self._float(source, int(t)) for t in ts])
+                    lo, hi = (float(x) for x in np.percentile(vals, [1, 99.9]))
+                    doc[source] = [lo, hi if hi > lo else lo + 1.0]
+                    self.run.cache.save_json("contrast.json", doc)
         lo, hi = doc[source]
         return float(lo), float(hi)
 
