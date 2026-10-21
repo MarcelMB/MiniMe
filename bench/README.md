@@ -287,6 +287,28 @@ brightness valley between two cells. Synth: recall 0.938 -> 0.948, precision 0.9
 Final code (`fix/rank-vs-T`), V4 2 h from the kept tile store, pass 2 + window 2 with
 default params: **496 units** (17 before), 10 duplicate pairs, median footprint 172 px; pass 2 313 s (264 s with the cap at 100; rank sum 2885 vs 2710, 4 tiles above 100, max 175), window 2 104 s (`pnr_refine` 64 s on 48k seeds). Units sit on cells (`V4_2h/cafast_2h_fix_units.png`). Synthetic 5 min, full pipeline (`processed/cafast_rank_vs_T`): 407 units, recall 0.948, precision 0.980, F1 0.9638, trace corr median 0.994, 46.1 s wall (was 403 / 0.938 / 0.980 / 0.9587 / 0.994).
 
+**3 h runs with the fix** (2026-10-20, 6 workers, M1 Max, run alone): V4 files 0-215 of the 24 h
+recording (`/Volumes/Extreme SSD/cafast_v4_3h`, 216,000 frames, 600 x 600) and WL27 hours 1-3
+(`WL27_2h/raw_3h`, destriped, 216,000 frames, 200 x 200, tuned params with `sparse_snr 0.69`).
+
+| stage | V4 3 h | WL27 3 h |
+|---|---|---|
+| pass 1 (preprocess + motion) | 450 s | 63 s |
+| pass 2 (compression, rank cap 300) | 503 s | 171 s |
+| seeds (init + PNR + merge) | 140 s | 27 s |
+| init (initA, initC, unit_merge) | 14 s | 86 s |
+| CNMF | 28 s | 32 s |
+| wall | 1185 s | 389 s |
+| peak RSS main / worker | 13.9 / 4.7 GB | 3.7 / 2.2 GB |
+| raw = tile store | 78 GB | 8.6 GB |
+| seeds -> PNR -> merged | 59,504 -> 39,769 -> 582 | 4,042 -> 2,512 -> 846 |
+| units | **503** | 112 |
+
+V4: 503 units at 3 h vs 496 at 2 h, rank sum 2950 (max 173). WL27: `unit_merge` 64 s and
+`initC` 20 s on 846 initial units (the hour-2 brightness step inflates its seeds); motion
+quality 0.47. Pass 2 is now the longest stage on both; it grew with the rank cap (WL27 2 h:
+51 s before).
+
 Tile store of the 2 h session kept at `/Volumes/Extreme SSD/cafast_v4_2h/processed/store/`
 (50 GB) for further pass-2 experiments.
 
