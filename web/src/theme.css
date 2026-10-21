@@ -156,7 +156,9 @@ a { color: var(--accent); }
 table.data { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.data th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 8px; }
 table.data td { padding: 6px 8px; border-top: 1px solid var(--track); }
-table.data tr[aria-selected="true"] td { background: var(--track); }
+table.data tr[aria-current="true"] td { background: var(--track); }
+table.data tr.clickable { cursor: pointer; }
+table.data td button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
 table.data th button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
 .scroll { overflow: auto; max-height: 420px; }
 

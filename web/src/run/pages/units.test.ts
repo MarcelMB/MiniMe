@@ -18,6 +18,23 @@ describe("units table", () => {
     expect(sortUnits(us, "peak", true).map((x) => x.id)).toEqual([2, 0, 1]);
     expect(sortUnits(us, "col", false).map((x) => x.id)).toEqual([2, 1, 0]);
   });
+
+  it("orders two null peaks by id", () => {
+    const us = [u(3, 1, null, [0, 0]), u(1, 1, null, [0, 0]), u(2, 1, 5, [0, 0])];
+    expect(sortUnits(us, "peak", true).map((x) => x.id)).toEqual([2, 1, 3]);
+    expect(sortUnits(us, "peak", false).map((x) => x.id)).toEqual([2, 1, 3]);
+  });
+
+  it("keeps a null last when sorting ascending", () => {
+    const us = [u(0, 1, null, [0, 0]), u(1, 1, 9, [0, 0]), u(2, 1, 3, [0, 0])];
+    expect(sortUnits(us, "peak", false).map((x) => x.id)).toEqual([2, 1, 0]);
+  });
+
+  it("breaks ties by id", () => {
+    const us = [u(2, 10, 1, [0, 0]), u(0, 10, 1, [0, 0]), u(1, 10, 1, [0, 0])];
+    expect(sortUnits(us, "size_px", true).map((x) => x.id)).toEqual([0, 1, 2]);
+    expect(sortUnits(us, "size_px", false).map((x) => x.id)).toEqual([0, 1, 2]);
+  });
 });
 
 describe("rank histogram", () => {

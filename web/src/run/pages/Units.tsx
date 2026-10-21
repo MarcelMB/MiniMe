@@ -18,8 +18,10 @@ export function sortUnits(units: Unit[], k: SortKey, desc: boolean): Unit[] {
   return [...units].sort((a, b) => {
     const x = key(a, k);
     const y = key(b, k);
+    if (x === null && y === null) return a.id - b.id;
     if (x === null) return 1;
     if (y === null) return -1;
+    if (x === y) return a.id - b.id;
     return desc ? y - x : x - y;
   });
 }
@@ -73,8 +75,17 @@ export function Units() {
             </thead>
             <tbody>
               {rows.map((u) => (
-                <tr key={u.id} aria-selected={u.id === sel} onClick={() => setSel(u.id)} style={{ cursor: "pointer" }}>
-                  <td className="mono">{u.id}</td>
+                <tr
+                  key={u.id}
+                  className="clickable"
+                  aria-current={u.id === sel ? "true" : undefined}
+                  onClick={() => setSel(u.id)}
+                >
+                  <td className="mono">
+                    <button type="button" aria-pressed={u.id === sel} onClick={() => setSel(u.id)}>
+                      {u.id}
+                    </button>
+                  </td>
                   <td className="mono">{u.size_px}</td>
                   <td className="mono">{u.peak?.toFixed(2) ?? "–"}</td>
                   <td className="mono">{u.centroid[0].toFixed(0)}</td>
