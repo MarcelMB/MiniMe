@@ -54,3 +54,24 @@ def test_frame_errors(run_copy, cache_dir):
         fs.frame("recon", -1)
     with pytest.raises(ValueError):
         fs.frame("movie", 0)
+
+
+def test_frames_past_the_end_raise_index_error(tiny_run, cache_dir):
+    rv = RunView(tiny_run, cache_dir)
+    with pytest.raises(IndexError):
+        raw_frame(rv.raw_info, 300)
+    with pytest.raises(IndexError):
+        store_frame(tiny_run / "tiles", rv.factors, 300)
+
+
+def test_concurrent_contrast_keeps_both_entries(tiny_run, cache_dir):
+    import threading
+
+    fs = FrameSource(RunView(tiny_run, cache_dir))
+    ths = [threading.Thread(target=fs.contrast, args=(s,)) for s in ("recon", "pre")]
+    for th in ths:
+        th.start()
+    for th in ths:
+        th.join()
+    doc = json.loads((cache_dir / fs.run.id / "contrast.json").read_text())
+    assert {"recon", "pre"} <= set(doc)
