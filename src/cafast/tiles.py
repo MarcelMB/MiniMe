@@ -68,10 +68,15 @@ class TileStore:
     def read_tile(self, tile: int) -> np.ndarray:
         """All frames of one tile, (T, th, tw) uint8, parts concatenated in order."""
         t = self.grid[tile]
-        raw = np.concatenate(
-            [np.fromfile(self.part_path(tile, p), dtype=np.uint8) for p in range(self.n_parts)]
-        )
-        return raw.reshape(-1, *t.shape)
+        paths = [self.part_path(tile, p) for p in range(self.n_parts)]
+        raw = np.empty(sum(p.stat().st_size for p in paths), dtype=np.uint8)
+        o = 0
+        buf = memoryview(raw)
+        for path in paths:  # read straight into one buffer: no per-part arrays, no concatenate
+            with open(path, "rb", buffering=0) as fh:
+                while n := fh.readinto(buf[o:]):  # a read() returns at most ~2 GB on macOS
+                    o += n
+        return raw[:o].reshape(-1, *t.shape)
 
     def nbytes(self) -> int:
         return sum(p.stat().st_size for p in self.root.glob("tile_*.part*"))

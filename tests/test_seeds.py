@@ -112,3 +112,10 @@ def test_seed_ptp_batched_equals_all_at_once():
     # float32 traces differ in the last bits with the batch composition (BLAS blocking)
     assert np.allclose(sd.seed_ptp(f, pix, (0.1, 99.9), batch=5), ref, rtol=1e-6, atol=0)
     assert np.allclose(sd.seed_ptp(f, pix, (0.1, 99.9)), ref, rtol=1e-6, atol=0)
+
+
+def test_seed_ptp_threads_equal_serial():
+    _, f = _session()
+    pix = np.random.default_rng(2).integers(0, f.P, 50)
+    one = sd.seed_ptp(f, pix, (0.1, 99.9), batch=7, threads=1)
+    assert np.array_equal(sd.seed_ptp(f, pix, (0.1, 99.9), batch=7, threads=4), one)

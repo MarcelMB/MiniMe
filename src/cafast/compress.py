@@ -19,6 +19,7 @@ MAX_RANK = 300  # a 64 x 64 tile dense with cells passed 176 components at 140k 
 NOISE_PX_CHUNK = 128
 ADAPT_MARGIN = 10
 SVD_CHUNK = 4096
+NOISE_SEG = 1000  # frames per segment of the subset noise estimate
 
 
 # ---------------------------------------------------------------------------
@@ -42,16 +43,16 @@ class TileMatrix:
         self.raw = raw.reshape(raw.shape[0], -1)  # (T, P) uint8
         self.T, self.P = self.raw.shape
         self.chunk = chunk
+        # one read of the tile: sum and sum of squares of the uint8 values are exact in
+        # float64 (< 2^53 up to ~1.4e11 frames), so energy = sum y^2 - (sum y)^2 / T
         acc = np.zeros(self.P)
+        sq = np.zeros(self.P)
         for c0 in range(0, self.T, chunk):
-            acc += self.raw[c0 : c0 + chunk].sum(axis=0, dtype=np.float64)
+            x = self.raw[c0 : c0 + chunk].astype(np.float32)
+            acc += x.sum(axis=0, dtype=np.float64)
+            sq += np.einsum("tp,tp->p", x, x, dtype=np.float64)
         self.mean = (acc / self.T).astype(np.float32)
-        energy = np.zeros(self.P)
-        for c0 in range(0, self.T, chunk):
-            d = self.raw[c0 : c0 + chunk].astype(np.float32)
-            d -= self.mean
-            energy += np.einsum("tp,tp->p", d, d, dtype=np.float64)
-        self.energy = energy
+        self.energy = np.maximum(sq - acc * acc / self.T, 0.0)
 
     def _block(self, c0: int) -> np.ndarray:
         """Frames c0.. as (P, n) F-ordered float32 = (n, P) C-ordered, mean removed."""
@@ -75,7 +76,7 @@ class TileMatrix:
             acc += gemm_blas(Xt, np.asfortranarray(Z[c0 : c0 + Xt.shape[1]]), False)
         return acc
 
-    def noise(self, noise_freq: float = 0.06) -> np.ndarray:
+    def noise(self, noise_freq: float = 0.06, frames: int = 0) -> np.ndarray:
         """Per-pixel noise std from the power spectrum above ``noise_freq`` (Minian's sn).
 
         Minian's ``get_noise_fft`` with ``noise_method="logmexp"``: the square root of the
@@ -84,7 +85,16 @@ class TileMatrix:
         bins (exponential) is ``exp(-gamma) sigma^2``, so this is ``0.75 sigma`` on white noise;
         kept unscaled so ``sparse_snr`` compares with Minian's ``sparse_penal``. Unlike a median of
         integer frame differences it is not quantized on uint8 frames.
+
+        ``frames > 0`` (and fewer than ``T``) estimates it from ``frames // NOISE_SEG``
+        contiguous segments of ``NOISE_SEG`` frames spread evenly over the session: the same
+        geometric mean over the same frequency band, pooled over the segments' periodograms.
+        On white noise each bin is exponential at any segment length, so the estimate keeps
+        Minian's ``0.75 sigma`` scale; it costs ``frames / T`` of the full FFT.
         """
+        n_seg = frames // NOISE_SEG
+        if n_seg >= 1 and n_seg * NOISE_SEG < self.T:
+            return self._noise_segments(noise_freq, n_seg)
         lo, hi = np.around(np.array([noise_freq, 0.5]) * self.T).astype(int)
         lo = max(lo, 1)
         if hi <= lo:  # too few frames for a spectrum: fall back to the difference MAD
@@ -96,6 +106,21 @@ class TileMatrix:
             x = self.raw[:, p0 : p0 + NOISE_PX_CHUNK].astype(np.float32)
             psd = np.abs(sfft.rfft(x, axis=0)[lo:hi]) ** 2 / self.T
             out[p0 : p0 + x.shape[1]] = np.exp(0.5 * np.log(psd + eps).mean(axis=0))
+        return out
+
+    def _noise_segments(self, noise_freq: float, n_seg: int) -> np.ndarray:
+        L = NOISE_SEG
+        lo, hi = max(int(round(noise_freq * L)), 1), int(round(0.5 * L))
+        starts = np.linspace(0, self.T - L, n_seg).round().astype(int)
+        eps = np.finfo(np.float32).eps
+        out = np.empty(self.P)
+        for p0 in range(0, self.P, NOISE_PX_CHUNK):
+            acc = 0.0
+            for t0 in starts:
+                x = self.raw[t0 : t0 + L, p0 : p0 + NOISE_PX_CHUNK].astype(np.float32)
+                psd = np.abs(sfft.rfft(x, axis=0)[lo:hi]) ** 2 / L
+                acc = acc + np.log(psd + eps).mean(axis=0, dtype=np.float64)
+            out[p0 : p0 + x.shape[1]] = np.exp(0.5 * acc / n_seg)
         return out
 
 
@@ -157,6 +182,7 @@ def compress_tile(
     seed: int = 0,
     chunk: int = SVD_CHUNK,
     noise_freq: float = 0.06,
+    noise_frames: int = 0,
 ) -> TileFactors:
     """(T, th, tw) uint8 -> ``TileFactors``.
 
@@ -165,7 +191,7 @@ def compress_tile(
     If no component passes, keep component 0 only.
     """
     Y = TileMatrix(raw, chunk)
-    sigma = Y.noise(noise_freq)
+    sigma = Y.noise(noise_freq, noise_frames)
     rng = np.random.default_rng(seed)
     k_cap = max(1, min(MAX_RANK, Y.P - 1, Y.T - 1))
     k = min(k0, k_cap)

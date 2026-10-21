@@ -30,6 +30,10 @@ class Params:
     svd_power_iter: int = 1
     rank_rho_min: float = 0.2
     rank_z: float = 4.0
+    # per-pixel noise from this many frames (contiguous 1000-frame segments spread over the
+    # session) instead of all of them; 0 = all frames (Minian). Pass 2 27 % faster, but it
+    # changes the units (near-black pixels; bench/README.md), so off by default
+    noise_frames: int = 0
     # seeds
     seeds_wnd: int = 1000
     seeds_stp: int = 500

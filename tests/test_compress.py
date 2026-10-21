@@ -216,3 +216,23 @@ def test_compression_gate_against_noise_free_truth(tmp_path):
     rel_err, capture = _truth_metrics(Y0, S, grid, tfs)
     assert rel_err <= 0.30, rel_err
     assert capture >= 0.97, capture
+
+
+def test_noise_frame_subset_close_to_full_and_falls_back():
+    rng = np.random.default_rng(2)
+    T = 12000
+    raw = np.clip(np.rint(60 + 3 * rng.standard_normal((T, 200))), 0, 255).astype(np.uint8)
+    Y = compress.TileMatrix(raw)
+    full = Y.noise(0.06)
+    sub = Y.noise(0.06, frames=4000)  # 4 segments of 1000 frames
+    assert np.median(np.abs(sub / full - 1)) < 0.03
+    assert np.array_equal(Y.noise(0.06, frames=T), full)  # a subset of all frames = all frames
+    assert np.array_equal(Y.noise(0.06, frames=500), full)  # shorter than one segment
+
+
+def test_energy_one_pass_matches_centred_sum():
+    raw = _tile_movie(T=500)
+    Y = compress.TileMatrix(raw, chunk=128)
+    X = raw.reshape(len(raw), -1).astype(np.float64)
+    assert np.allclose(Y.energy, ((X - X.mean(0)) ** 2).sum(0), rtol=1e-9)
+    assert np.allclose(Y.mean, X.mean(0), rtol=1e-6)

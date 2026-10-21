@@ -10,6 +10,8 @@ factors.
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import cv2
@@ -175,20 +177,43 @@ def ptp_q(X: np.ndarray, q: tuple[float, float]) -> np.ndarray:
 
 
 SEED_BATCH = 1024  # seeds whose (T,) traces are held at once (~160 MB at 40k frames)
+PTP_MEM_BYTES = 2 * 1024**3  # traces + percentile copy held by all threads together
 
 
 def seed_ptp(
-    f: Factors, pixels: np.ndarray, q: tuple[float, float], batch: int = SEED_BATCH
+    f: Factors,
+    pixels: np.ndarray,
+    q: tuple[float, float],
+    batch: int = SEED_BATCH,
+    threads: int | None = None,
 ) -> np.ndarray:
     """``ptp_q`` of the denoised traces of flat ``pixels``, ``batch`` traces at a time.
 
     All traces at once cost 4 * n * T bytes plus percentile copies (5.4 GB for 11k seeds
-    of a 39541-frame session).
+    of a 39541-frame session). Batches run on ``threads`` threads (default: all cores; the
+    sgemm and the percentile partition release the GIL) and write disjoint slices of the
+    output. The batch shrinks so that all threads together hold at most ``PTP_MEM_BYTES`` (a
+    1024-seed batch is 0.9 GB of traces at 216k frames); like any change of batch size this
+    moves the float32 traces by BLAS rounding only (``rtol`` 1e-6). The cost is seeds x
+    frames, and the number of rolling-window seeds itself grows with the frames.
     """
     pixels = np.asarray(pixels, dtype=np.int64)
     out = np.empty(pixels.size, dtype=np.float64)
-    for i in range(0, pixels.size, batch):
+    if threads is None:
+        threads = os.cpu_count() or 1
+    threads = max(1, threads)
+    batch = max(1, min(batch, PTP_MEM_BYTES // (threads * f.T * 8)))
+
+    def _one(i: int) -> None:
         out[i : i + batch] = ptp_q(f.traces(pixels[i : i + batch]), q)
+
+    starts = range(0, pixels.size, batch)
+    if threads <= 1 or len(starts) <= 1:
+        for i in starts:
+            _one(i)
+    else:
+        with ThreadPoolExecutor(max_workers=threads) as ex:
+            list(ex.map(_one, starts))
     return out
 
 
