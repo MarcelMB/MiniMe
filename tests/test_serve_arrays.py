@@ -27,3 +27,11 @@ def test_empty_array_has_its_shape():
 def test_array_response_rejects_float64():
     with pytest.raises(TypeError):
         array_response(np.zeros(3))
+
+
+def test_zero_dim_array_has_empty_shape_header():
+    r = array_response(np.array(3, np.float32))
+    assert r.headers["X-Shape"] == ""
+    decoded = decode(r.body, "", "float32")
+    assert decoded.shape == ()
+    assert decoded.item() == 3.0

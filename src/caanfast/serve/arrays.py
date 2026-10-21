@@ -13,7 +13,7 @@ def array_response(a: np.ndarray) -> Response:
     a = np.asarray(a)
     if a.dtype.name not in DTYPES:
         raise TypeError(f"unsupported dtype {a.dtype} (one of {', '.join(DTYPES)})")
-    a = np.ascontiguousarray(a, dtype=a.dtype.newbyteorder("<"))
+    a = np.require(a, dtype=a.dtype.newbyteorder("<"), requirements="C")
     return Response(
         a.tobytes(),
         media_type="application/octet-stream",
