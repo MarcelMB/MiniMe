@@ -111,3 +111,12 @@ def test_raw_info(tmp_path, raw):
     assert (info["segments"], info["frames"], info["height"], info["width"]) == (3, 300, 64, 64)
     assert info["fps"] == 30.0 and info["bytes"] > 0
     assert c.get("/api/raw/info", params={"path": str(tmp_path)}).status_code == 404
+
+
+def test_a_run_that_cannot_start_fails_without_killing_the_worker(tmp_path, raw):
+    jm = JobManager(tmp_path / "cache", command=lambda j, p: ["/nonexistent/python"])
+    a = jm.submit(str(raw), "a", {})
+    done = jm.wait(a.id, timeout=10)
+    assert done.status == "failed" and "could not start the run" in done.error
+    b = jm.submit(str(raw), "b", {})
+    assert jm.wait(b.id, timeout=10).status == "failed"
