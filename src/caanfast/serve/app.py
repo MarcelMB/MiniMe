@@ -48,7 +48,7 @@ def create_app(
             return PlainTextResponse("wrong host", status_code=403)
         if request.url.path.startswith("/api/"):
             given = request.headers.get("x-token") or request.query_params.get("token") or ""
-            if not secrets.compare_digest(given, token):
+            if not secrets.compare_digest(given.encode(), token.encode()):
                 return JSONResponse({"detail": "missing or wrong token"}, status_code=401)
         return await call_next(request)
 
