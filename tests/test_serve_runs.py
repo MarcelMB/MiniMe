@@ -112,3 +112,41 @@ def test_background_runs_once_and_reports_failure():
     bg.ensure("b", boom)
     time.sleep(0.1)
     assert bg.ensure("b", boom) == {"status": "failed", "error": "RuntimeError: no"}
+
+
+def test_registry_open_is_thread_safe(run_copy, cache_dir):
+    from concurrent.futures import ThreadPoolExecutor
+
+    reg = Registry(cache_dir)
+    with ThreadPoolExecutor(8) as ex:
+        views = list(ex.map(lambda _: reg.open(run_copy), range(8)))
+    assert len({id(v) for v in views}) == 1
+    assert views[0].id in json.loads((cache_dir / "runs.json").read_text())
+
+
+def _rewrite_report(run):
+    p = run / "report.json"
+    doc = json.loads(p.read_text())
+    doc["rewritten"] = True
+    p.write_text(json.dumps(doc))
+
+
+def test_rewritten_run_clears_its_cache_but_keeps_fps(run_copy, cache_dir):
+    v = RunView(run_copy, cache_dir)
+    v.cache.save_json("contrast.json", {"a": 1})
+    v.set_fps(20)
+    assert RunView(run_copy, cache_dir).cache.has("contrast.json")
+    _rewrite_report(run_copy)
+    v2 = RunView(run_copy, cache_dir)
+    assert not v2.cache.has("contrast.json")
+    assert v2.cache.load_json("fps.json") == {"fps": 20.0}
+    assert v2.cache.has("stamp.json")
+
+
+def test_registry_replaces_a_stale_view(run_copy, cache_dir):
+    reg = Registry(cache_dir)
+    v = reg.open(run_copy)
+    assert reg.get(v.id) is v
+    _rewrite_report(run_copy)
+    assert reg.get(v.id) is not v
+    assert reg.open(run_copy) is reg.get(v.id)

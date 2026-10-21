@@ -1,5 +1,6 @@
 import shutil
 import sys
+import time as _time
 from pathlib import Path
 
 import pytest
@@ -57,9 +58,6 @@ def run_copy(tiny_run, tmp_path):
 @pytest.fixture
 def cache_dir(tmp_path):
     return tmp_path / "cache"
-
-
-import time as _time
 
 
 @pytest.fixture
