@@ -1,4 +1,6 @@
-# cafast
+# CaAnFast (Calcium Analysis fast)
+
+Formerly CaFast; runs written under the old name still load.
 
 Factor-first CNMF pipeline for one-photon miniscope calcium imaging. The movie is read
 twice (pass 1: preprocess + motion correction; pass 2: per-tile low-rank compression); every
@@ -11,8 +13,8 @@ CNMF stage after that runs on the stored factors and never rereads the movie.
 
 ## Run
 
-    .venv/bin/cafast run RAW_DIR --workers 6 --name NAME [--params p.json] [--keep-store]
-    .venv/bin/cafast score RAW_DIR/../processed/NAME     # synthetic sessions only
+    .venv/bin/caanfast run RAW_DIR --workers 6 --name NAME [--params p.json] [--keep-store]
+    .venv/bin/caanfast score RAW_DIR/../processed/NAME     # synthetic sessions only
 
 **Input:** `RAW_DIR` = a folder of `N.avi` grayscale uint8 segments (Miniscope DAQ layout,
 sorted by integer stem). Read-only. A single long AVI works if it is named `0.avi` (a
@@ -38,13 +40,13 @@ The temporary tile store (`tiles/`, same size as the raw data) is deleted after 
 
 ## Parameters
 
-`src/cafast/params.py` holds every parameter with its default (Minian notebook values).
+`src/caanfast/params.py` holds every parameter with its default (Minian notebook values).
 To change some, write a JSON file with only those keys and pass `--params`:
 
     {"pnr_thres": 2.5, "gmm_refine": true, "workers": 6}
 
 A run's own `params.json` can be passed back to `--params` to reproduce it (its `raw_dir`,
-`raw_hash` and `cafast_version` entries are ignored; `--workers` still overrides).
+`raw_hash` and `caanfast_version` entries are ignored; `--workers` still overrides).
 
 Defaults that differ from the Minian notebook, with the measurement behind each, are in
 `bench/README.md`. Changed so far: `gmm_refine` is off (Minian's reference run also skipped
@@ -64,10 +66,10 @@ the penalty does not grow with the length of the recording (see "Known differenc
 | session | pipeline | workers | wall | units | recall | precision | F1 | trace corr (median) |
 |---|---|---|---|---|---|---|---|---|
 | 5 min (9000 fr) | Minian 2.0.2 | 4 x 2 thr | 471 s | 508 | 0.914 | 0.758 | 0.829 | 0.964 |
-| 5 min | cafast | 6 | 43.4 s | 404 | 0.933 | 0.973 | **0.953** | **0.995** |
-| 5 min | cafast, `fix/rank-vs-T` (sparse_snr, tree seed merge) | 6 | 46.1 s | 407 | 0.948 | 0.980 | **0.964** | 0.994 |
-| 10 min (18000 fr) | cafast* | 6 | 68.5 s | 400 | 0.924 | 0.973 | 0.948 | 0.995 |
-| 10 min | cafast* | 1 | 147.3 s | 400 | 0.924 | 0.973 | 0.948 | 0.995 |
+| 5 min | caanfast | 6 | 43.4 s | 404 | 0.933 | 0.973 | **0.953** | **0.995** |
+| 5 min | caanfast, `fix/rank-vs-T` (sparse_snr, tree seed merge) | 6 | 46.1 s | 407 | 0.948 | 0.980 | **0.964** | 0.994 |
+| 10 min (18000 fr) | caanfast* | 6 | 68.5 s | 400 | 0.924 | 0.973 | 0.948 | 0.995 |
+| 10 min | caanfast* | 1 | 147.3 s | 400 | 0.924 | 0.973 | 0.948 | 0.995 |
 
 \* 10-min rows: commit 16f6ac8, before the background footprint `b` was recomputed on the
 last CNMF iteration (that adds one background pass, +3.8 s on 5 min); not rerun.

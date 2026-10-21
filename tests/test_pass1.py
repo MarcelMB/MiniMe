@@ -3,8 +3,8 @@ import json
 import numpy as np
 import pytest
 
-from cafast import io, pass1, tiles
-from cafast.params import Params
+from caanfast import io, pass1, tiles
+from caanfast.params import Params
 
 
 def test_block_edges_cover_movie():
@@ -83,7 +83,7 @@ def test_pass1_shifts_match_truth_in_both_orders(tmp_path, before):
 
     128 x 128 px: at 64 x 64 neither order registers the synthetic movie (3.8 / 5.8 px).
     """
-    from cafast.testing import synth
+    from caanfast.testing import synth
 
     raw = tmp_path / "raw"
     synth.write_session(raw, minutes=300 / 30 / 60, fps=30, segment=150, seed=0, side=128)
@@ -109,7 +109,7 @@ def _write(path, p: Params):
 
 
 def test_pass1_ragged_last_segment(tmp_path):
-    from cafast.testing import synth
+    from caanfast.testing import synth
 
     raw = tmp_path / "raw"
     synth.write_session(raw, minutes=250 / 30 / 60, fps=30, segment=100, seed=0, side=64)
@@ -194,7 +194,7 @@ def _truncate(path, frac=0.6):
 
 
 def test_probe_decodes_truncated_last_segment(tmp_path):
-    from cafast.testing import synth
+    from caanfast.testing import synth
 
     raw = tmp_path / "raw"
     synth.write_session(raw, minutes=300 / 30 / 60, fps=30, segment=100, seed=0, side=64)
@@ -214,7 +214,7 @@ def test_probe_decodes_truncated_last_segment(tmp_path):
 
 
 def test_pass1_names_truncated_middle_segment(tmp_path):
-    from cafast.testing import synth
+    from caanfast.testing import synth
 
     raw = tmp_path / "raw"
     synth.write_session(raw, minutes=300 / 30 / 60, fps=30, segment=100, seed=0, side=64)
@@ -231,7 +231,7 @@ def test_pass1_names_truncated_middle_segment(tmp_path):
 def test_build_factors_uses_decoded_frame_count():
     from types import SimpleNamespace
 
-    from cafast import pass2
+    from caanfast import pass2
 
     T = 40
     info = SimpleNamespace(height=8, width=8, frames=50)  # stale probe count
@@ -248,7 +248,7 @@ def test_build_factors_uses_decoded_frame_count():
 
 
 def test_pass1_worker_streams_single_segment_in_batches(tmp_path):
-    from cafast.testing import synth
+    from caanfast.testing import synth
 
     raw = tmp_path / "raw"
     synth.write_session(raw, minutes=300 / 30 / 60, fps=30, segment=300, seed=0, side=64)
@@ -283,13 +283,16 @@ def test_pass1_worker_streams_single_segment_in_batches(tmp_path):
 
 
 def test_run_params_json_roundtrips(tmp_path):
-    from cafast import pipeline
+    from caanfast import pipeline
 
     p = Params(tile=32, pnr_thres=2.5, workers=3, size_thres=(9, None))
     pipeline._write_params(tmp_path, p, tmp_path, "abc")
     doc = json.loads((tmp_path / "params.json").read_text())
-    assert {"raw_dir", "raw_hash", "cafast_version"} <= set(doc)
+    assert {"raw_dir", "raw_hash", "caanfast_version"} <= set(doc)
     assert Params.from_json(tmp_path / "params.json") == p  # workers kept as recorded
+    old = {**doc, "cafast_version": doc.pop("caanfast_version")}  # run written as cafast
+    (tmp_path / "old.json").write_text(json.dumps(old))
+    assert Params.from_json(tmp_path / "old.json") == p
     (tmp_path / "bad.json").write_text(json.dumps({"tile": 32, "tiel": 16}))
     with pytest.raises(ValueError, match="tiel"):
         Params.from_json(tmp_path / "bad.json")

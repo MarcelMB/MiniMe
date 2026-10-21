@@ -1,14 +1,14 @@
-# cafast Factor-First Pipeline Implementation Plan
+# caanfast Factor-First Pipeline Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A `cafast run <raw_dir>` command that compresses a Miniscope AVI session into per-tile SVD factors (window 1) and runs seeds, init and two CNMF iterations entirely on those factors (window 2), scoring at least as well as Minian against synthetic ground truth.
+**Goal:** A `caanfast run <raw_dir>` command that compresses a Miniscope AVI session into per-tile SVD factors (window 1) and runs seeds, init and two CNMF iterations entirely on those factors (window 2), scoring at least as well as Minian against synthetic ground truth.
 
 **Architecture:** Window 1 is a two-pass streaming engine (frame-major pass 1 → uint8 tile store → tile-major pass 2 → `factors/`), a straight port of the measured `pre_rect_down2` prototype. Window 2 holds every tile's factors `W (P_b×r)`, `V (T×r)`, `mean`, `sigma`, `energy` in RAM and expresses each Minian stage as small matrix algebra on them, streaming reconstructed chunks only where a nonlinearity (clip, max, percentile) needs it.
 
 **Tech Stack:** Python 3.11, numpy, scipy, numba, opencv-python-headless, scikit-learn, pandas, typer; pytest + ruff; `uv` venv.
 
-**Spec:** `docs/superpowers/specs/2026-10-16-cafast-factor-pipeline-design.md`
+**Spec:** `docs/superpowers/specs/2026-10-16-caanfast-factor-pipeline-design.md`
 
 **Prototype root** (read-only, referenced as `$BENCH` below):
 `/Users/mbrosch/Documents/GitKraken_mac/03_analysis-tools/minian_v2.0/scripts/`.
@@ -41,7 +41,7 @@ Test data: `/Users/mbrosch/minian_testing_local/synth_v4_5min/{raw,meta.json}` (
 ### Task 1: Scaffold, synthetic generator, test data
 
 **Files:**
-- Create: `pyproject.toml`, `README.md`, `.gitignore`, `src/cafast/__init__.py`, `src/cafast/testing/__init__.py`, `src/cafast/testing/synth.py`, `src/cafast/cli.py` (synth subcommand only), `tests/conftest.py`, `tests/test_synth.py`
+- Create: `pyproject.toml`, `README.md`, `.gitignore`, `src/caanfast/__init__.py`, `src/caanfast/testing/__init__.py`, `src/caanfast/testing/synth.py`, `src/caanfast/cli.py` (synth subcommand only), `tests/conftest.py`, `tests/test_synth.py`
 
 **Interfaces:**
 - Produces:
@@ -51,14 +51,14 @@ Test data: `/Users/mbrosch/minian_testing_local/synth_v4_5min/{raw,meta.json}` (
   - `synth.true_centroids(setup) -> np.ndarray` (n_cells, 2) float: `(ys + 7 - margin, xs + 7 - margin)` in frame coordinates of an unshifted frame.
   - `synth.write_session(out_dir: Path, minutes: float, fps: int = 30, segment: int = 1000, seed: int = 0, side: int = 600) -> dict` — writes `N.avi` (fourcc GREY) into `out_dir` and `meta.json` into `out_dir.parent`, as `$BENCH/bench_browser/gen_dataset.py`.
   - `tests/conftest.py` fixture `tiny_session(tmp_path)` → dict with `raw_dir` (3 segments of 100 frames, 64×64, seed 0), `setup`, `T=300`.
-  - CLI `cafast synth --minutes 10 --out ~/minian_testing_local/synth_v4_10min/raw`.
+  - CLI `caanfast synth --minutes 10 --out ~/minian_testing_local/synth_v4_10min/raw`.
 
 - [ ] **Step 1: Write pyproject, venv, package skeleton**
 
 `pyproject.toml`:
 ```toml
 [project]
-name = "cafast"
+name = "caanfast"
 version = "0.0.1"
 description = "Factor-first CNMF pipeline for one-photon miniscope data"
 requires-python = ">=3.11"
@@ -69,12 +69,12 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
 [project.scripts]
-cafast = "cafast.cli:app"
+caanfast = "caanfast.cli:app"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
-packages = ["src/cafast"]
+packages = ["src/caanfast"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
@@ -94,7 +94,7 @@ uv venv -p 3.11 && uv pip install -e ".[dev]"
 `tests/test_synth.py`:
 ```python
 import numpy as np
-from cafast.testing import synth
+from caanfast.testing import synth
 
 
 def test_synth_movie_is_deterministic_uint8():
@@ -138,23 +138,31 @@ Copy `synth_chunks`, `synth_movie`, `_gauss_patch`, `_traces` and the constants 
 ```python
 def true_centroids(setup: SynthSetup) -> np.ndarray:
     half = setup.patch.shape[0] // 2
-    return np.stack([setup.ys + half - setup.margin, setup.xs + half - setup.margin], axis=1).astype(float)
+    return np.stack(
+        [setup.ys + half - setup.margin, setup.xs + half - setup.margin], axis=1
+    ).astype(float)
 ```
 `write_session` is `gen_dataset.main` as a function (parameters instead of argparse; `side` parameter instead of `FOV`). `cli.py`:
 ```python
 import typer
+
 app = typer.Typer(add_completion=False)
 
+
 @app.command()
-def synth(out: Path, minutes: float = 10.0, fps: int = 30, segment: int = 1000, seed: int = 0) -> None:
+def synth(
+    out: Path, minutes: float = 10.0, fps: int = 30, segment: int = 1000, seed: int = 0
+) -> None:
     """Write a synthetic Miniscope session (N.avi, GREY) and meta.json."""
-    from cafast.testing.synth import write_session
+    from caanfast.testing.synth import write_session
+
     typer.echo(write_session(out, minutes, fps, segment, seed))
 ```
 `tests/conftest.py`:
 ```python
 import pytest
-from cafast.testing import synth
+from caanfast.testing import synth
+
 
 @pytest.fixture
 def tiny_session(tmp_path):
@@ -173,7 +181,7 @@ git add -A && git commit -m "Scaffold package with synthetic session generator a
 - [ ] **Step 6: Generate the 10-min dataset (background, ~1 min)**
 
 ```bash
-.venv/bin/cafast synth /Users/mbrosch/minian_testing_local/synth_v4_10min/raw --minutes 10
+.venv/bin/caanfast synth /Users/mbrosch/minian_testing_local/synth_v4_10min/raw --minutes 10
 ```
 Verify `meta.json` says 18000 frames, 18 segments, and `0.avi` from `synth_v4_5min/raw` and `synth_v4_10min/raw` are byte-identical (same seed, same first segment).
 
@@ -182,7 +190,7 @@ Verify `meta.json` says 18000 frames, 18 segments, and `0.avi` from `synth_v4_5m
 ### Task 2: io and tiles
 
 **Files:**
-- Create: `src/cafast/io.py`, `src/cafast/tiles.py`, `tests/test_io_tiles.py`
+- Create: `src/caanfast/io.py`, `src/caanfast/tiles.py`, `tests/test_io_tiles.py`
 
 **Interfaces:**
 - Produces (`io.py`):
@@ -200,7 +208,7 @@ Verify `meta.json` says 18000 frames, 18 segments, and `0.avi` from `synth_v4_5m
 `tests/test_io_tiles.py`:
 ```python
 import numpy as np
-from cafast import io, tiles
+from caanfast import io, tiles
 
 
 def test_segments_and_probe(tiny_session):
@@ -212,7 +220,8 @@ def test_segments_and_probe(tiny_session):
 
 
 def test_read_avi_roundtrip(tiny_session):
-    from cafast.testing import synth
+    from caanfast.testing import synth
+
     frames = io.read_avi(io.list_segments(tiny_session["raw_dir"])[0])
     assert frames.dtype == np.uint8 and frames.shape == (100, 64, 64)
     assert np.array_equal(frames, synth.synth_movie(64, 64, 300, 0)[:100])
@@ -229,7 +238,10 @@ def test_pack_and_store_roundtrip(tmp_path):
     grid = tiles.tile_grid(70, 100, tile=32)  # ragged edge tiles
     assert len(grid) == 3 * 4 and grid[-1].shape == (6, 4)
     rng = np.random.default_rng(0)
-    parts = [rng.integers(0, 255, (7, 70, 100), dtype=np.uint8), rng.integers(0, 255, (5, 70, 100), dtype=np.uint8)]
+    parts = [
+        rng.integers(0, 255, (7, 70, 100), dtype=np.uint8),
+        rng.integers(0, 255, (5, 70, 100), dtype=np.uint8),
+    ]
     store = tiles.TileStore(tmp_path / "tiles", grid, n_parts=2)
     for p, frames in enumerate(parts):
         packed = tiles.pack_tiles(frames, grid)
@@ -254,7 +266,7 @@ def test_pack_and_store_roundtrip(tmp_path):
 ### Task 3: preprocess and motion (with sidecar)
 
 **Files:**
-- Create: `src/cafast/preprocess.py`, `src/cafast/motion.py`, `tests/test_motion.py`
+- Create: `src/caanfast/preprocess.py`, `src/caanfast/motion.py`, `tests/test_motion.py`
 
 **Interfaces:**
 - Produces (`preprocess.py`): `denoise(frames: np.ndarray, ksize: int = 7) -> np.ndarray`; `tophat(frames: np.ndarray, wnd: int = 15) -> np.ndarray` using `np.ones((2*wnd+1,)*2, np.uint8)` (square kernel, `$BENCH/bench_browser/candidates/preproc.py:tophat_rect`); `preprocess(frames, ksize, wnd) -> np.ndarray` = tophat(denoise(frames)).
@@ -271,8 +283,8 @@ def test_pack_and_store_roundtrip(tmp_path):
 
 ```python
 import numpy as np
-from cafast import motion, preprocess
-from cafast.testing import synth
+from caanfast import motion, preprocess
+from caanfast.testing import synth
 
 
 def _aligned_rmse(est, true):
@@ -285,6 +297,7 @@ def _aligned_rmse(est, true):
 
 def test_tophat_square_matches_cv2():
     import cv2
+
     f = synth.synth_movie(64, 64, 3, 0)
     out = preprocess.tophat(f, wnd=15)
     k = np.ones((31, 31), np.uint8)
@@ -307,20 +320,29 @@ def test_motion_estimate_accuracy():
 
 def test_sidecar_roundtrip_and_validation(tmp_path):
     sc = motion.MotionSidecar(
-        shifts=np.zeros((10, 2), np.float32), template=np.ones((8, 8), np.float32),
-        quality=np.ones(10, np.float32), params={"max_shift": 20, "down": 2}, raw_hash="abc", meta={},
+        shifts=np.zeros((10, 2), np.float32),
+        template=np.ones((8, 8), np.float32),
+        quality=np.ones(10, np.float32),
+        params={"max_shift": 20, "down": 2},
+        raw_hash="abc",
+        meta={},
     )
     motion.save_sidecar(tmp_path / "motion", sc)
     back = motion.load_sidecar(tmp_path / "motion")
     assert np.array_equal(back.shifts, sc.shifts) and back.params == sc.params
-    assert motion.load_if_valid(tmp_path / "motion", "abc", {"down": 2, "max_shift": 20}, 10) is not None
+    assert (
+        motion.load_if_valid(tmp_path / "motion", "abc", {"down": 2, "max_shift": 20}, 10)
+        is not None
+    )
     assert motion.load_if_valid(tmp_path / "motion", "zzz", sc.params, 10) is None
-    assert motion.load_if_valid(tmp_path / "motion", "abc", {"max_shift": 10, "down": 2}, 10) is None
+    assert (
+        motion.load_if_valid(tmp_path / "motion", "abc", {"max_shift": 10, "down": 2}, 10) is None
+    )
     assert motion.load_if_valid(tmp_path / "motion", "abc", sc.params, 11) is None
 ```
 
 - [ ] **Step 2: Run, verify fail.**
-- [ ] **Step 3: Implement** from `candidates/motion.py` (`_down2`, `_hann`, `_prep`, `estimate`, `_mean_template`, `make_template`) and `heavy_pass.py` (`_parabolic`, `apply_shifts`). `frame_quality`: `f = _prep(frames, tmpl.down)`, `t = irfft2(tmpl.fft)`; Pearson over pixels per frame. Sidecar functions from `motion_sidecar.py` lines 95–248 (`canonical_params`, `MotionSidecar`, `save_sidecar`, `load_sidecar`, `validate`, `load_if_valid`); replace `_minian_version()` with `cafast.__version__`.
+- [ ] **Step 3: Implement** from `candidates/motion.py` (`_down2`, `_hann`, `_prep`, `estimate`, `_mean_template`, `make_template`) and `heavy_pass.py` (`_parabolic`, `apply_shifts`). `frame_quality`: `f = _prep(frames, tmpl.down)`, `t = irfft2(tmpl.fft)`; Pearson over pixels per frame. Sidecar functions from `motion_sidecar.py` lines 95–248 (`canonical_params`, `MotionSidecar`, `save_sidecar`, `load_sidecar`, `validate`, `load_if_valid`); replace `_minian_version()` with `caanfast.__version__`.
 - [ ] **Step 4: Run, verify pass; lint; commit** `git commit -m "Add preprocessing, template motion estimate and motion sidecar"`
 
 ---
@@ -328,7 +350,7 @@ def test_sidecar_roundtrip_and_validation(tmp_path):
 ### Task 4: pass 1
 
 **Files:**
-- Create: `src/cafast/pass1.py`, `src/cafast/params.py`, `tests/test_pass1.py`
+- Create: `src/caanfast/pass1.py`, `src/caanfast/params.py`, `tests/test_pass1.py`
 
 **Interfaces:**
 - Produces (`params.py`): `@dataclass Params` with the exact fields and defaults of spec §6 (`median_ksize=7, tophat_wnd=15, motion_max_shift=20, motion_down=2, tile=64, svd_k0=40, svd_power_iter=1, rank_rho_min=0.2, rank_z=4.0, seeds_wnd=1000, seeds_stp=500, seeds_max_wnd=15, seeds_diff_thres=3, noise_freq=0.06, pnr_thres: float | str = "auto", merge_dist=10, merge_corr=0.8, inita_corr=0.8, inita_wnd=10, init_merge_corr=0.8, loop_merge_corr=0.9, dl_wnd=10, sparse_penal=0.01, size_thres=(25, None), n_iter=2, workers=1, template_frames=200, sub_batch=100`); `Params.from_json(path)`, `to_json(path)`, `motion_params() -> dict` (the subset that invalidates a sidecar: ksize, wnd, max_shift, down, template_frames), `asdict()`.
@@ -343,8 +365,8 @@ def test_sidecar_roundtrip_and_validation(tmp_path):
 
 ```python
 import numpy as np
-from cafast import io, motion, pass1, preprocess, tiles
-from cafast.params import Params
+from caanfast import io, motion, pass1, preprocess, tiles
+from caanfast.params import Params
 
 
 def test_block_edges_cover_movie():
@@ -374,9 +396,12 @@ def test_pass1_single_and_parallel_agree(tiny_session, tmp_path):
 
 
 def test_pass1_ragged_last_segment(tmp_path):
-    from cafast.testing import synth
+    from caanfast.testing import synth
+
     raw = tmp_path / "raw"
-    synth.write_session(raw, minutes=250 / 30 / 60, fps=30, segment=100, seed=0, side=64)  # 100,100,50
+    synth.write_session(
+        raw, minutes=250 / 30 / 60, fps=30, segment=100, seed=0, side=64
+    )  # 100,100,50
     info = io.probe(raw)
     assert info.segment_frames == [100, 100, 50]
     p = Params(seeds_wnd=100, seeds_stp=50, template_frames=50)
@@ -393,9 +418,11 @@ def test_pass1_ragged_last_segment(tmp_path):
 blk_t0 = self.t_start + self.frames + b0
 for bi in range(np.searchsorted(self.block_edges, blk_t0, "right") - 1, len(self.block_edges) - 1):
     lo, hi = self.block_edges[bi] - blk_t0, self.block_edges[bi + 1] - blk_t0
-    if lo >= blk.shape[0]: break
+    if lo >= blk.shape[0]:
+        break
     part = blk[max(lo, 0) : min(hi, blk.shape[0])]
-    if part.size: np.maximum(self.block_max[bi], part.max(axis=0), out=self.block_max[bi])
+    if part.size:
+        np.maximum(self.block_max[bi], part.max(axis=0), out=self.block_max[bi])
 ```
 and `self.quality.append(motion.frame_quality(blk, self.template))`. The worker function must be a module-level function (picklable) and set the thread env vars before importing numpy in the child (use `multiprocessing.get_context("spawn")` and an `initializer` that sets `cv2.setNumThreads(1)`; set `OMP_NUM_THREADS=1` etc. in `os.environ` of the parent before creating the pool, restoring afterwards).
 - [ ] **Step 4: Run, verify pass; lint; commit** `git commit -m "Add pass 1: preprocessing, motion, block maxima and tile store writer"`
@@ -405,7 +432,7 @@ and `self.quality.append(motion.frame_quality(blk, self.template))`. The worker 
 ### Task 5: compression, factors container, pass 2
 
 **Files:**
-- Create: `src/cafast/compress.py`, `src/cafast/factors.py`, `src/cafast/pass2.py`, `tests/test_compress.py`
+- Create: `src/caanfast/compress.py`, `src/caanfast/factors.py`, `src/caanfast/pass2.py`, `tests/test_compress.py`
 
 **Interfaces:**
 - Produces (`factors.py`):
@@ -426,8 +453,8 @@ and `self.quality.append(motion.frame_quality(blk, self.template))`. The worker 
 ```python
 import numpy as np
 import scipy.sparse as sps
-from cafast import compress, factors as fm, tiles
-from cafast.testing import synth
+from caanfast import compress, factors as fm, tiles
+from caanfast.testing import synth
 
 
 def _tile_movie(T=400, side=32, seed=3):
@@ -457,26 +484,36 @@ def test_compress_tile_pure_noise_returns_rank_one():
 def test_autocorr_keep():
     T = 1000
     rng = np.random.default_rng(0)
-    smooth = np.cumsum(rng.standard_normal(T)); white = rng.standard_normal(T)
+    smooth = np.cumsum(rng.standard_normal(T))
+    white = rng.standard_normal(T)
     keep = compress.autocorr_keep(np.stack([smooth, white]), z=4.0, rho_min=0.2)
     assert keep.tolist() == [True, False]
 
 
 def test_factors_save_load_and_algebra(tmp_path):
-    H = W = 32; T = 200
+    H = W = 32
+    T = 200
     grid = tiles.tile_grid(H, W, 16)
     movie = synth.synth_movie(H, W, T, 1)
-    tf = [compress.compress_tile(np.ascontiguousarray(movie[:, t.y0:t.y1, t.x0:t.x1]), k0=8) for t in grid]
-    f = fm.Factors(H, W, T, grid, tf, movie.max(0), movie[:100].max(0)[None], np.array([0, 100, 200]), {})
-    f.save(tmp_path / "factors"); g = fm.Factors.load(tmp_path / "factors")
+    tf = [
+        compress.compress_tile(np.ascontiguousarray(movie[:, t.y0 : t.y1, t.x0 : t.x1]), k0=8)
+        for t in grid
+    ]
+    f = fm.Factors(
+        H, W, T, grid, tf, movie.max(0), movie[:100].max(0)[None], np.array([0, 100, 200]), {}
+    )
+    f.save(tmp_path / "factors")
+    g = fm.Factors.load(tmp_path / "factors")
     assert g.T == T and len(g.tiles) == 4 and np.array_equal(g.tiles[2].V, tf[2].V)
     # dense reference
     Yd = np.concatenate([(t.W @ t.V.T + t.mean[:, None]) for t in tf])  # tile-major rows
     perm = np.concatenate([g.tile_rows(b) for b in range(4)])
-    Yfull = np.empty((H * W, T), np.float32); Yfull[perm] = Yd
+    Yfull = np.empty((H * W, T), np.float32)
+    Yfull[perm] = Yd
     A = sps.random(5, H * W, density=0.05, format="csr", random_state=0, dtype=np.float32)
     assert np.allclose(g.AtY(A), A @ Yfull, rtol=1e-4, atol=1e-2)
-    C = np.random.default_rng(0).standard_normal((5, T)).astype(np.float32); Cc = C - C.mean(1, keepdims=True)
+    C = np.random.default_rng(0).standard_normal((5, T)).astype(np.float32)
+    Cc = C - C.mean(1, keepdims=True)
     assert np.allclose(g.YCt(Cc), Yfull @ Cc.T, rtol=1e-3, atol=1e-1)
     px = np.array([0, 17, 1000])
     assert np.allclose(g.traces(px), Yfull[px], atol=1e-3)
@@ -492,7 +529,7 @@ def test_factors_save_load_and_algebra(tmp_path):
 ### Task 6: seeds, PNR and GMM on factors
 
 **Files:**
-- Create: `src/cafast/seeds.py`, `tests/test_seeds.py`
+- Create: `src/caanfast/seeds.py`, `tests/test_seeds.py`
 
 **Interfaces:**
 - Produces:
@@ -508,15 +545,19 @@ def test_factors_save_load_and_algebra(tmp_path):
 ```python
 import numpy as np
 import pandas as pd
-from cafast import compress, factors as fm, seeds as sd, tiles
-from cafast.testing import synth
+from caanfast import compress, factors as fm, seeds as sd, tiles
+from caanfast.testing import synth
 
 
 def _session(H=64, W=64, T=600, seed=0):
     movie = synth.synth_movie(H, W, T, seed)
     grid = tiles.tile_grid(H, W, 32)
-    tf = [compress.compress_tile(np.ascontiguousarray(movie[:, t.y0:t.y1, t.x0:t.x1]), k0=16) for t in grid]
-    from cafast.pass1 import seed_block_edges
+    tf = [
+        compress.compress_tile(np.ascontiguousarray(movie[:, t.y0 : t.y1, t.x0 : t.x1]), k0=16)
+        for t in grid
+    ]
+    from caanfast.pass1 import seed_block_edges
+
     edges = seed_block_edges(T, 300, 150)  # the same edges pass 1 would store
     bm = np.stack([movie[a:b].max(0) for a, b in zip(edges[:-1], edges[1:])])
     return movie, fm.Factors(H, W, T, grid, tf, movie.max(0), bm, edges, {})
@@ -524,11 +565,14 @@ def _session(H=64, W=64, T=600, seed=0):
 
 def test_seeds_from_block_max_equal_full_projection():
     movie, f = _session()
-    s = sd.seeds_init(f.block_max, f.block_edges, f.T, wnd_size=300, stp_size=150, max_wnd=10, diff_thres=2)
+    s = sd.seeds_init(
+        f.block_max, f.block_edges, f.T, wnd_size=300, stp_size=150, max_wnd=10, diff_thres=2
+    )
     # reference: same windows from the raw movie
-    from cafast.seeds import rolling_windows, local_max_roll
+    from caanfast.seeds import rolling_windows, local_max_roll
+
     wins = rolling_windows(f.T, 300, 150)
-    ref = sum(local_max_roll(movie[w.start:w.stop].max(0), 2, 10, 2) for w in wins)
+    ref = sum(local_max_roll(movie[w.start : w.stop].max(0), 2, 10, 2) for w in wins)
     hh, ww = np.nonzero(ref)
     assert set(zip(s.height, s.width)) == set(zip(hh, ww))
     assert len(s) > 5
@@ -541,11 +585,13 @@ def test_pnr_and_gmm_masks(tmp_path):
     cents = cents[(cents >= 0).all(1) & (cents < 64).all(1)]
     rng = np.random.default_rng(0)
     noise = np.stack([rng.integers(0, 64, 30), rng.integers(0, 64, 30)], 1)
-    seeds = pd.DataFrame({"height": np.r_[cents[:, 0], noise[:, 0]], "width": np.r_[cents[:, 1], noise[:, 1]]})
+    seeds = pd.DataFrame(
+        {"height": np.r_[cents[:, 0], noise[:, 0]], "width": np.r_[cents[:, 1], noise[:, 1]]}
+    )
     out = sd.pnr_refine(f, seeds, thres="auto")
     assert out["mask_pnr"].iloc[: len(cents)].mean() > 0.8
     out2 = sd.pnr_refine(f, seeds, thres=2.0)
-    assert out2["pnr"].iloc[: len(cents)].median() > out2["pnr"].iloc[len(cents):].median()
+    assert out2["pnr"].iloc[: len(cents)].median() > out2["pnr"].iloc[len(cents) :].median()
     g = sd.gmm_refine(f, seeds)
     assert g["mask_gmm"].iloc[: len(cents)].mean() > 0.8
 
@@ -554,6 +600,7 @@ def test_pnr_raises_when_nothing_survives():
     _, f = _session()
     seeds = pd.DataFrame({"height": [1, 2], "width": [1, 2]})
     import pytest
+
     with pytest.raises(ValueError, match="no seeds"):
         sd.pnr_refine(f, seeds, thres=1e9)
 ```
@@ -568,7 +615,7 @@ def test_pnr_raises_when_nothing_survives():
 ### Task 7: correlations on factors
 
 **Files:**
-- Create: `src/cafast/corr.py`, `tests/test_corr.py`
+- Create: `src/caanfast/corr.py`, `tests/test_corr.py`
 
 **Interfaces:**
 - Produces:
@@ -585,22 +632,27 @@ def test_pnr_raises_when_nothing_survives():
 ```python
 import numpy as np
 import pandas as pd
-from cafast import compress, corr, factors as fm, tiles
-from cafast.testing import synth
+from caanfast import compress, corr, factors as fm, tiles
+from caanfast.testing import synth
 
 
 def _session(H=64, W=64, T=800, seed=0):
     movie = synth.synth_movie(H, W, T, seed)
     setup = synth.synth_setup(H, W, T, seed)
     grid = tiles.tile_grid(H, W, 32)
-    tf = [compress.compress_tile(np.ascontiguousarray(movie[:, t.y0:t.y1, t.x0:t.x1]), k0=16) for t in grid]
+    tf = [
+        compress.compress_tile(np.ascontiguousarray(movie[:, t.y0 : t.y1, t.x0 : t.x1]), k0=16)
+        for t in grid
+    ]
     f = fm.Factors(H, W, T, grid, tf, movie.max(0), movie.max(0)[None], np.array([0, T]), {})
     clean = np.concatenate([c for _, c, _ in synth.truth_chunks(setup, H, W)])
     return movie, clean, setup, f
 
 
 def test_lowpass_removes_dc_and_high_band():
-    T = 500; x = np.ones((2, T)); x[1] = np.sin(np.arange(T) * 2.5)
+    T = 500
+    x = np.ones((2, T))
+    x[1] = np.sin(np.arange(T) * 2.5)
     y = corr.lowpass(x, 0.06)
     assert abs(y).max() < 1e-6
 
@@ -617,8 +669,11 @@ def test_pair_correlations_track_noise_free_truth():
     Y = clean.reshape(clean.shape[0], -1).T.astype(float)
     lp = corr.lowpass(Y[np.r_[src, dst, far]], 0.06)
     n = len(src)
-    def pear(a, b): return np.sum(a * b, 1) / np.sqrt((a * a).sum(1) * (b * b).sum(1))
-    ref_near, ref_far = pear(lp[:n], lp[n:2 * n]), pear(lp[:n], lp[2 * n:])
+
+    def pear(a, b):
+        return np.sum(a * b, 1) / np.sqrt((a * a).sum(1) * (b * b).sum(1))
+
+    ref_near, ref_far = pear(lp[:n], lp[n : 2 * n]), pear(lp[:n], lp[2 * n :])
     assert np.median(np.abs(c_near - ref_near)) < 0.05
     assert np.median(c_near) > 0.8 and np.median(np.abs(c_far)) < 0.3
     idx, cw = fc.window(int(src[0]), 10)
@@ -631,7 +686,9 @@ def test_seeds_merge_keeps_brightest_per_group():
     cents = np.rint(synth.true_centroids(setup)).astype(int)
     cents = cents[(cents >= 3).all(1) & (cents < 61).all(1)][:10]
     dup = cents + np.array([1, 0])
-    s = pd.DataFrame({"height": np.r_[cents[:, 0], dup[:, 0]], "width": np.r_[cents[:, 1], dup[:, 1]]})
+    s = pd.DataFrame(
+        {"height": np.r_[cents[:, 0], dup[:, 0]], "width": np.r_[cents[:, 1], dup[:, 1]]}
+    )
     out = corr.seeds_merge(fc, s, f.max_proj, thres_dist=5, thres_corr=0.6)
     assert out["mask_mrg"].sum() <= len(cents) + 1
     kept = out[out["mask_mrg"]]
@@ -650,7 +707,7 @@ def test_seeds_merge_keeps_brightest_per_group():
 ### Task 8: initA, initC, unit_merge
 
 **Files:**
-- Create: `src/cafast/init.py`, `tests/test_init.py`
+- Create: `src/caanfast/init.py`, `tests/test_init.py`
 
 **Interfaces:**
 - Produces:
@@ -665,15 +722,21 @@ def test_seeds_merge_keeps_brightest_per_group():
 import numpy as np
 import pandas as pd
 import scipy.sparse as sps
-from cafast import compress, corr, factors as fm, init, tiles
-from cafast.testing import synth
+from caanfast import compress, corr, factors as fm, init, tiles
+from caanfast.testing import synth
 
 
 def _session(H=64, W=64, T=800, seed=0):
-    movie = synth.synth_movie(H, W, T, seed); setup = synth.synth_setup(H, W, T, seed)
+    movie = synth.synth_movie(H, W, T, seed)
+    setup = synth.synth_setup(H, W, T, seed)
     grid = tiles.tile_grid(H, W, 32)
-    tf = [compress.compress_tile(np.ascontiguousarray(movie[:, t.y0:t.y1, t.x0:t.x1]), k0=16) for t in grid]
-    return setup, fm.Factors(H, W, T, grid, tf, movie.max(0), movie.max(0)[None], np.array([0, T]), {})
+    tf = [
+        compress.compress_tile(np.ascontiguousarray(movie[:, t.y0 : t.y1, t.x0 : t.x1]), k0=16)
+        for t in grid
+    ]
+    return setup, fm.Factors(
+        H, W, T, grid, tf, movie.max(0), movie.max(0)[None], np.array([0, T]), {}
+    )
 
 
 def test_initA_footprints_cover_cells_and_initC_is_least_squares():
@@ -689,11 +752,18 @@ def test_initA_footprints_cover_cells_and_initC_is_least_squares():
     C = init.initC(f, A)
     # reference: dense lstsq on the reconstructed movie
     Y = np.concatenate([f.reconstruct_chunk(b, 0, f.T) for b in range(4)])
-    perm = np.concatenate([f.tile_rows(b) for b in range(4)]); Yf = np.empty_like(Y); Yf[perm] = Y
+    perm = np.concatenate([f.tile_rows(b) for b in range(4)])
+    Yf = np.empty_like(Y)
+    Yf[perm] = Y
     ref = np.linalg.lstsq(A.toarray().T, Yf, rcond=None)[0]
     assert np.allclose(C, ref, atol=1e-3 * abs(ref).max())
     # traces correlate with truth
-    tr = setup.C[(setup.ys + 7 - 8 >= 5) & (setup.ys + 7 - 8 < 59) & (setup.xs + 7 - 8 >= 5) & (setup.xs + 7 - 8 < 59)]
+    tr = setup.C[
+        (setup.ys + 7 - 8 >= 5)
+        & (setup.ys + 7 - 8 < 59)
+        & (setup.xs + 7 - 8 >= 5)
+        & (setup.xs + 7 - 8 < 59)
+    ]
     r = [np.corrcoef(C[k], tr[k])[0, 1] for k in range(len(tr))]
     assert np.median(r) > 0.8
 
@@ -708,6 +778,7 @@ def test_unit_merge_means_duplicates():
 
 def test_initA_raises_without_footprints():
     import pytest
+
     setup, f = _session()
     fc = corr.FactorCorr(f, 0.06)
     with pytest.raises(ValueError, match="no footprints"):
@@ -723,7 +794,7 @@ def test_initA_raises_without_footprints():
 ### Task 9: spatial update kernel and CNMF stages
 
 **Files:**
-- Create: `src/cafast/spatial_kernel.py`, `src/cafast/cnmf.py`, `tests/test_spatial_kernel.py`, `tests/test_cnmf.py`
+- Create: `src/caanfast/spatial_kernel.py`, `src/caanfast/cnmf.py`, `tests/test_spatial_kernel.py`, `tests/test_cnmf.py`
 
 **Interfaces:**
 - Produces (`spatial_kernel.py`): `solve_nnqp(G: np.ndarray, B: np.ndarray, lam: np.ndarray, indptr: np.ndarray, indices: np.ndarray, rel_gap_tol: float = 1e-10, max_sweeps: int = 100_000) -> np.ndarray` — for active pixel i with allowed units `indices[indptr[i]:indptr[i+1]]`, minimise `½ wᵀGw − b_iᵀw + lam_i Σw`, `w ≥ 0`; returns `values` aligned with `indices` (so `(values, indices, indptr)` is the CSR of `A_newᵀ` over active pixels). Numba `@njit(parallel=True, nogil=True)`, duality-gap stop — `$BENCH/bench_spatial/candidates/numba_cd.py` kernel (`_solve_pixels` or equivalent; keep its gap bound).
@@ -740,13 +811,14 @@ def test_initA_raises_without_footprints():
 ```python
 import numpy as np
 from scipy.optimize import nnls
-from cafast.spatial_kernel import solve_nnqp
+from caanfast.spatial_kernel import solve_nnqp
 
 
 def test_nnqp_matches_nnls_per_pixel():
     rng = np.random.default_rng(0)
     K, T, P = 6, 300, 50
-    C = np.abs(rng.standard_normal((K, T))); Cc = C - C.mean(1, keepdims=True)
+    C = np.abs(rng.standard_normal((K, T)))
+    Cc = C - C.mean(1, keepdims=True)
     G = Cc @ Cc.T
     Wtrue = np.abs(rng.standard_normal((P, K))) * (rng.random((P, K)) < 0.5)
     Y = Wtrue @ C + 0.1 * rng.standard_normal((P, T))
@@ -754,15 +826,17 @@ def test_nnqp_matches_nnls_per_pixel():
     lam = np.full(P, 0.5)
     sub = (Wtrue > 0) | (rng.random((P, K)) < 0.2)
     sub[0] = True
-    indptr = np.r_[0, np.cumsum(sub.sum(1))]; indices = np.concatenate([np.flatnonzero(s) for s in sub])
+    indptr = np.r_[0, np.cumsum(sub.sum(1))]
+    indices = np.concatenate([np.flatnonzero(s) for s in sub])
     vals = solve_nnqp(G, B, lam, indptr.astype(np.int64), indices.astype(np.int64))
     for i in range(P):
-        idx = indices[indptr[i]:indptr[i + 1]]
+        idx = indices[indptr[i] : indptr[i + 1]]
         # NNLS of the equivalent problem: ||L w - (L^-T)(b - lam)||, L = chol(G[idx][:, idx])
-        Gs = G[np.ix_(idx, idx)]; L = np.linalg.cholesky(Gs)
+        Gs = G[np.ix_(idx, idx)]
+        L = np.linalg.cholesky(Gs)
         rhs = np.linalg.solve(L, B[i, idx] - lam[i])
         w_ref, _ = nnls(L.T, rhs)
-        w = vals[indptr[i]:indptr[i + 1]]
+        w = vals[indptr[i] : indptr[i + 1]]
         f = lambda x: 0.5 * x @ Gs @ x - B[i, idx] @ x + lam[i] * x.sum()
         assert f(w) <= f(w_ref) + 1e-6 * max(1.0, abs(f(w_ref)))
         assert (w >= 0).all()
@@ -771,25 +845,33 @@ def test_nnqp_matches_nnls_per_pixel():
 ```python
 import numpy as np
 import scipy.sparse as sps
-from cafast import cnmf, compress, corr, factors as fm, init, tiles
-from cafast.params import Params
-from cafast.testing import synth
+from caanfast import cnmf, compress, corr, factors as fm, init, tiles
+from caanfast.params import Params
+from caanfast.testing import synth
 
 
 def _dense(f):
     Y = np.concatenate([f.reconstruct_chunk(b, 0, f.T) for b in range(len(f.tiles))])
     perm = np.concatenate([f.tile_rows(b) for b in range(len(f.tiles))])
-    out = np.empty_like(Y); out[perm] = Y; return out.astype(np.float64)
+    out = np.empty_like(Y)
+    out[perm] = Y
+    return out.astype(np.float64)
 
 
 def _setup(H=48, W=48, T=600):
-    movie = synth.synth_movie(H, W, T, 2); setup = synth.synth_setup(H, W, T, 2)
+    movie = synth.synth_movie(H, W, T, 2)
+    setup = synth.synth_setup(H, W, T, 2)
     grid = tiles.tile_grid(H, W, 24)
-    tf = [compress.compress_tile(np.ascontiguousarray(movie[:, t.y0:t.y1, t.x0:t.x1]), k0=16) for t in grid]
+    tf = [
+        compress.compress_tile(np.ascontiguousarray(movie[:, t.y0 : t.y1, t.x0 : t.x1]), k0=16)
+        for t in grid
+    ]
     f = fm.Factors(H, W, T, grid, tf, movie.max(0), movie.max(0)[None], np.array([0, T]), {})
     fc = corr.FactorCorr(f, 0.06)
-    cents = np.rint(synth.true_centroids(setup)).astype(int); cents = cents[(cents >= 4).all(1) & (cents < H - 4).all(1)]
+    cents = np.rint(synth.true_centroids(setup)).astype(int)
+    cents = cents[(cents >= 4).all(1) & (cents < H - 4).all(1)]
     import pandas as pd
+
     A = init.initA(fc, pd.DataFrame({"height": cents[:, 0], "width": cents[:, 1]}), 0.6, 8)
     C = init.initC(f, A)
     return f, fc, A, C
@@ -797,15 +879,17 @@ def _setup(H=48, W=48, T=600):
 
 def test_background_and_trace_match_dense_reference():
     f, fc, A, C = _setup()
-    Y = _dense(f); Ad = A.toarray().astype(np.float64)
+    Y = _dense(f)
+    Ad = A.toarray().astype(np.float64)
     R = np.clip(Y - Ad.T @ C, 0)
-    b_ref = R.mean(1); f_ref = R.T @ b_ref / (b_ref @ b_ref)
+    b_ref = R.mean(1)
+    f_ref = R.T @ b_ref / (b_ref @ b_ref)
     b, fb = cnmf.update_background(f, A, C, chunk=128)
     assert np.allclose(b, b_ref, atol=1e-4 * b_ref.max()) and np.allclose(fb, f_ref, rtol=1e-4)
     b2, fb2 = cnmf.update_background(f, A, C, b=b)
     assert np.array_equal(b2, b) and np.allclose(fb2, fb)
     YtA = (Y - np.outer(b_ref, f_ref)).T @ Ad.T
-    An = 1.0 / (Ad ** 2).sum(1)
+    An = 1.0 / (Ad**2).sum(1)
     ref = np.clip(C + ((YtA - C.T @ (Ad @ Ad.T)) * An).T, 0)
     assert np.allclose(cnmf.compute_trace(f, A, b, C, fb), ref, atol=1e-3 * abs(ref).max())
 
@@ -813,7 +897,9 @@ def test_background_and_trace_match_dense_reference():
 def test_update_spatial_shrinks_outside_cells_and_keeps_units():
     f, fc, A, C = _setup()
     sn = f.sigma_flat()
-    A2, mask, nf = cnmf.update_spatial(f, A, C, sn, dl_wnd=5, sparse_penal=0.01, size_thres=(9, None))
+    A2, mask, nf = cnmf.update_spatial(
+        f, A, C, sn, dl_wnd=5, sparse_penal=0.01, size_thres=(9, None)
+    )
     assert mask.sum() >= 0.8 * A.shape[0] and A2.shape[1] == f.P
     assert np.allclose(A2.max(axis=1).toarray().ravel(), 1.0)
     assert (A2.data >= 0).all()
@@ -836,13 +922,13 @@ def test_run_cnmf_two_iterations():
 ### Task 10: pipeline, report and CLI
 
 **Files:**
-- Create: `src/cafast/pipeline.py`, `src/cafast/report.py`, `tests/test_pipeline.py`; Modify: `src/cafast/cli.py`
+- Create: `src/caanfast/pipeline.py`, `src/caanfast/report.py`, `tests/test_pipeline.py`; Modify: `src/caanfast/cli.py`
 
 **Interfaces:**
 - Produces:
-  - `pipeline.run(raw_dir: Path, params: Params, run_name: str = "cafast", out_root: Path | None = None, keep_store: bool = False) -> Path` executing: probe → hash → template → sidecar check → pass 1 (or apply-only from sidecar) → sidecar save → pass 2 → `Factors.save` → store removal → seeds_init → pnr_refine → gmm_refine → seeds_merge → initA → initC → unit_merge(init_merge_corr) → run_cnmf → write `cnmf/` files, `units.csv`, `params.json`, `report.json`. Output dir = `out_root or raw_dir.parent / "processed"` / `run_name`; it is removed and recreated at start (Review Focus 5). Window-2 stages write their wall time and counts into `report.json` through `report.StageTimer`.
+  - `pipeline.run(raw_dir: Path, params: Params, run_name: str = "caanfast", out_root: Path | None = None, keep_store: bool = False) -> Path` executing: probe → hash → template → sidecar check → pass 1 (or apply-only from sidecar) → sidecar save → pass 2 → `Factors.save` → store removal → seeds_init → pnr_refine → gmm_refine → seeds_merge → initA → initC → unit_merge(init_merge_corr) → run_cnmf → write `cnmf/` files, `units.csv`, `params.json`, `report.json`. Output dir = `out_root or raw_dir.parent / "processed"` / `run_name`; it is removed and recreated at start (Review Focus 5). Window-2 stages write their wall time and counts into `report.json` through `report.StageTimer`.
   - `report.StageTimer`: `with timer("seeds_init"): ...`; `.rows` list of `{"stage", "seconds"}`; `.counts` dict; `to_json(path, extra: dict)`.
-  - CLI: `cafast run RAW_DIR [--params p.json] [--workers N] [--name NAME] [--keep-store]` and the existing `synth`.
+  - CLI: `caanfast run RAW_DIR [--params p.json] [--workers N] [--name NAME] [--keep-store]` and the existing `synth`.
   - Apply-only path when a valid sidecar exists: pass 1 still runs its warp and store write but skips `estimate` (uses stored shifts per frame index) and `make_template`.
 
 - [ ] **Step 1: Failing test**
@@ -851,23 +937,34 @@ def test_run_cnmf_two_iterations():
 import json
 import numpy as np
 import scipy.sparse as sps
-from cafast import pipeline
-from cafast.params import Params
-from cafast.testing import synth
+from caanfast import pipeline
+from caanfast.params import Params
+from caanfast.testing import synth
 
 
 def test_pipeline_end_to_end_tiny(tiny_session):
-    p = Params(tile=32, seeds_wnd=100, seeds_stp=50, seeds_max_wnd=8, template_frames=50,
-               inita_wnd=8, dl_wnd=5, size_thres=(9, None), svd_k0=16)
+    p = Params(
+        tile=32,
+        seeds_wnd=100,
+        seeds_stp=50,
+        seeds_max_wnd=8,
+        template_frames=50,
+        inita_wnd=8,
+        dl_wnd=5,
+        size_thres=(9, None),
+        svd_k0=16,
+    )
     out = pipeline.run(tiny_session["raw_dir"], p, run_name="t", workers=2)
     assert (out / "factors" / "meta.json").exists() and not (out / "tiles").exists()
-    A = sps.load_npz(out / "cnmf" / "A.npz"); C = np.load(out / "cnmf" / "C.npy")
+    A = sps.load_npz(out / "cnmf" / "A.npz")
+    C = np.load(out / "cnmf" / "C.npy")
     rep = json.loads((out / "report.json").read_text())
     assert A.shape[1] == 64 * 64 and C.shape == (A.shape[0], 300)
     assert rep["counts"]["units_final"] == A.shape[0]
     cents = synth.true_centroids(tiny_session["setup"])
     cents = cents[(cents >= 4).all(1) & (cents < 60).all(1)]
-    from cafast.init import centroids
+    from caanfast.init import centroids
+
     uc = centroids(A, 64, 64)
     d = np.sqrt(((cents[:, None] - uc[None]) ** 2).sum(-1)).min(1)
     assert (d < 5).mean() >= 0.8
@@ -886,14 +983,14 @@ def test_pipeline_end_to_end_tiny(tiny_session):
 ### Task 11: scoring against truth and the Minian reference
 
 **Files:**
-- Create: `bench/__init__.py`, `bench/score.py`, `bench/minian_export.py`, `bench/README.md`, `tests/test_score.py`; Modify: `src/cafast/cli.py` (add `score`), `tests/conftest.py` (insert the repo root into `sys.path` so `import bench` works)
+- Create: `bench/__init__.py`, `bench/score.py`, `bench/minian_export.py`, `bench/README.md`, `tests/test_score.py`; Modify: `src/caanfast/cli.py` (add `score`), `tests/conftest.py` (insert the repo root into `sys.path` so `import bench` works)
 
 **Interfaces:**
 - Produces:
   - `score.match_units(unit_centroids: np.ndarray, true_centroids: np.ndarray, max_dist: float = 5.0) -> tuple[np.ndarray, np.ndarray]` greedy one-to-one by increasing distance; returns `(unit_idx, true_idx)` of matches.
   - `score.score_run(A: csr_matrix, traces: np.ndarray, H: int, W: int, meta_path: Path, shifts: np.ndarray) -> dict` with `recall, precision, f1, n_units, n_true, trace_corr_median, trace_corr_q25, align_offset_px`: truth from `synth.synth_setup(meta)`, true centroids shifted by the fitted motion offset (`bench_opt.motion_fit(est_shifts, setup.shifts)` → `c`, `sign`: template coordinates = frame coordinates + mean correction; derive and document the sign from the warp convention, then verify with the pipeline's own units: the median matched distance must be < 1.5 px, otherwise flip), trace corr = Pearson(`traces[k]`, `setup.C[j] − 20`).
-  - CLI `cafast score RUN_DIR` → prints JSON and writes `RUN_DIR/score.json`; reads `cnmf/A.npz`, `cnmf/YrA.npy`, `motion/arrays.npz`, `factors/meta.json`, `<raw>/../meta.json`.
-  - `bench/minian_export.py RUN_OUT_DIR`: opens Minian's zarr intermediates (`minian_intermediate/A_new.zarr/A_new`, `C_new.zarr/C_new`) and `minian/motion.zarr/motion` with `zarr` + `xarray` from the **minian venv** (`/Users/mbrosch/Documents/GitKraken_mac/03_analysis-tools/minian_v2.0/.venv/bin/python`, this script is run there, not in ours), writes `minian_units.npz` with `A (K, H*W) float32 dense`, `C (K, T)`, `shifts (T, 2)` (Minian's `motion` is (frame, shift_dim) in (height, width) order); then `cafast score --minian minian_units.npz --raw <raw_dir>` scores it with the same function.
+  - CLI `caanfast score RUN_DIR` → prints JSON and writes `RUN_DIR/score.json`; reads `cnmf/A.npz`, `cnmf/YrA.npy`, `motion/arrays.npz`, `factors/meta.json`, `<raw>/../meta.json`.
+  - `bench/minian_export.py RUN_OUT_DIR`: opens Minian's zarr intermediates (`minian_intermediate/A_new.zarr/A_new`, `C_new.zarr/C_new`) and `minian/motion.zarr/motion` with `zarr` + `xarray` from the **minian venv** (`/Users/mbrosch/Documents/GitKraken_mac/03_analysis-tools/minian_v2.0/.venv/bin/python`, this script is run there, not in ours), writes `minian_units.npz` with `A (K, H*W) float32 dense`, `C (K, T)`, `shifts (T, 2)` (Minian's `motion` is (frame, shift_dim) in (height, width) order); then `caanfast score --minian minian_units.npz --raw <raw_dir>` scores it with the same function.
 
 - [ ] **Step 1: Failing test**
 
@@ -916,7 +1013,7 @@ def test_match_units_greedy_one_to_one():
 ```bash
 /Users/mbrosch/Documents/GitKraken_mac/03_analysis-tools/minian_v2.0/.venv/bin/python bench/minian_export.py \
   /Users/mbrosch/minian_testing_local/synth_v4_5min/processed/minian_baseline_keep
-.venv/bin/cafast score --minian /Users/mbrosch/minian_testing_local/synth_v4_5min/processed/minian_baseline_keep/minian_units.npz \
+.venv/bin/caanfast score --minian /Users/mbrosch/minian_testing_local/synth_v4_5min/processed/minian_baseline_keep/minian_units.npz \
   --raw /Users/mbrosch/minian_testing_local/synth_v4_5min/raw
 ```
 Record Minian's `f1`, `trace_corr_median` in `bench/README.md` together with its 471 s / 24.9 GB from `$BENCH/bench_browser/results/BASELINE_5min.md`. Delete `minian_intermediate/` afterwards (25 GB) once `minian_units.npz` exists.
@@ -931,23 +1028,23 @@ Record Minian's `f1`, `trace_corr_median` in `bench/README.md` together with its
 
 - [ ] **Step 1: 5-min run, 6 workers**
 ```bash
-.venv/bin/cafast run /Users/mbrosch/minian_testing_local/synth_v4_5min/raw --workers 6 --name fast_5min
-.venv/bin/cafast score /Users/mbrosch/minian_testing_local/synth_v4_5min/processed/fast_5min
+.venv/bin/caanfast run /Users/mbrosch/minian_testing_local/synth_v4_5min/raw --workers 6 --name fast_5min
+.venv/bin/caanfast score /Users/mbrosch/minian_testing_local/synth_v4_5min/processed/fast_5min
 ```
 Expected: finishes; `report.json` wall under 160 s; score F1 ≥ Minian F1 − 0.02 and trace corr ≥ Minian − 0.02. If F1 fails, sweep `inita_corr` ∈ {0.6, 0.7, 0.9} via `--params` files, keep the best, and note it in `bench/README.md`. If a stage crashes, fix it in its module with a regression test, commit, rerun.
 - [ ] **Step 2: 10-min run, 6 workers and 1 worker**
 ```bash
-.venv/bin/cafast run /Users/mbrosch/minian_testing_local/synth_v4_10min/raw --workers 6 --name fast_10min
-.venv/bin/cafast score /Users/mbrosch/minian_testing_local/synth_v4_10min/processed/fast_10min
-.venv/bin/cafast run /Users/mbrosch/minian_testing_local/synth_v4_10min/raw --workers 1 --name fast_10min_w1
+.venv/bin/caanfast run /Users/mbrosch/minian_testing_local/synth_v4_10min/raw --workers 6 --name fast_10min
+.venv/bin/caanfast score /Users/mbrosch/minian_testing_local/synth_v4_10min/processed/fast_10min
+.venv/bin/caanfast run /Users/mbrosch/minian_testing_local/synth_v4_10min/raw --workers 1 --name fast_10min_w1
 ```
 Expected: both finish unattended; 6-worker wall ≤ 6 min target (report either way).
 - [ ] **Step 3: Real-data smoke run**
 ```bash
-.venv/bin/cafast run /Users/mbrosch/minian_testing_local/WL25_demo --workers 6 --name fast_wl25
+.venv/bin/caanfast run /Users/mbrosch/minian_testing_local/WL25_demo --workers 6 --name fast_wl25
 ```
 (Check first that `WL25_demo` holds `N.avi` segments directly; if they sit in a subfolder, pass that folder.) Expected: finishes; `units_final` between 50 and 2000; note the count and wall time.
-- [ ] **Step 4: README** — inputs → outputs, the one command, the parameter file, what is out of scope, the measured table (5-min: Minian vs cafast; 10-min: 1 and 6 workers). Commit `git commit -m "Document runs and results"`.
+- [ ] **Step 4: README** — inputs → outputs, the one command, the parameter file, what is out of scope, the measured table (5-min: Minian vs caanfast; 10-min: 1 and 6 workers). Commit `git commit -m "Document runs and results"`.
 
 ---
 

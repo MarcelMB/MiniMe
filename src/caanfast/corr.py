@@ -24,7 +24,7 @@ import scipy.sparse as sps
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 
-from cafast.factors import Factors
+from caanfast.factors import Factors
 
 # ---------------------------------------------------------------------------
 # Low-pass filter

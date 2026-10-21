@@ -1,6 +1,6 @@
 import numpy as np
 
-from cafast import io, tiles
+from caanfast import io, tiles
 
 
 def test_segments_and_probe(tiny_session):
@@ -12,7 +12,7 @@ def test_segments_and_probe(tiny_session):
 
 
 def test_read_avi_roundtrip(tiny_session):
-    from cafast.testing import synth
+    from caanfast.testing import synth
 
     frames = io.read_avi(io.list_segments(tiny_session["raw_dir"])[0])
     assert frames.dtype == np.uint8 and frames.shape == (100, 64, 64)
@@ -90,9 +90,9 @@ def test_needs_bgr_decision():
 def test_probe_uses_bgr_path_for_codec_with_wrong_raw_decode(tmp_path):
     import pytest
 
-    from cafast import pass1, tiles
-    from cafast.params import Params
-    from cafast.testing import synth
+    from caanfast import pass1, tiles
+    from caanfast.params import Params
+    from caanfast.testing import synth
 
     movie = synth.synth_movie(64, 64, 120, 0)
     grey, hfyu = tmp_path / "grey" / "raw", tmp_path / "hfyu" / "raw"
