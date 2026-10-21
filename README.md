@@ -38,6 +38,16 @@ decoded once more at startup to count its frames.
 
 The temporary tile store (`tiles/`, same size as the raw data) is deleted after pass 2.
 
+## Browser viewer
+
+    caanfast serve [FOLDER]
+
+starts a local server on 127.0.0.1 and opens the browser. It lists the runs under FOLDER
+(default: your home folder), shows every stage of a run, and starts new runs. Runs are only
+read; results it has to compute for older runs go to `~/.cache/caanfast/` (or
+`$CAANFAST_CACHE`). On a remote machine, start it with `--no-browser --port 8765` and open
+an SSH tunnel: `ssh -L 8765:127.0.0.1:8765 host`, then the printed URL.
+
 ## Parameters
 
 `src/caanfast/params.py` holds every parameter with its default (Minian notebook values).

@@ -72,3 +72,18 @@ def score(
     text = json.dumps(result, indent=2)
     dest.write_text(text + "\n")
     typer.echo(text)
+
+
+@app.command()
+def serve(
+    folder: Annotated[
+        Path | None, typer.Argument(help="Folder to look for runs in (default: home).")
+    ] = None,
+    port: Annotated[int, typer.Option(help="Port on 127.0.0.1 (0 = a free one).")] = 0,
+    no_browser: Annotated[bool, typer.Option(help="Do not open the browser.")] = False,
+    token: Annotated[str | None, typer.Option(hidden=True)] = None,
+) -> None:
+    """Open the run viewer and launcher in the browser (local only)."""
+    from caanfast.serve import server
+
+    server.serve_forever(folder, port=port, open_browser=not no_browser, token=token)
