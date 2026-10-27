@@ -146,12 +146,8 @@ def score(
 ) -> None:
     """Score a pipeline run (or a Minian export) against the synthetic ground truth."""
     import json
-    import sys
 
-    sys.path.insert(
-        0, str(Path(__file__).resolve().parents[2])
-    )  # repo root: bench/ is not packaged
-    from bench import score as bench_score
+    from minime import score as bench_score
 
     if minian is not None:
         if raw is None:

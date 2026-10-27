@@ -1,6 +1,6 @@
 [project]
 name = "minime-cnmf"
-version = "0.0.1"
+version = "0.0.2"
 description = "Factor-first CNMF pipeline for one-photon miniscope data"
 readme = "README.md"
 license = "GPL-3.0-or-later"

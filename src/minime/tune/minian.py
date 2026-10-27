@@ -1,4 +1,4 @@
-"""A Minian result aligned and matched to a minime run (reuses ``bench/compare_minian.py``).
+"""A Minian result aligned and matched to a minime run (via ``minime.minian_compare``).
 
 ``MINIAN_NPZ`` holds ``A (K, H*W)``, ``C (K, T)`` and ``max_proj (H, W)``. Minian's
 coordinates are moved onto minime's by phase-correlating the two max projections; units are
@@ -7,27 +7,17 @@ matched one-to-one by centroid within 5 px and matched traces correlated.
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from pathlib import Path
-from types import ModuleType
 from typing import TYPE_CHECKING
 
 import numpy as np
 import scipy.sparse as sps
 
+from minime import minian_compare as cm
+
 if TYPE_CHECKING:
     from minime.tune.figures import RunData
-
-_REPO = Path(__file__).resolve().parents[3]  # bench/ is not packaged
-
-
-def _bench() -> ModuleType:
-    if str(_REPO) not in sys.path:
-        sys.path.insert(0, str(_REPO))
-    from bench import compare_minian
-
-    return compare_minian
 
 
 @dataclass
@@ -46,7 +36,6 @@ class MinianOverlay:
 
 def load(npz: Path, run: RunData) -> MinianOverlay:
     """Minian's units from ``npz``, aligned and matched to ``run``."""
-    cm = _bench()
     mn = cm.load_minian(Path(npz))
     res = cm.compare(
         {
