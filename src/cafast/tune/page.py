@@ -49,6 +49,10 @@ FORM = [
             ("size_thres", "min, max pixels kept after a spatial update (blank = none)"),
             ("n_iter", "spatial + temporal iterations"),
             ("loop_merge_corr", "merge after each iteration above this trace corr"),
+            (
+                "background_clip",
+                "background of clip(Y - AC, 0) as Minian (true / false, ~2x slower)",
+            ),
         ],
     ),
 ]
