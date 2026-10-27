@@ -3,7 +3,7 @@
 Last updated: 2026-10-27
 
 ## Now
-- [ ] Finish PyPI setup (you): accounts + 2FA on test.pypi.org and pypi.org, pending publishers for `minime` (repo MarcelMB/MiniMe, workflow `release.yml`, environments `testpypi` / `pypi`), GitHub environments with a reviewer on `pypi`; then tag `v0.0.1`.
+- [ ] Finish PyPI setup (you): accounts + 2FA on test.pypi.org and pypi.org, pending publishers for `minime-cnmf` (the name `minime` is reserved on PyPI; repo MarcelMB/MiniMe, workflow `release.yml`, environments `testpypi` / `pypi`), GitHub environments with a reviewer on `pypi`; then tag `v0.0.1`.
 - [ ] Auto-tune: rebuild factors, then fix the search (Obsidian "MiniMe auto-tuning"). `src/minime/autotune/`
 - [ ] Recheck the auto-tune `sparse_snr` grid (0.4–4.0, ported from `sparse_penal`) on WL25. `src/minime/autotune/sweep.py`
 - [ ] Minian 3 h overnight run for the comparison (command in the Obsidian note). `bench/minian_full.py`
