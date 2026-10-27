@@ -1,6 +1,7 @@
 import hashlib
 
 import numpy as np
+import pytest
 
 from minime.testing import synth
 from minime.testing import synth_effects as fx
@@ -133,3 +134,142 @@ def test_frame_map_semantics():
     dup = [t for t in range(1, 100) if fm[t] != t and fm[t] != -1]
     assert len(dup) == 5 and all(fm[t] == fm[t - 1] for t in dup)
     assert np.array_equal(fx.frame_map(np.random.default_rng(0), 10, 0, 0), np.arange(10))
+
+
+# --- options, extended truth, shared renderer ------------------------------------------
+
+ALL_ON = synth.SynthOptions(
+    background_drift=15.0,
+    neuropil=10.0,
+    overlap=2,
+    late_active=1,
+    bleach_tau=100.0,
+    vessels=2,
+    motion_step=2,
+    motion_margin=12,
+    nonrigid=1.5,
+    dropped=3,
+    duplicated=3,
+    size_cv=0.3,
+    amp_cv=0.3,
+    noise_sd=6.0,
+    bursts=True,
+    rise_tau=2.0,
+    hemo=20.0,
+    edge_band=3,
+)
+
+
+def test_options_round_trip_and_scenarios():
+    d = ALL_ON.to_dict()
+    assert synth.SynthOptions.from_dict(d) == ALL_ON
+    assert synth.SynthOptions.from_dict(None) == synth.SynthOptions()
+    assert synth.SCENARIOS["clean"] == synth.SynthOptions()
+    assert set(synth.SCENARIOS) >= {"realistic", "overlap", "late_active", "vessels"}
+
+
+def test_truth_matches_generator_with_every_effect():
+    h, w, T = 48, 48, 90
+    setup = synth.synth_setup(h, w, T, seed=3, options=ALL_ON)
+    movie = synth.synth_movie(h, w, T, seed=3, options=ALL_ON)
+    clean = np.concatenate([c for _, c, _ in synth.truth_chunks(setup, h, w, chunk=7)])
+    diff = movie.astype(float) - clean.astype(float)
+    assert abs(diff.mean()) < 0.5 and diff.std() < 7.0
+    assert setup.C.shape[0] == setup.ys.size == setup.spikes.shape[0]
+    assert setup.F0.shape == setup.C.shape and setup.patches.shape[0] == setup.ys.size
+
+
+@pytest.mark.parametrize(
+    "opts",
+    [
+        dict(background_drift=15.0),
+        dict(neuropil=10.0),
+        dict(overlap=2),
+        dict(late_active=1),
+        dict(bleach_tau=100.0),
+        dict(vessels=2),
+        dict(nonrigid=1.5),
+        dict(dropped=3, duplicated=3),
+        dict(amp_cv=0.3),
+        dict(bursts=True, rise_tau=2.0),
+        dict(hemo=20.0),
+        dict(edge_band=3),
+    ],
+)
+def test_single_effect_keeps_cells_and_motion(opts):
+    base = synth.synth_setup(64, 64, 60, seed=0)
+    on = synth.synth_setup(64, 64, 60, seed=0, options=synth.SynthOptions(**opts))
+    n = base.ys.size
+    assert np.array_equal(synth.true_centroids(on)[:n], synth.true_centroids(base))
+    assert np.array_equal(on.shifts, base.shifts)
+
+
+def test_size_cv_keeps_positions_but_grows_patch():
+    base = synth.synth_setup(64, 64, 30, seed=0)
+    on = synth.synth_setup(64, 64, 30, seed=0, options=synth.SynthOptions(size_cv=0.3))
+    assert on.sigma.size == base.ys.size and on.sigma.std() > 0
+    assert on.patch.shape[0] >= 15 and on.patch.shape[0] % 2 == 1
+
+
+def test_overlap_more_than_cells():
+    s = synth.synth_setup(16, 16, 20, seed=0, options=synth.SynthOptions(overlap=5))
+    assert s.ys.size == max(1, int(32 * 32 / 900)) + 5
+    assert (s.group[-5:] >= 0).all()
+
+
+def test_overlap_pairs_are_close_and_correlated():
+    s = synth.synth_setup(64, 64, 600, seed=0, options=synth.SynthOptions(overlap=2))
+    n = s.ys.size - 2
+    for k in range(2):
+        j = int(np.flatnonzero(s.group[:n] == k)[0])
+        d = np.hypot(s.ys[n + k] - s.ys[j], s.xs[n + k] - s.xs[j])
+        assert 4.0 <= d <= 10.0
+        assert np.corrcoef(s.C[j], s.C[n + k])[0, 1] > 0.5
+
+
+def test_late_active_clamped_and_first_active():
+    s = synth.synth_setup(64, 64, 300, seed=0, options=synth.SynthOptions(late_active=99))
+    assert (s.spikes[:, :210] == 0).all() and (s.first_active >= 210).all()
+    base = synth.synth_setup(64, 64, 300, seed=0)
+    has = base.spikes.any(axis=1)
+    assert (base.first_active[has] < 300).all() and (base.first_active[~has] == 300).all()
+
+
+def test_bleach_scales_baseline_and_cells():
+    s = synth.synth_setup(64, 64, 200, seed=0, options=synth.SynthOptions(bleach_tau=50.0))
+    assert np.allclose(s.F0[:, 0], 20.0) and np.allclose(s.F0[:, -1], 20.0 * s.bleach[-1])
+    assert s.bleach[-1] < 0.52
+
+
+def test_frame_map_matches_movie():
+    h, w, T = 32, 32, 120
+    o = synth.SynthOptions(dropped=5, duplicated=5)
+    movie = np.concatenate([c for _, c in synth.synth_chunks(h, w, T, seed=1, chunk=7, options=o)])
+    s = synth.synth_setup(h, w, T, seed=1, options=o)
+    for t in range(T):
+        src = s.frame_map[t]
+        if src == -1:
+            assert not movie[t].any()
+        elif src != t:
+            assert np.array_equal(movie[t], movie[t - 1])
+    assert (s.frame_map == -1).sum() == 5
+    cells = np.concatenate([c for _, _, c in synth.truth_chunks(s, h, w, chunk=100)])
+    assert not cells[s.frame_map == -1].any()
+
+
+def test_large_motion_clipped():
+    o = synth.SynthOptions(motion_step=5, motion_margin=6)
+    s = synth.synth_setup(32, 32, 500, seed=0, options=o)
+    assert np.abs(s.shifts).max() <= 6 and s.margin == 6
+    assert synth.synth_movie(32, 32, 20, seed=0, options=o).shape == (20, 32, 32)
+
+
+def test_vessels_darken_movie():
+    base = synth.synth_movie(64, 64, 20, seed=0)
+    on = synth.synth_movie(64, 64, 20, seed=0, options=synth.SynthOptions(vessels=2))
+    assert on.mean() < base.mean() - 0.5
+
+
+def test_edge_band_darkens_border():
+    m = synth.synth_movie(64, 64, 5, seed=0, options=synth.SynthOptions(edge_band=4))
+    assert m[:, :4].mean() < 0.4 * m[:, 10:-10, 10:-10].mean()
