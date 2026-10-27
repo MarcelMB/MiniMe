@@ -12,14 +12,14 @@ import pandas as pd
 import pytest
 import scipy.sparse as sps
 
-from cafast import window2
-from cafast.autotune import run as at
-from cafast.autotune import score, sweep
-from cafast.params import Params
+from caanfast import window2
+from caanfast.autotune import run as at
+from caanfast.autotune import score, sweep
+from caanfast.params import Params
 
 pytest.importorskip("matplotlib")
 
-from cafast.tune import figures, minian, preview, server  # noqa: E402
+from caanfast.tune import figures, minian, preview, server  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Footprint metrics
@@ -60,20 +60,20 @@ def test_outlines_trace_each_part():
 
 
 @pytest.fixture(scope="module")
-def tiny_rerun(tiny_run):
-    return window2.rerun(tiny_run, name="figs")
+def tiny_rerun(tiny_w2_run):
+    return window2.rerun(tiny_w2_run, name="figs")
 
 
 @pytest.fixture(scope="module")
-def self_minian(tiny_run, tmp_path_factory):
-    """A 'Minian' result that is the cafast run itself, shifted by (2, -1) px."""
-    A = sps.load_npz(tiny_run / "cnmf" / "A.npz").toarray().reshape(-1, 64, 64)
-    mp = np.load(tiny_run / "factors" / "max_proj.npy").astype(np.float32)
+def self_minian(tiny_w2_run, tmp_path_factory):
+    """A 'Minian' result that is the caanfast run itself, shifted by (2, -1) px."""
+    A = sps.load_npz(tiny_w2_run / "cnmf" / "A.npz").toarray().reshape(-1, 64, 64)
+    mp = np.load(tiny_w2_run / "factors" / "max_proj.npy").astype(np.float32)
     path = tmp_path_factory.mktemp("mn") / "minian_units.npz"
     np.savez(
         path,
         A=np.roll(A, (2, -1), axis=(1, 2)).reshape(len(A), -1),
-        C=np.load(tiny_run / "cnmf" / "YrA.npy"),
+        C=np.load(tiny_w2_run / "cnmf" / "YrA.npy"),
         max_proj=np.roll(mp, (2, -1), axis=(0, 1)),
     )
     return path
@@ -104,8 +104,8 @@ def test_run_figures_and_summary(tiny_rerun, self_minian):
     assert {"size_px", "size10", "parts", "pnr"} <= set(table.columns)
 
 
-def test_shared_figures(tiny_run, tmp_path):
-    figures.make_shared_figures(tiny_run, tmp_path)
+def test_shared_figures(tiny_w2_run, tmp_path):
+    figures.make_shared_figures(tiny_w2_run, tmp_path)
     assert {p.name for p in tmp_path.iterdir()} >= set(figures.SHARED_FIGURES)
 
 
@@ -115,9 +115,9 @@ def test_unit_figure(tiny_rerun):
     assert png[:4] == b"\x89PNG"
 
 
-def test_pass1_preview(tiny_run, tmp_path):
-    prm = window2.run_params(tiny_run)
-    out = preview.make_preview(window2.raw_dir(tiny_run), prm, tmp_path / "pv.png", n_frames=60)
+def test_pass1_preview(tiny_w2_run, tmp_path):
+    prm = window2.run_params(tiny_w2_run)
+    out = preview.make_preview(window2.raw_dir(tiny_w2_run), prm, tmp_path / "pv.png", n_frames=60)
     assert out.read_bytes()[:4] == b"\x89PNG"
 
 
@@ -127,8 +127,8 @@ def test_pass1_preview(tiny_run, tmp_path):
 
 
 @pytest.fixture(scope="module")
-def tune_server(tiny_run):
-    app = server.TuneApp(tiny_run, minian_npz=None)
+def tune_server(tiny_w2_run):
+    app = server.TuneApp(tiny_w2_run, minian_npz=None)
     httpd = server.make_server(app, port=0)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield app, f"http://127.0.0.1:{httpd.server_address[1]}"
@@ -165,13 +165,13 @@ def test_server_rerun_roundtrip(tune_server):
     for k in window2.WINDOW2_PARAMS:
         assert f'name="{k}"' in page, k
     form = server.params_to_form(app.session.base)
-    form.update(sparse_penal="0.05", name="sp05")
+    form.update(sparse_snr="0.5", name="sp05")
     assert _post(base + "/api/run", form)["name"] == "sp05"
     st = _wait(base)
     assert st["state"] == "done", st
-    assert Params.from_json(app.run_dir / "reruns" / "sp05" / "params.json").sparse_penal == 0.05
+    assert Params.from_json(app.run_dir / "reruns" / "sp05" / "params.json").sparse_snr == 0.5
     page = _get(base + "/?run=sp05&cmp=base")[2].decode()
-    assert "sp05" in page and "sparse_penal" in page
+    assert "sp05" in page and "sparse_snr" in page
     status, ctype, png = _get(base + "/fig/sp05/cnmf.png")
     assert status == 200 and ctype == "image/png" and png[:4] == b"\x89PNG"
     saved = _post(base + "/api/save", {"run": "sp05", "file": "tuned.json"})
@@ -180,8 +180,8 @@ def test_server_rerun_roundtrip(tune_server):
     )
 
 
-def test_page_with_minian_overlay(tiny_run, self_minian):
-    app = server.TuneApp(tiny_run, minian_npz=self_minian, start=False)
+def test_page_with_minian_overlay(tiny_w2_run, self_minian):
+    app = server.TuneApp(tiny_w2_run, minian_npz=self_minian, start=False)
     app._startup("base")  # runs base if missing, redraws summaries without Minian keys
     page_html = server.page.render(app, "base", None)
     assert "minian.png" in page_html and "Minian matched" in page_html
@@ -206,8 +206,8 @@ def test_server_serves_only_figures(tune_server, path):
     assert e.value.code == 404
 
 
-def test_params_form_roundtrip(tiny_run):
-    prm = window2.run_params(tiny_run)
+def test_params_form_roundtrip(tiny_w2_run):
+    prm = window2.run_params(tiny_w2_run)
     assert server.form_to_params(server.params_to_form(prm), prm) == prm
     p1 = Params(**{**prm.asdict(), "seeds_diff_thres": 8.0, "pnr_thres": 2.0})
     assert server.params_to_form(p1)["seeds_diff_thres"] == "8"
@@ -228,21 +228,21 @@ SMALL_GRIDS = sweep.Grids(
     merge_corr=(0.8,),
     init_merge_corr=(0.8,),
     inita_corr=(0.8,),
-    sparse_penal=(0.003, 0.01),
+    sparse_snr=(0.5, 1.0),
     loop_merge_corr=(0.9,),
     n_confirm=2,
 )
 
 
 def test_best_per_value_and_curves(tmp_path):
-    from cafast.tune import autofig
+    from caanfast.tune import autofig
 
     df = pd.DataFrame(
         {
             "step": ["seeds"] * 4 + ["sparse"] * 2,
             "seeds_diff_thres": [2.0, 2.0, 3.0, 3.0, 3.0, 3.0],
             "pnr_thres": ["auto", "1.0", "auto", "1.0", "auto", "auto"],
-            "sparse_penal": [0.01] * 4 + [0.003, 0.01],
+            "sparse_snr": [1.0] * 4 + [0.5, 1.0],
             "score": [3, 5, 4, None, 6, 2],
             "good": [5, 6, 5, None, 7, 4],
             "flagged": [2, 1, 1, None, 1, 2],
@@ -252,9 +252,9 @@ def test_best_per_value_and_curves(tmp_path):
     assert b["seeds_diff_thres"].tolist() == [2.0, 3.0] and b["score"].tolist() == [5, 4]
     csv = tmp_path / "sweep.csv"
     df.to_csv(csv, index=False)
-    doc = {"proposed": {"seeds_diff_thres": 2.0, "pnr_thres": "1.0", "sparse_penal": 0.003}}
+    doc = {"proposed": {"seeds_diff_thres": 2.0, "pnr_thres": "1.0", "sparse_snr": 0.5}}
     names = autofig.sweep_curves(csv, doc, tmp_path)
-    assert names == ["sweep_seeds_diff_thres.png", "sweep_pnr_thres.png", "sweep_sparse_penal.png"]
+    assert names == ["sweep_seeds_diff_thres.png", "sweep_pnr_thres.png", "sweep_sparse_snr.png"]
     assert (tmp_path / names[0]).read_bytes()[:4] == b"\x89PNG"
 
 
@@ -270,9 +270,9 @@ def test_server_autotune_roundtrip(tune_server, monkeypatch):
     assert st["state"] == "done", st
     assert app.checks() is not None and app.checks().diameter == 7
     page_html = _get(base + "/?run=auto")[2].decode()
-    assert "Proposal" in page_html and "sweep_sparse_penal.png" in page_html
+    assert "Proposal" in page_html and "sweep_sparse_snr.png" in page_html
     assert "good / flagged" in page_html
-    status, ctype, png = _get(base + "/fig/auto/sweep_sparse_penal.png")
+    status, ctype, png = _get(base + "/fig/auto/sweep_sparse_snr.png")
     assert status == 200 and png[:4] == b"\x89PNG"
     summ = json.loads((app.reruns_dir / "base" / "summary.json").read_text())
     assert "good" in summ and "flagged" in summ  # every run rescored with the new checks
@@ -285,8 +285,8 @@ def test_server_autotune_roundtrip(tune_server, monkeypatch):
 
 
 def test_thumb_and_flag_column(tiny_rerun):
-    from cafast.autotune.score import Checks
-    from cafast.tune import autofig
+    from caanfast.autotune.score import Checks
+    from caanfast.tune import autofig
 
     run = figures.load_run(tiny_rerun)
     png = autofig.thumb_png(run, 0)
@@ -341,8 +341,8 @@ def test_server_rejects_bad_diameter_and_reserved_name(tune_server):
 def test_proposal_marks_only_numerically_different_values(tmp_path):
     from types import SimpleNamespace
 
-    from cafast.autotune import sweep as sw
-    from cafast.tune import page
+    from caanfast.autotune import sweep as sw
+    from caanfast.tune import page
 
     app = SimpleNamespace(reruns_dir=tmp_path, figure_path=lambda run, fig: None)
     run_values = {k: 1.0 for k in sw.SEARCHED}

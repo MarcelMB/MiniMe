@@ -8,9 +8,9 @@ import pytest
 import scipy.sparse as sps
 from typer.testing import CliRunner
 
-from cafast import cli, pipeline, report
-from cafast.params import Params
-from cafast.testing import synth
+from caanfast import cli, pipeline, report
+from caanfast.params import Params
+from caanfast.testing import synth
 
 
 def test_pipeline_end_to_end_tiny(tiny_session):
@@ -40,7 +40,7 @@ def test_pipeline_end_to_end_tiny(tiny_session):
     assert rep["counts"]["units_final"] == A.shape[0]
     cents = synth.true_centroids(tiny_session["setup"])
     cents = cents[(cents >= 4).all(1) & (cents < 60).all(1)]
-    from cafast.init import centroids
+    from caanfast.init import centroids
 
     uc = centroids(A, 64, 64)
     d = np.sqrt(((cents[:, None] - uc[None]) ** 2).sum(-1)).min(1)
@@ -54,12 +54,20 @@ def test_pipeline_end_to_end_tiny(tiny_session):
     assert len(units) == A.shape[0]
     prm = json.loads((out / "params.json").read_text())
     assert prm["tile"] == 32 and prm["raw_dir"] == str(tiny_session["raw_dir"].resolve())
-    assert {"raw_hash", "cafast_version"} <= set(prm)
+    assert {"raw_hash", "caanfast_version"} <= set(prm)
     assert (out / "motion" / "meta.json").exists()
     assert rep["motion"]["sidecar_reused"] is False
     assert rep["bytes"]["store_peak"] > 0 and rep["bytes"]["factors"] > 0
     assert rep["workers"] == 2 and rep["counts"]["seeds_init"] >= rep["counts"]["seeds_pnr"]
     assert "cnmf" in {r["stage"] for r in rep["stages"]}
+    for k in ("init", "pnr", "merged"):
+        pos = np.load(out / "seeds" / f"{k}.npy")
+        assert pos.dtype == np.float32 and pos.shape == (rep["counts"][f"seeds_{k}"], 2)
+    A0 = sps.load_npz(out / "init" / "A.npz")
+    assert A0.shape == (rep["counts"]["units_init_merge"], 64 * 64)
+    events = [json.loads(s) for s in (out / "progress.jsonl").read_text().splitlines()]
+    ends = [e["stage"] for e in events if e["event"] == "end"]
+    assert ends == [r["stage"] for r in rep["stages"]]
     (out / "stale.txt").write_text("from a previous run")
     # second run reuses the sidecar and overwrites
     out2 = pipeline.run(tiny_session["raw_dir"], p, run_name="t", workers=1)
@@ -67,6 +75,36 @@ def test_pipeline_end_to_end_tiny(tiny_session):
     assert rep2["motion"]["sidecar_reused"] is True
     assert not (out2 / "stale.txt").exists()
     assert np.array_equal(sps.load_npz(out2 / "cnmf" / "A.npz").toarray(), A.toarray())
+
+
+def test_stage_timer_progress(tmp_path):
+    from caanfast.report import StageTimer
+
+    timer = StageTimer()
+    with timer("probe"):
+        pass
+    timer.attach_progress(tmp_path / "progress.jsonl")
+    with timer("pass1"):
+        pass
+    lines = [json.loads(s) for s in (tmp_path / "progress.jsonl").read_text().splitlines()]
+    assert [(x["stage"], x["event"]) for x in lines] == [
+        ("probe", "end"),
+        ("pass1", "start"),
+        ("pass1", "end"),
+    ]
+    assert lines[2]["seconds"] >= 0 and "seconds" not in lines[1]
+
+
+def test_a_failed_stage_is_logged_as_error(tmp_path):
+    from caanfast.report import StageTimer
+
+    timer = StageTimer()
+    timer.attach_progress(tmp_path / "progress.jsonl")
+    with pytest.raises(RuntimeError), timer("cnmf"):
+        raise RuntimeError("boom")
+    lines = [json.loads(s) for s in (tmp_path / "progress.jsonl").read_text().splitlines()]
+    assert [(x["stage"], x["event"]) for x in lines] == [("cnmf", "start"), ("cnmf", "error")]
+    assert lines[1]["seconds"] >= 0 and lines[1]["t"] > 0
 
 
 def test_pipeline_refuses_out_dir_containing_raw(tmp_path):
@@ -115,7 +153,7 @@ def test_cli_run_wires_options(tmp_path, monkeypatch):
 def test_seeds_stage_runs_gmm_refine_only_when_enabled(monkeypatch, use_gmm):
     from types import SimpleNamespace
 
-    from cafast import corr, seeds
+    from caanfast import corr, seeds
 
     df = pd.DataFrame({"height": [1, 2, 3], "width": [1, 2, 3]})
     called = []
@@ -146,7 +184,7 @@ def test_pipeline_rejects_unsafe_run_names(tmp_path, name):
     raw.mkdir()
     keep = tmp_path / "processed" / "other_run"
     keep.mkdir(parents=True)
-    (keep / "params.json").write_text(json.dumps({"cafast_version": "0"}))
+    (keep / "params.json").write_text(json.dumps({"caanfast_version": "0"}))
     with pytest.raises(ValueError, match="run name"):
         pipeline.run(raw, Params(), run_name=name)
     assert (keep / "params.json").exists()
@@ -157,13 +195,13 @@ def test_pipeline_refuses_to_wipe_foreign_dir(tmp_path):
     raw.mkdir()
     foreign = tmp_path / "processed" / "mine"
     foreign.mkdir(parents=True)
-    (foreign / "notes.txt").write_text("not a cafast run")
+    (foreign / "notes.txt").write_text("not a caanfast run")
     with pytest.raises(ValueError, match="refusing to delete"):
         pipeline.run(raw, Params(), run_name="mine")
-    assert (foreign / "notes.txt").read_text() == "not a cafast run"
+    assert (foreign / "notes.txt").read_text() == "not a caanfast run"
 
 
-def test_reset_dir_wipes_only_empty_or_cafast_dirs(tmp_path):
+def test_reset_dir_wipes_only_empty_or_caanfast_dirs(tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()
     pipeline._reset_dir(empty)
@@ -174,9 +212,14 @@ def test_reset_dir_wipes_only_empty_or_cafast_dirs(tmp_path):
     (run / "old.npy").write_text("x")
     pipeline._reset_dir(run)
     assert run.is_dir() and not any(run.iterdir())
+    old = tmp_path / "old"  # run written under the old name cafast
+    old.mkdir()
+    (old / "params.json").write_text(json.dumps({"cafast_version": "0"}))
+    pipeline._reset_dir(old)
+    assert old.is_dir() and not any(old.iterdir())
     fake = tmp_path / "fake"
     fake.mkdir()
-    (fake / "params.json").write_text(json.dumps({"tile": 64}))  # no cafast marker key
+    (fake / "params.json").write_text(json.dumps({"tile": 64}))  # no caanfast marker key
     with pytest.raises(ValueError, match="refusing to delete"):
         pipeline._reset_dir(fake)
     assert (fake / "params.json").exists()

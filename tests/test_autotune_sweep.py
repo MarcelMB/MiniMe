@@ -7,11 +7,11 @@ import pytest
 import scipy.sparse as sps
 from typer.testing import CliRunner
 
-from cafast import cli, window2
-from cafast.autotune import run as at
-from cafast.autotune import score, sweep
-from cafast.params import Params
-from cafast.report import StageTimer
+from caanfast import cli, window2
+from caanfast.autotune import run as at
+from caanfast.autotune import score, sweep
+from caanfast.params import Params
+from caanfast.report import StageTimer
 
 D = 7.0  # synthetic cells: Gaussian sigma 3 px
 SMALL = sweep.Grids(
@@ -20,7 +20,7 @@ SMALL = sweep.Grids(
     merge_corr=(0.8,),
     init_merge_corr=(0.8,),
     inita_corr=(0.8,),
-    sparse_penal=(0.003, 0.01),
+    sparse_snr=(0.5, 1.0),
     loop_merge_corr=(0.9,),
     n_confirm=2,
 )
@@ -61,8 +61,8 @@ def test_at_edge():
     assert not sweep.at_edge(0.8, (0.8,))  # one-value grid: no edge
 
 
-def test_sweep_runs_every_step(tiny_run):
-    sess = window2.Window2Session(tiny_run)
+def test_sweep_runs_every_step(tiny_w2_run):
+    sess = window2.Window2Session(tiny_w2_run)
     seen: list[sweep.Trial] = []
     sw = sweep.Sweep(sess, score.Checks(D), SMALL, on_trial=seen.append)
     prop = sw.run()
@@ -74,15 +74,15 @@ def test_sweep_runs_every_step(tiny_run):
     assert seen == sw.trials
     assert len(sw.trials) <= SMALL.n_trials()
     assert prop.dl_wnd == 7 and prop.size_thres == sweep.derived_params(sess.base, D).size_thres
-    assert prop.sparse_penal in SMALL.sparse_penal
+    assert prop.sparse_snr in SMALL.sparse_snr
     assert sw.final is not None and sw.final.score is not None
     for k in window2.FACTOR_PARAMS:
         assert getattr(prop, k) == getattr(sess.base, k)
 
 
-def test_reused_init_gives_the_same_cnmf(tiny_run):
+def test_reused_init_gives_the_same_cnmf(tiny_w2_run):
     """The CNMF grid reuses one init A, C: running it twice must not change the result."""
-    sess = window2.Window2Session(tiny_run)
+    sess = window2.Window2Session(tiny_w2_run)
     sw = sweep.Sweep(sess, score.Checks(D), SMALL)
     sw.fc = sess.factor_corr(sw.base.noise_freq, sw.timer)
     A, C = sw._init(sw.base, StageTimer())
@@ -93,8 +93,8 @@ def test_reused_init_gives_the_same_cnmf(tiny_run):
     assert np.array_equal(r1[0].toarray(), r2[0].toarray()) and np.array_equal(r1[1], r2[1])
 
 
-def test_failed_settings_are_recorded_and_skipped(tiny_run):
-    sess = window2.Window2Session(tiny_run)
+def test_failed_settings_are_recorded_and_skipped(tiny_w2_run):
+    sess = window2.Window2Session(tiny_w2_run)
     grids = dataclasses.replace(SMALL, pnr_thres=("auto", 1e9))
     sw = sweep.Sweep(sess, score.Checks(D), grids)
     sw.run()
@@ -103,16 +103,16 @@ def test_failed_settings_are_recorded_and_skipped(tiny_run):
     assert all(t.values["pnr_thres"] == 1e9 for t in failed)
 
 
-def test_all_failed_step_raises(tiny_run):
-    sess = window2.Window2Session(tiny_run)
+def test_all_failed_step_raises(tiny_w2_run):
+    sess = window2.Window2Session(tiny_w2_run)
     grids = dataclasses.replace(SMALL, pnr_thres=(1e9,))
     with pytest.raises(RuntimeError, match="seeds.*no seeds survived"):
         sweep.Sweep(sess, score.Checks(D), grids).run()
 
 
-def test_autotune_writes_a_rerun_whose_score_matches(tiny_run):
-    out = at.autotune(tiny_run, D, grids=SMALL, name="auto_t")
-    assert out == tiny_run / "reruns" / "auto_t"
+def test_autotune_writes_a_rerun_whose_score_matches(tiny_w2_run):
+    out = at.autotune(tiny_w2_run, D, grids=SMALL, name="auto_t")
+    assert out == tiny_w2_run / "reruns" / "auto_t"
     doc = json.loads((out / "autotune.json").read_text())
     assert doc["diameter"] == D and set(doc["proposed"]) == set(sweep.SEARCHED)
     assert doc["derived"]["dl_wnd"] == 7
@@ -155,19 +155,19 @@ def test_autotune_writes_a_rerun_whose_score_matches(tiny_run):
     assert len(flags) == A.shape[0] and "good" in flags
 
 
-def test_cli_autotune(tiny_run, monkeypatch):
+def test_cli_autotune(tiny_w2_run, monkeypatch):
     monkeypatch.setattr(at, "DEFAULT_GRIDS", SMALL)
     res = CliRunner().invoke(
-        cli.app, ["autotune", str(tiny_run), "--diameter", "7", "--name", "auto_cli"]
+        cli.app, ["autotune", str(tiny_w2_run), "--diameter", "7", "--name", "auto_cli"]
     )
     assert res.exit_code == 0, res.output
-    assert "sparse_penal" in res.output and "good" in res.output
-    assert (tiny_run / "reruns" / "auto_cli" / "autotune.json").exists()
+    assert "sparse_snr" in res.output and "good" in res.output
+    assert (tiny_w2_run / "reruns" / "auto_cli" / "autotune.json").exists()
 
 
 @pytest.mark.parametrize("d", ["0", "-2", "inf", "nan", "1000"])
-def test_cli_autotune_rejects_bad_diameter(tiny_run, d):
-    res = CliRunner().invoke(cli.app, ["autotune", str(tiny_run), "--diameter", d])
+def test_cli_autotune_rejects_bad_diameter(tiny_w2_run, d):
+    res = CliRunner().invoke(cli.app, ["autotune", str(tiny_w2_run), "--diameter", d])
     assert res.exit_code == 1 and "diameter" in res.output
 
 
@@ -178,7 +178,7 @@ def test_check_diameter_bounds():
             at.check_diameter(d, 64, 64)
 
 
-def test_cli_cnmf_rejects_the_reserved_auto_name(tiny_run):
-    res = CliRunner().invoke(cli.app, ["cnmf", str(tiny_run), "--name", "auto"])
+def test_cli_cnmf_rejects_the_reserved_auto_name(tiny_w2_run):
+    res = CliRunner().invoke(cli.app, ["cnmf", str(tiny_w2_run), "--name", "auto"])
     assert res.exit_code == 1 and "reserved" in res.output
-    assert not (tiny_run / "reruns" / "auto").exists()
+    assert not (tiny_w2_run / "reruns" / "auto").exists()
