@@ -49,11 +49,12 @@ def tiny_run(tmp_path_factory):
 
 
 @pytest.fixture(scope="session")
-def tiny_w2_run(tmp_path_factory):
-    """A full pipeline run on the tiny synthetic session (shared across test modules)."""
-    raw = tmp_path_factory.mktemp("w2") / "raw"
-    synth.write_session(raw, minutes=300 / 30 / 60, fps=30, segment=100, seed=0, side=64)
-    return pipeline.run(raw, TINY, run_name="full", workers=1)
+def tiny_w2_run(tiny_run, tmp_path_factory):
+    """A session-wide copy of ``tiny_run`` that the window-2, tune and autotune tests may
+    write reruns into (``tiny_run`` itself must stay as the pipeline left it)."""
+    dst = tmp_path_factory.mktemp("w2") / "full"
+    shutil.copytree(tiny_run, dst)
+    return dst
 
 
 @pytest.fixture

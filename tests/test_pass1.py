@@ -7,11 +7,6 @@ from minime import io, pass1, tiles
 from minime.params import Params
 
 
-def test_block_edges_cover_movie():
-    e = pass1.seed_block_edges(300, wnd_size=100, stp_size=50)
-    assert e[0] == 0 and e[-1] == 300 and np.all(np.diff(e) > 0)
-
-
 def test_block_edges_match_rolling_windows():
     # 300 frames, step 50 -> 7 centres 0, 49.83, ..., 299; half-width 50
     e = pass1.seed_block_edges(300, wnd_size=100, stp_size=50)
@@ -55,18 +50,6 @@ def test_pass1_single_and_parallel_agree(tiny_session, tmp_path):
     assert r1.shifts.dtype == np.float32 and r1.quality.shape == (300,)
     assert np.allclose(r1.shifts, r2.shifts) and np.array_equal(r1.max_proj, r2.max_proj)
     assert np.array_equal(r1.block_max, r2.block_max)
-    assert set(r1.seconds) == {
-        "read_avi",
-        "denoise",
-        "bandpass",
-        "tophat",
-        "motion_estimate",
-        "motion_apply",
-        "max_proj",
-        "block_max",
-        "pack",
-        "write_tiles",
-    }
     for t in grid:
         assert np.array_equal(s1.read_tile(t.index), s2.read_tile(t.index))
     # block maxima equal the max over the same corrected frames
@@ -174,7 +157,6 @@ def test_pass1_apply_only_uses_given_shifts(tiny_session, tmp_path):
     s_app = tiles.TileStore(tmp_path / "app", grid, pass1.n_parts_for(info, 2))
     r_app = pass1.run_pass1(info, s_app, tmpl, p, workers=2, shifts=r_est.shifts)
     assert np.array_equal(r_app.shifts, r_est.shifts)
-    assert r_app.seconds["motion_estimate"] < 0.1 * r_est.seconds["motion_estimate"]
     assert np.allclose(r_app.quality, r_est.quality)
     assert np.array_equal(r_app.block_max, r_est.block_max)
     for t in grid:

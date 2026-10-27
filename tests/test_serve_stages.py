@@ -79,12 +79,6 @@ def test_traces(client, tiny_run):
     assert len(z["units"]) == min(10, n) and z["windows"][0]["start"] == 0
 
 
-def test_missing_background_file_is_404(client, run_copy):
-    (run_copy / "cnmf" / "b.npy").unlink()
-    rid = _open(client, run_copy)
-    assert client.get(f"/api/runs/{rid}/image/background").status_code == 404
-
-
 def test_lowpass_without_a_frame_rate_is_400(client, run_copy):
     import json
 

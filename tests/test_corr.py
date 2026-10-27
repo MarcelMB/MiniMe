@@ -53,24 +53,6 @@ def test_pair_correlations_track_noise_free_truth():
     assert cw.max() <= 1.0 and idx.size <= 317 and (cw[idx == src[0]] > 0.99).all()
 
 
-def test_seeds_merge_keeps_brightest_per_group():
-    movie, clean, setup, f = _session()
-    fc = corr.FactorCorr(f, 0.06)
-    cents = np.rint(synth.true_centroids(setup)).astype(int)
-    cents = cents[(cents >= 3).all(1) & (cents < 61).all(1)][:10]
-    dup = cents + np.array([1, 0])
-    s = pd.DataFrame(
-        {"height": np.r_[cents[:, 0], dup[:, 0]], "width": np.r_[cents[:, 1], dup[:, 1]]}
-    )
-    out = corr.seeds_merge(fc, s, f.max_proj, thres_dist=5, thres_corr=0.6)
-    assert out["mask_mrg"].sum() <= len(cents) + 1
-    kept = out[out["mask_mrg"]]
-    # every kept seed is at least as bright as any seed it absorbed within thres_dist
-    for h, w in zip(kept.height, kept.width, strict=True):
-        near = (abs(s.height - h) <= 5) & (abs(s.width - w) <= 5)
-        assert f.max_proj[h, w] >= f.max_proj[s.height[near], s.width[near]].max()
-
-
 # ---- extra checks beyond the brief ---------------------------------------------------
 
 

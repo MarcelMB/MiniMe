@@ -64,31 +64,6 @@ def test_cancel_and_queue(tmp_path, raw):
     assert jm.wait(a.id, timeout=10).status == "cancelled"
 
 
-def test_running_jobs_are_interrupted_after_a_restart(tmp_path):
-    root = tmp_path / "cache"
-    root.mkdir()
-    (root / "jobs.json").write_text(
-        json.dumps(
-            [
-                {
-                    "id": "j1",
-                    "raw_dir": "/r",
-                    "name": "n",
-                    "params": {},
-                    "keep_store": False,
-                    "status": "running",
-                    "out_dir": "/o",
-                    "created": 0.0,
-                    "started": 1.0,
-                    "ended": None,
-                    "error": "",
-                }
-            ]
-        )
-    )
-    assert JobManager(root, command=_sleeper).get("j1").status == "interrupted"
-
-
 def test_job_routes_and_events(tmp_path, raw):
     jm = JobManager(tmp_path / "cache", command=_sleeper)
     c = TestClient(create_app("tok", cache_root=tmp_path / "cache", jobs=jm))

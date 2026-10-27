@@ -93,18 +93,11 @@ def test_stage_timer_progress(tmp_path):
         ("pass1", "end"),
     ]
     assert lines[2]["seconds"] >= 0 and "seconds" not in lines[1]
-
-
-def test_a_failed_stage_is_logged_as_error(tmp_path):
-    from minime.report import StageTimer
-
-    timer = StageTimer()
-    timer.attach_progress(tmp_path / "progress.jsonl")
     with pytest.raises(RuntimeError), timer("cnmf"):
         raise RuntimeError("boom")
     lines = [json.loads(s) for s in (tmp_path / "progress.jsonl").read_text().splitlines()]
-    assert [(x["stage"], x["event"]) for x in lines] == [("cnmf", "start"), ("cnmf", "error")]
-    assert lines[1]["seconds"] >= 0 and lines[1]["t"] > 0
+    assert [(x["stage"], x["event"]) for x in lines[3:]] == [("cnmf", "start"), ("cnmf", "error")]
+    assert lines[4]["seconds"] >= 0 and lines[4]["t"] > 0
 
 
 def test_pipeline_refuses_out_dir_containing_raw(tmp_path):
@@ -190,17 +183,6 @@ def test_pipeline_rejects_unsafe_run_names(tmp_path, name):
     assert (keep / "params.json").exists()
 
 
-def test_pipeline_refuses_to_wipe_foreign_dir(tmp_path):
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    foreign = tmp_path / "processed" / "mine"
-    foreign.mkdir(parents=True)
-    (foreign / "notes.txt").write_text("not a minime run")
-    with pytest.raises(ValueError, match="refusing to delete"):
-        pipeline.run(raw, Params(), run_name="mine")
-    assert (foreign / "notes.txt").read_text() == "not a minime run"
-
-
 def test_reset_dir_wipes_only_empty_or_minime_dirs(tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()
@@ -222,4 +204,8 @@ def test_reset_dir_wipes_only_empty_or_minime_dirs(tmp_path):
     (fake / "params.json").write_text(json.dumps({"tile": 64}))  # no minime marker key
     with pytest.raises(ValueError, match="refusing to delete"):
         pipeline._reset_dir(fake)
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    with pytest.raises(ValueError, match="refusing to delete"):  # same guard from run()
+        pipeline.run(raw, Params(), run_name="fake", out_root=tmp_path)
     assert (fake / "params.json").exists()

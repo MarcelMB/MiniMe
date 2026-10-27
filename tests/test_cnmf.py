@@ -116,28 +116,6 @@ def _parallel_double(x):
     return out
 
 
-def test_background_trace_correct_after_numba_parallel_region():
-    """Canary, not a regression test: it cannot fail deterministically.
-
-    Accelerate (macOS 26, M1 Max) was seen to return wrong float32 transposed-gemv results
-    for output lengths ~513-575 right after a numba parallel region; the WL25 tail chunk
-    (541 frames) turned f into NaN in 3 of 6 runs. The final review could not reproduce it
-    (0 of 150 trials with the old ``R.T @ b`` code), so this test also passes on the old
-    code. It keeps the failing shape (a 64 x 64 tile = 4096 pixels, a 541-frame chunk) in
-    the suite in case the bug returns; the guards that do catch it at run time are the
-    NaN checks in ``run_cnmf`` and ``f64_spot_check`` in ``update_background``.
-    """
-    f, fc, A, C = _setup(64, 64, 600, tile=64)
-    Y = _dense(f)
-    R = np.clip(Y - A.toarray().astype(np.float64).T @ C, 0, None)
-    b_ref = R.mean(1)
-    f_ref = R.T @ b_ref / (b_ref @ b_ref)
-    for _ in range(20):  # intermittent when it occurred; passing proves nothing
-        _parallel_double(np.ones(100_000))
-        _, fb = cnmf.update_background(f, A, C, b=b_ref.astype(np.float32), chunk=541)
-        assert np.isfinite(fb).all() and np.allclose(fb, f_ref, rtol=1e-4)
-
-
 def test_dilate_footprints_disk():
     H = W = 15
     A = sps.csr_matrix(([1.0], ([0], [7 * W + 7])), shape=(1, H * W), dtype=np.float32)
