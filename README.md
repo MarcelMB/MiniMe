@@ -184,3 +184,18 @@ Peak disk = raw size (tile store) + factors (52 MB / 93 MB). Details and per-sta
 - Per-tile rank cap 300 (was 100): a 64 x 64 tile dense with cells passed 176 components
   of the autocorrelation cut at 140k frames (124 at 10k), and the cap at 100 left 76 of
   them (capture < 0.5) out of the factors.
+
+## Releasing
+
+Bump `version` in `pyproject.toml`, commit, then tag and push:
+
+    git tag v0.0.1 && git push origin v0.0.1
+
+`.github/workflows/release.yml` builds the web front end and the wheel, publishes to
+TestPyPI, and then to PyPI once the `pypi` environment is approved on GitHub. Both use
+Trusted Publishing, so no tokens are stored. `test.yml` runs ruff and the tests on every push.
+
+## License
+
+GPL-3.0-or-later. Parts of the algorithms are ported from
+[Minian](https://github.com/denisecailab/minian) (GPL-3.0).
