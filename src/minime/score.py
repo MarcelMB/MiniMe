@@ -208,7 +208,7 @@ def score_pipeline_dir(run_dir: Path, raw_dir: Path | None = None) -> dict:
 
 
 def score_minian_npz(npz_path: Path, raw_dir: Path) -> dict:
-    """Score a ``minian_units.npz`` written by ``bench/minian_export.py``."""
+    """Score a ``minian_units.npz`` export (``A``, ``C``, ``max_proj``) against the truth."""
     meta = _read_json(Path(raw_dir).parent / "meta.json")
     z = np.load(npz_path)
     A = sparse.csr_matrix(z["A"])

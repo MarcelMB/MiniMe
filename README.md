@@ -10,7 +10,7 @@ CNMF stage after that runs on the stored factors and never rereads the movie.
 Released versions: `pip install minime-cnmf` (the import and the command are `minime`).
 
 
-    uv venv -p 3.11 && uv pip install -e ".[dev]"    # add ,bench for minime tune
+    uv venv -p 3.11 && uv pip install -e ".[dev,tune]"
     .venv/bin/pytest
 
 ## Run
@@ -45,37 +45,37 @@ The temporary tile store (`tiles/`, same size as the raw data) is deleted after 
 Seeds, initialisation and CNMF run on the saved factors, so their parameters can be changed
 without rereading the movie (WL25, 200 x 200 px, 39,822 frames: 16 s instead of 49 s).
 
-    .venv/bin/cafast cnmf RUN_DIR [--params p.json] [--name NAME]
-    .venv/bin/cafast tune RUN_DIR [--minian minian_units.npz] [--port 8765]
+    .venv/bin/minime cnmf RUN_DIR [--params p.json] [--name NAME]
+    .venv/bin/minime tune RUN_DIR [--minian minian_units.npz] [--port 8765]
 
-**`cafast cnmf`**: `RUN_DIR` = a finished run. `--params` may hold only the keys to change;
+**`minime cnmf`**: `RUN_DIR` = a finished run. `--params` may hold only the keys to change;
 the rest come from `RUN_DIR/params.json`. Output: `RUN_DIR/reruns/NAME/` with `params.json`,
 `report.json` and `cnmf/` as in a full run, `stages/` (seed tables after init / PNR / merge,
 footprints after initA, init merge and every spatial update and merge) and symlinks
-`factors`, `motion` to the source run, so `bench/compare_minian.py` reads it like a run.
+`factors`, `motion` to the source run, so the tools that read a run work on it.
 Parameters that shaped the factors (`median_ksize`, `tophat_wnd`, `motion_*`,
 `template_frames`, `tile`, `svd_*`, `rank_*`) are refused; `seeds_wnd` / `seeds_stp` only
 if their windows fall on the block edges pass 1 stored. Same parameters give the same result
 as the full run (tested).
 
-**`cafast tune`**: a page on `http://127.0.0.1:8765/` (standard library server, matplotlib
-PNGs; needs the `bench` extra). On start it reruns the run's own parameters as `base`. The
+**`minime tune`**: a page on `http://127.0.0.1:8765/` (standard library server, matplotlib
+PNGs; needs the `tune` extra). On start it reruns the run's own parameters as `base`. The
 form holds the window-2 parameters; *Rerun window 2* writes `reruns/tNNN/` and draws its
 figures: seeds after init / PNR / merge with the PNR histogram, initA and init merge
 footprints, footprints after each spatial update and merge (red: more than one piece above
 10 % of peak), size and fragmentation histograms, example traces, and with `--minian` the
-final overlay (Minian npz with `A`, `C`, `max_proj`; aligned and matched as in
-`bench/compare_minian.py`). Shared figures: max projection, motion, per-pixel noise and mean.
+final overlay (Minian npz with `A`, `C`, `max_proj`; aligned by phase correlation and
+matched by centroid). Shared figures: max projection, motion, per-pixel noise and mean.
 The run list compares every rerun (changed parameters, counts, median size, units in pieces,
 Minian matches); *view* / *cmp* stack two reruns' figures. Click a units-table row for that
 unit's footprint and trace. *Save params* writes the full set to `RUN_DIR/tune/FILE.json` for
-`cafast run --params`. *Pass-1 preview* shows raw / median / registration image / tophat on
+`minime run --params`. *Pass-1 preview* shows raw / median / registration image / tophat on
 the first 300 frames for `median_ksize`, `tophat_wnd`, `motion_bandpass` (these need a full
-`cafast run`).
+`minime run`).
 
 ### Auto-tune
 
-`cafast autotune RUN_DIR --diameter D` (or "Propose parameters" on `cafast tune`) sweeps the
+`minime autotune RUN_DIR --diameter D` (or "Propose parameters" on `minime tune`) sweeps the
 window-2 parameters stage by stage (~5 min on a 30-min session), scores each setting with
 label-free unit checks (trace PNR, one piece, cell size from D, no duplicates; score = good -
 flagged) and writes the proposal to `RUN_DIR/reruns/auto/` with `sweep.csv` (the map),
@@ -118,8 +118,7 @@ To change some, write a JSON file with only those keys and pass `--params`:
 A run's own `params.json` can be passed back to `--params` to reproduce it (its `raw_dir`,
 `raw_hash` and `minime_version` entries are ignored; `--workers` still overrides).
 
-Defaults that differ from the Minian notebook, with the measurement behind each, are in
-`bench/README.md`. Changed so far: `gmm_refine` is off (Minian's reference run also skipped
+Defaults that differ from the Minian notebook: `gmm_refine` is off (Minian's reference run also skipped
 it), and `motion_before_tophat` is on: shifts are estimated on a band-passed copy of the
 denoised frame, then the frame is warped and tophat-filtered (on a real session the tophat
 removed the vessels registration needs). Other defaults were checked on synthetic data only.
@@ -145,8 +144,7 @@ the penalty does not grow with the length of the recording (see "Known differenc
 last CNMF iteration (that adds one background pass, +3.8 s on 5 min); not rerun.
 
 Gate (spec section 7): F1 >= 0.809 and trace corr >= 0.944 on the 5-min session: passed.
-Peak disk = raw size (tile store) + factors (52 MB / 93 MB). Details and per-stage times:
-`bench/README.md`.
+Peak disk = raw size (tile store) + factors (52 MB / 93 MB).
 
 ## Synthetic data
 
@@ -167,7 +165,7 @@ effect; its `xfail` marks are known weaknesses. The effect models follow
 
 - Temporal update (OASIS deconvolution). `C` is the clipped residual trace (`YrA`) instead.
 - `ks_refine` (dropped), non-rigid motion, browser UI, PyPI packaging.
-- Real-data parameter tuning. One real session run so far (WL25, `bench/README.md`).
+- Real-data parameter tuning (one real session run so far).
 
 ## Known differences from Minian
 
@@ -181,8 +179,7 @@ effect; its `xfail` marks are known weaknesses. The effect models follow
 - Background: rank-1 fit of the unclipped residual `Y - A C` on the factors
   (`b = clip(mean_t (Y - A C), 0)`), not Minian's mean of `clip(Y - A C, 0)`. `b` differs by
   up to 6 % of its maximum; scores and traces do not change (worst unit trace corr 0.998) and
-  `cnmf` is ~2x faster. `background_clip: true` restores Minian's definition
-  (bench/README.md, "Background speed-up").
+  `cnmf` is ~2x faster. `background_clip: true` restores Minian's definition.
 - Footprints carry a long tail of tiny weights: median 1029 px > 0 vs Minian 509 px, but
   329 px > 1 % of the maximum in both, and 5.7 % (ours) vs 5.5 % (Minian) of the footprint
   mass lies outside the true 15 x 15 cell patch.
@@ -197,7 +194,7 @@ effect; its `xfail` marks are known weaknesses. The effect models follow
   seeds almost every pixel of a cell halo (48k seeds); the components then run through the
   dim pixels between cells and merged 32k seeds into 166. The tree rule stops at the valley
   between two cells: 490 units on that session, F1 0.959 -> 0.964 on the 5-min synthetic
-  session (bench/README.md, "Long recordings").
+  session.
 - Per-tile rank cap 300 (was 100): a 64 x 64 tile dense with cells passed 176 components
   of the autocorrelation cut at 140k frames (124 at 10k), and the cap at 100 left 76 of
   them (capture < 0.5) out of the factors.

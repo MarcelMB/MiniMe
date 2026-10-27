@@ -15,3 +15,5 @@ dist/
 LOCAL_DATA.md
 docs/superpowers/
 .superpowers/
+bench/
+TODO.md

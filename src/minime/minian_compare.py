@@ -2,7 +2,7 @@
 
 Minian's coordinates are mapped onto minime's by phase-correlating the two max projections;
 units are matched one-to-one by footprint centroid (``score.match_units``) and matched traces
-are correlated. ``bench/compare_minian.py`` adds the figure and the command line.
+are correlated.
 """
 
 from __future__ import annotations

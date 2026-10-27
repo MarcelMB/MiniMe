@@ -147,17 +147,17 @@ def score(
     """Score a pipeline run (or a Minian export) against the synthetic ground truth."""
     import json
 
-    from minime import score as bench_score
+    from minime import score as scorer
 
     if minian is not None:
         if raw is None:
             raise typer.BadParameter("--minian needs --raw")
-        result = bench_score.score_minian_npz(minian, raw)
+        result = scorer.score_minian_npz(minian, raw)
         dest = minian.parent / (
             "score.json" if minian.stem == "minian_units" else f"score_{minian.stem}.json"
         )
     elif run_dir is not None:
-        result = bench_score.score_pipeline_dir(run_dir, raw)
+        result = scorer.score_pipeline_dir(run_dir, raw)
         dest = run_dir / "score.json"
     else:
         raise typer.BadParameter("give RUN_DIR or --minian")

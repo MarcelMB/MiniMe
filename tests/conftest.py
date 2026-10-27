@@ -1,15 +1,11 @@
 import shutil
-import sys
 import time as _time
-from pathlib import Path
 
 import pytest
 
 from minime import pipeline
 from minime.params import Params
 from minime.testing import synth
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 @pytest.fixture
