@@ -1,3 +1,5 @@
+import hashlib
+
 import numpy as np
 
 from minime.testing import synth
@@ -32,3 +34,13 @@ def test_write_session_layout(tmp_path):
     meta = synth.write_session(tmp_path / "raw", minutes=0.05, fps=30, segment=30, seed=0, side=32)
     assert sorted(p.name for p in (tmp_path / "raw").glob("*.avi")) == ["0.avi", "1.avi", "2.avi"]
     assert meta["frames"] == 90 and (tmp_path / "meta.json").exists()
+
+
+def _digest(h, w, T, seed, **kw):
+    return hashlib.sha256(synth.synth_movie(h, w, T, seed, **kw).tobytes()).hexdigest()[:16]
+
+
+def test_default_session_is_byte_identical():
+    # pinned on 2026-10-27 from the pre-options generator
+    assert _digest(64, 64, 300, 0) == "ce39843f43462047"
+    assert _digest(32, 32, 20, 1) == "de776615f5097caf"
