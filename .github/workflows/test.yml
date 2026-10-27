@@ -18,7 +18,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: uv venv && uv pip install -e ".[dev,bench]"
+      - run: uv venv --clear && uv pip install -e ".[dev,bench]"
       - run: .venv/bin/ruff format --check src tests bench
       - run: .venv/bin/ruff check src tests bench
       - run: .venv/bin/python -m pytest -q
