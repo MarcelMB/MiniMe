@@ -355,7 +355,7 @@ def _render(
     if o.hemo > 0:
         canvas += np.float32(o.hemo) * s.hemo_time[t0:t1, None, None] * s.hemo_field[None]
     if noise is not None:
-        canvas = canvas + noise
+        canvas += noise  # canvas is a fresh array (vign * gain), so in place is safe
     cells = np.zeros((n, ch, cw), np.float32) if want_cells else None
     ps = s.patch.shape[0]
     for k in range(s.ys.size):
@@ -435,8 +435,10 @@ def synth_chunks(
         t1 = min(T, t0 + chunk)
         noise = rng.standard_normal((t1 - t0, ch, cw), dtype=np.float32) * s.options.noise_sd
         canvas, _ = _render(s, t0, t1, noise, want_cells=False)
+        del noise  # bounds the peak at two canvases plus one frame array
         frames, prev = _apply_frame_map(s, _crop_frames(s, canvas, t0, h, w), t0, prev)
-        yield t0, np.clip(frames, 0, 255).astype(np.uint8)
+        del canvas
+        yield t0, np.clip(frames, 0, 255, out=frames).astype(np.uint8)
 
 
 def truth_chunks(
@@ -459,7 +461,7 @@ def truth_chunks(
         assert cells is not None
         clean, prev_c = _apply_frame_map(s, _crop_frames(s, canvas, t0, h, w), t0, prev_c)
         cell_out, prev_s = _apply_frame_map(s, _crop_frames(s, cells, t0, h, w), t0, prev_s)
-        yield t0, np.clip(clean, 0, 255).astype(np.uint8), cell_out
+        yield t0, np.clip(clean, 0, 255, out=clean).astype(np.uint8), cell_out
 
 
 # ---------------------------------------------------------------------------

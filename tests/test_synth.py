@@ -1,5 +1,7 @@
 import hashlib
 import json
+import platform
+import sys
 
 import numpy as np
 import pytest
@@ -39,14 +41,66 @@ def test_write_session_layout(tmp_path):
     assert meta["frames"] == 90 and (tmp_path / "meta.json").exists()
 
 
-def _digest(h, w, T, seed, **kw):
-    return hashlib.sha256(synth.synth_movie(h, w, T, seed, **kw).tobytes()).hexdigest()[:16]
+def _legacy_movie(h: int, w: int, T: int, seed: int) -> np.ndarray:
+    """The generator as it was before ``SynthOptions`` (commit daf67a0), verbatim."""
+    rng = np.random.default_rng(seed)
+    m = 8
+    ch, cw = h + 2 * m, w + 2 * m
+    ax = np.arange(15) - 7
+    patch = np.exp(-(ax[:, None] ** 2 + ax[None, :] ** 2) / (2 * 3.0**2))
+    patch = (patch / patch.max()).astype(np.float32)
+    n_cells = max(1, int(ch * cw / 900))
+    ys = rng.integers(0, ch - 15, n_cells)
+    xs = rng.integers(0, cw - 15, n_cells)
+    spikes = (rng.random((n_cells, T)) < 0.01).astype(np.float32)
+    spikes = spikes * rng.uniform(0.5, 1.5, (n_cells, 1)).astype(np.float32)
+    decay = np.float32(np.exp(-1.0 / 15.0))
+    traces = np.empty_like(spikes)
+    acc = np.zeros(n_cells, dtype=np.float32)
+    for t in range(T):
+        acc = acc * decay + spikes[:, t]
+        traces[:, t] = acc
+    C = 20.0 + traces * 60.0
+    yy, xx = np.mgrid[0:ch, 0:cw].astype(np.float32)
+    vign = 40.0 + 30.0 * np.exp(
+        -((yy - ch / 2) ** 2 + (xx - cw / 2) ** 2) / (2 * (0.4 * max(ch, cw)) ** 2)
+    )
+    drift = 1.0 + 0.05 * np.sin(2 * np.pi * np.arange(T) / (30 * 60))
+    shifts = np.clip(np.cumsum(rng.integers(-1, 2, (T, 2)), axis=0), -m, m)
+    out = np.empty((T, h, w), dtype=np.uint8)
+    for t0 in range(0, T, 50):
+        t1 = min(T, t0 + 50)
+        n = t1 - t0
+        canvas = vign[None] * drift[t0:t1, None, None].astype(np.float32)
+        canvas = canvas + rng.standard_normal((n, ch, cw), dtype=np.float32) * 4.0
+        for k in range(n_cells):
+            canvas[:, ys[k] : ys[k] + 15, xs[k] : xs[k] + 15] += (
+                C[k, t0:t1, None, None] * patch[None]
+            )
+        for i in range(n):
+            dy, dx = shifts[t0 + i]
+            out[t0 + i] = np.clip(canvas[i, m + dy : m + dy + h, m + dx : m + dx + w], 0, 255)
+    return out
 
 
-def test_default_session_is_byte_identical():
+def _digest(movie: np.ndarray) -> str:
+    return hashlib.sha256(movie.tobytes()).hexdigest()[:16]
+
+
+@pytest.mark.parametrize("h, w, T, seed", [(64, 64, 300, 0), (32, 32, 20, 1), (48, 40, 120, 3)])
+def test_default_session_is_byte_identical(h, w, T, seed):
+    """The options-free path reproduces the legacy generator exactly, on any platform."""
+    assert np.array_equal(synth.synth_movie(h, w, T, seed), _legacy_movie(h, w, T, seed))
+
+
+@pytest.mark.skipif(
+    not (sys.platform == "darwin" and platform.machine() == "arm64"),
+    reason="digests pinned on Apple silicon; x86 float32 exp/sin differ by an ULP",
+)
+def test_default_session_digests_on_apple_silicon():
     # pinned on 2026-10-27 from the pre-options generator
-    assert _digest(64, 64, 300, 0) == "ce39843f43462047"
-    assert _digest(32, 32, 20, 1) == "de776615f5097caf"
+    assert _digest(synth.synth_movie(64, 64, 300, 0)) == "ce39843f43462047"
+    assert _digest(synth.synth_movie(32, 32, 20, 1)) == "de776615f5097caf"
 
 
 # --- synth_effects building blocks ------------------------------------------------------
@@ -307,3 +361,17 @@ def test_late_active_cells_are_detectable_and_fire_late():
     assert late.size >= 2
     assert synth.detectable(s, 128, 128)[late].all()
     assert ((s.spikes[late, 210:] > 0).sum(axis=1) >= 2).all()
+
+
+def test_generator_peak_memory_stays_near_three_chunk_arrays():
+    import tracemalloc
+
+    h = w = 300
+    n = 100
+    chunk_bytes = n * (h + 16) * (w + 16) * 4  # one float32 canvas chunk
+    gen = synth.synth_chunks(h, w, n, seed=0, chunk=n)
+    tracemalloc.start()
+    next(gen)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert peak < 3.3 * chunk_bytes, peak / chunk_bytes
