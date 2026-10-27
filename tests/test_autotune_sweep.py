@@ -23,6 +23,7 @@ SMALL = sweep.Grids(
     sparse_snr=(0.5, 1.0),
     loop_merge_corr=(0.9,),
     n_confirm=2,
+    max_extend=0,
 )
 
 
@@ -67,10 +68,10 @@ def test_sweep_runs_every_step(tiny_w2_run):
     sw = sweep.Sweep(sess, score.Checks(D), SMALL, on_trial=seen.append)
     prop = sw.run()
     steps = [t.step for t in sw.trials]
-    assert set(steps) == {"seeds", "merge", "inita", "confirm", "sparse", "loop_merge"}
+    assert set(steps) == {"run", "seeds", "merge", "inita", "confirm", "sparse", "loop_merge"}
     assert seen == sw.trials
     assert len(sw.trials) <= SMALL.n_trials()
-    assert prop.dl_wnd == 7 and prop.size_thres == sweep.derived_params(sess.base, D).size_thres
+    assert prop.dl_wnd == 5 and prop.size_thres == (9, None)  # the tiny run's tuned sizes
     assert prop.sparse_snr in SMALL.sparse_snr
     assert sw.final is not None and sw.final.score is not None
     for k in window2.FACTOR_PARAMS:
@@ -112,7 +113,7 @@ def test_autotune_writes_a_rerun_whose_score_matches(tiny_w2_run):
     assert out == tiny_w2_run / "reruns" / "auto_t"
     doc = json.loads((out / "autotune.json").read_text())
     assert doc["diameter"] == D and set(doc["proposed"]) == set(sweep.SEARCHED)
-    assert doc["derived"]["dl_wnd"] == 7
+    assert doc["derived"]["dl_wnd"] == 5 and "dl_wnd" in doc["kept"]
     assert set(doc["at_edge"]) <= set(sweep.SEARCHED)
     # the cached sweep and the fresh rerun agree
     A = sps.load_npz(out / "cnmf" / "A.npz")
@@ -124,9 +125,10 @@ def test_autotune_writes_a_rerun_whose_score_matches(tiny_w2_run):
         table.columns
     )
     assert len(table) == doc["n_trials"]
-    same = table["step"].isin(["sparse", "loop_merge"])
+    same = table["step"].isin(["run", "sparse", "loop_merge"])
     for k, v in doc["proposed"].items():
-        same &= table[k].astype(str) == str(v)
+        col = table[k]
+        same &= (col == v) if isinstance(v, str) else (pd.to_numeric(col, errors="coerce") == v)
     assert same.any(), "no sweep row matches the proposal"
     row = table[same].iloc[0]
     assert {k: int(row[k]) for k in ("good", "flagged", "score")} == {

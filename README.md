@@ -80,6 +80,15 @@ window-2 parameters stage by stage (~5 min on a 30-min session), scores each set
 label-free unit checks (trace PNR, one piece, cell size from D, no duplicates; score = good -
 flagged) and writes the proposal to `RUN_DIR/reruns/auto/` with `sweep.csv` (the map),
 `unit_flags.csv` and `autotune.json`. D is the cell diameter in px of the factor frame.
+The grids are built around the run's own values (thresholds x 0.5 ... 2, correlations
++-0.1, `pnr_thres` also "auto") and extended outward while the best value sits at an edge,
+so any run's values are inside its grids. The run's own parameters are the first setting
+tried; the proposal is never worse than them (the page and the CLI say when the search found
+nothing better). Size parameters (`seeds_max_wnd`, `inita_wnd`, `dl_wnd`, `merge_dist`,
+`size_thres`) are derived from D only where the run still uses the built-in default. The
+init-level scores only prune within a step: the best init settings of every distinct
+`merge_corr` go through CNMF before the choice. `bench/autotune_synth.py` checks the search
+on synthetic sessions with ground truth (proposal vs. a default and a detuned start).
 
 ## Browser viewer
 

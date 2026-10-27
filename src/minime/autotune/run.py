@@ -19,11 +19,20 @@ import pandas as pd
 import scipy.sparse as sps
 
 from minime.autotune import score
-from minime.autotune.sweep import DERIVED, SEARCHED, Grids, Sweep, Trial, at_edge
+from minime.autotune.sweep import (
+    DERIVED,
+    SEARCHED,
+    Grids,
+    Sweep,
+    Trial,
+    at_edge,
+    derived_keys,
+    relative_grids,
+)
 from minime.window2 import Window2Session
 
 AUTO = "auto"
-DEFAULT_GRIDS = Grids()
+DEFAULT_GRIDS: Grids | None = None  # None: ``relative_grids`` of the run
 DOC = "autotune.json"
 COUNT_COLS = ("seeds_init", "seeds_pnr", "seeds_merged", "units_init_merge", "units_final")
 SCORE_COLS = ("good", "flagged", "score", *score.REASONS)
@@ -76,6 +85,19 @@ def check_diameter(diameter: float, H: int, W: int) -> None:
         )
 
 
+def grids_of(session: Window2Session, grids: Grids | None = None) -> Grids:
+    """``grids``, else ``DEFAULT_GRIDS``, else the grids built from the run's values."""
+    if grids or DEFAULT_GRIDS:
+        return grids or DEFAULT_GRIDS
+    integer = bool(np.issubdtype(session.fac.block_max.dtype, np.integer))
+    return relative_grids(session.base, integer_diff=integer)
+
+
+def n_trials(session: Window2Session, grids: Grids | None = None) -> int:
+    """Upper bound on the settings an auto-tune of ``session`` tries."""
+    return grids_of(session, grids).n_trials()
+
+
 def check_not_reserved(name: str) -> None:
     """Raise ``ValueError`` for the name auto-tune writes its proposal to."""
     if name == AUTO:
@@ -100,9 +122,9 @@ def autotune(
     session = session or Window2Session(run_dir)
     check_diameter(diameter, session.fac.H, session.fac.W_)
     checks = checks or score.Checks(diameter)
-    grids = grids or DEFAULT_GRIDS
-    sw = Sweep(session, checks, grids, on_trial)
+    sw = Sweep(session, checks, grids_of(session, grids), on_trial)
     params = sw.run()
+    grids = sw.grids  # extended where a best value sat at an edge
     out = session.run(params, name)
     sweep_table(sw.trials).to_csv(out / "sweep.csv", index=False)
     A = sps.load_npz(out / "cnmf" / "A.npz")
@@ -114,10 +136,13 @@ def autotune(
         "checks": asdict(checks),
         "grids": {k: _json_value(v) for k, v in asdict(grids).items()},
         "derived": {k: _json_value(getattr(params, k)) for k in DERIVED},
+        "kept": [k for k in DERIVED if k not in derived_keys(session.base, diameter)],
         "proposed": {k: getattr(params, k) for k in SEARCHED},
         "run_values": {k: _json_value(getattr(session.base, k)) for k in SEARCHED + DERIVED},
         "at_edge": [k for k in SEARCHED if at_edge(getattr(params, k), getattr(grids, k))],
         "score": score.summarize(flags),
+        "run_score": sw.run_trial.score,  # None when the run's own parameters failed
+        "better_than_run": sw.better_than_run,
         "n_trials": len(sw.trials),
         "wall_s": round(time.perf_counter() - t0, 1),
     }

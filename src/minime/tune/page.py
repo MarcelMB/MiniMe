@@ -178,6 +178,18 @@ def _num(v: Any, fmt: str = "{:.0f}") -> str:
     return "" if v is None else fmt.format(v)
 
 
+def _run_note(doc: dict[str, Any]) -> str:
+    """The warning when the search found nothing better than the run's own parameters."""
+    rs = doc.get("run_score")
+    if rs is None or doc.get("better_than_run", True):
+        return ""
+    return (
+        f"<div class='note warn'>The search found nothing better than the run's own "
+        f"parameters ({rs['good']} good / {rs['flagged']} flagged): the proposal is the run's "
+        "values. Extend the grids or check the diameter.</div>"
+    )
+
+
 def _proposal(app: TuneApp) -> str:
     doc = at.load_doc(app.reruns_dir / at.AUTO)
     if doc is None:
@@ -194,12 +206,17 @@ def _proposal(app: TuneApp) -> str:
             f"<td{cls}>{_e(fmt_value(b))}</td><td>{_img(app, at.AUTO, f'sweep_{k}.png')}</td>"
             f"<td class='l'>{edge}</td></tr>"
         )
-    derived = ", ".join(f"{k} {fmt_value(v)}" for k, v in doc["derived"].items())
+    kept = set(doc.get("kept", []))
+    derived = (
+        ", ".join(f"{k} {fmt_value(v)}" for k, v in doc["derived"].items() if k not in kept)
+        or "none"
+    )
+    kept_text = f" &middot; kept from the run: {_e(', '.join(sorted(kept)))}" if kept else ""
     return (
-        f"<h2>Proposal ({at.AUTO})</h2><div class='note'>{s['good']} good / {s['flagged']} "
-        f"flagged ({_e(reasons) or 'none'}) &middot; diameter {_e(fmt_value(doc['diameter']))} px "
-        f"&middot; derived: {_e(derived)} &middot; {doc['n_trials']} settings in "
-        f"{doc['wall_s']} s</div>"
+        f"<h2>Proposal ({at.AUTO})</h2>{_run_note(doc)}<div class='note'>{s['good']} good / "
+        f"{s['flagged']} flagged ({_e(reasons) or 'none'}) &middot; diameter "
+        f"{_e(fmt_value(doc['diameter']))} px &middot; derived: {_e(derived)}{kept_text} "
+        f"&middot; {doc['n_trials']} settings in {doc['wall_s']} s</div>"
         "<div class='note'>Curves: best good (blue) and flagged (red) count at each value; "
         "dashed = proposed. To override: view auto (its values fill the form), edit, Rerun; "
         "the new run opens compared with auto.</div>"

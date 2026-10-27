@@ -216,7 +216,7 @@ class TuneApp:
         return at.checks_of(doc) if doc is not None else None
 
     def _autotune(self, name: str, diameter: float) -> None:
-        n = at.DEFAULT_GRIDS.n_trials()
+        n = at.n_trials(self.session)
         done: list[Trial] = []
 
         def progress(t: Trial) -> None:

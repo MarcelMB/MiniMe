@@ -51,6 +51,7 @@ details summary{cursor:pointer;color:var(--muted);font-weight:600}
 #unitfig{flex:1 1 420px;min-width:0;max-width:820px}
 .err{color:var(--red)}
 .note{color:var(--muted);font-size:11px}
+.note.warn{color:var(--red)}
 .scroll{overflow-x:auto;max-width:100%}
 table.proposal img{width:260px}
 td.changed{color:var(--orange);font-weight:600}

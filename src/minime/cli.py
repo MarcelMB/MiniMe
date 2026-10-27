@@ -87,6 +87,12 @@ def autotune(
         typer.echo(f"{k:<17} {doc['run_values'][k]!s:>8} -> {v!s:<8}{edge}")
     s = doc["score"]
     typer.echo(f"good {s['good']}  flagged {s['flagged']}  ({doc['wall_s']} s)")
+    if doc["run_score"] is not None and not doc["better_than_run"]:
+        rs = doc["run_score"]
+        typer.echo(
+            f"nothing better than the run's own parameters (good {rs['good']}  flagged "
+            f"{rs['flagged']}): the proposal is the run's values"
+        )
 
 
 @app.command()

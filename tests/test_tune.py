@@ -336,3 +336,14 @@ def test_proposal_marks_only_numerically_different_values(tmp_path):
     row = lambda k: re.search(rf"<tr><td class='l'><b>{k}</b>.*?</tr>", html, re.S)[0]  # noqa: E731
     assert 'class="changed"' not in row("merge_corr")
     assert 'class="changed"' in row("inita_corr")
+    assert "nothing better" not in html and "derived: none" in html
+    doc.update(
+        run_score={"good": 2, "flagged": 1},
+        better_than_run=False,
+        derived={"dl_wnd": 7, "merge_dist": 7},
+        kept=["merge_dist"],
+    )
+    (d / at.DOC).write_text(json.dumps(doc))
+    html = page._proposal(app)
+    assert "nothing better than the run" in html and "2 good / 1 flagged" in html
+    assert "derived: dl_wnd 7" in html and "kept from the run: merge_dist" in html
