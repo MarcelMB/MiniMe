@@ -50,6 +50,9 @@ jobs:
           repository-url: https://test.pypi.org/legacy/
 
   pypi:
+    # skipped until the repository variable PUBLISH_TO_PYPI is "true" (Settings ->
+    # Secrets and variables -> Actions -> Variables) and the pypi environment exists
+    if: vars.PUBLISH_TO_PYPI == 'true'
     needs: testpypi
     runs-on: ubuntu-latest
     environment: pypi
