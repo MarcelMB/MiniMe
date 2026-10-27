@@ -1,5 +1,9 @@
 # bench: scoring against truth and the Minian reference
 
+Paths below use `$DATA` (local test sessions), `$SSD` (external drive with the long recordings)
+and `$MINIAN_DIR` (a Minian v2.0 checkout); their locations on this machine are in
+`LOCAL_DATA.md` (gitignored).
+
 Inputs -> outputs: a pipeline's units (footprints `A`, traces, motion `shifts`) -> `score.json`
 (recall, precision, F1, trace correlation) against the ground truth of the synthetic session
 (`minime.testing.synth`, dataset meta in `<raw>/../meta.json`).
@@ -45,10 +49,9 @@ Offset between frame and template coordinates: (-7.47, -7.88) px, sign +1. Trace
 ## Commands
 Order matters: baseline `--keep` -> redo spatial -> export -> score.
 ```bash
-MINIAN_DIR=/Users/mbrosch/Documents/GitKraken_mac/03_analysis-tools/minian_v2.0
 MINIAN_PY=$MINIAN_DIR/.venv/bin/python
-OUT=/Users/mbrosch/minian_testing_local/synth_v4_5min/processed/minian_baseline_keep
-RAW=/Users/mbrosch/minian_testing_local/synth_v4_5min/raw
+OUT=$DATA/synth_v4_5min/processed/minian_baseline_keep
+RAW=$DATA/synth_v4_5min/raw
 SCRATCH=/tmp/minian_respatial        # receives the recomputed A_new.zarr
 # 1. Minian baseline keeping intermediates (its stored A_new is NaN, see above)
 $MINIAN_PY $MINIAN_DIR/scripts/bench_browser/run_minian_baseline.py --keep
@@ -160,7 +163,7 @@ AVI); workers now stream 1000-frame batches (not yet measured on WL25).
 200 x 200 px, 39,822 frames, 20 Hz. Inputs (read-only): `WL25_20251204_destriped.avi` (Fiji
 FFT destripe, pal8 rawvideo) and the existing Minian input `..._fftonly_proc.avi` (destripe +
 `minizero_preprocess.py`: min-projection subtraction, gaussian 0.6, tophat r 8, gain 2.5).
-Run folder: `~/minian_testing_local/WL25_20251204/` (see its README).
+Run folder: `$DATA/WL25_20251204/` (see its README).
 
 **Motion after the tophat fails on real data.** The tophat (and min-projection subtraction)
 removes the static structure (vessels) that registration locks onto; what is left is sparse
@@ -236,7 +239,7 @@ merged units would not reproduce it, so keep n_iter 2 as the default.
 The cnmf seconds above predate the background speed-up below, which removes most of them.
 
 ```bash
-P=/Users/mbrosch/minian_testing_local/WL27_20251205/processed
+P=$DATA/WL27_20251205/processed
 .venv/bin/python bench/compare_iters.py $P/cafast_iter1 $P/cafast_iter2 --out $P/cafast_iter2/compare_iters.json
 ```
 
@@ -288,7 +291,7 @@ Final code (`fix/rank-vs-T`), V4 2 h from the kept tile store, pass 2 + window 2
 default params: **496 units** (17 before), 10 duplicate pairs, median footprint 172 px; pass 2 313 s (264 s with the cap at 100; rank sum 2885 vs 2710, 4 tiles above 100, max 175), window 2 104 s (`pnr_refine` 64 s on 48k seeds). Units sit on cells (`V4_2h/cafast_2h_fix_units.png`). Synthetic 5 min, full pipeline (`processed/cafast_rank_vs_T`): 407 units, recall 0.948, precision 0.980, F1 0.9638, trace corr median 0.994, 46.1 s wall (was 403 / 0.938 / 0.980 / 0.9587 / 0.994).
 
 **3 h runs with the fix** (2026-10-20, 6 workers, M1 Max, run alone): V4 files 0-215 of the 24 h
-recording (`/Volumes/Extreme SSD/cafast_v4_3h`, 216,000 frames, 600 x 600) and WL27 hours 1-3
+recording (`$SSD/cafast_v4_3h`, 216,000 frames, 600 x 600) and WL27 hours 1-3
 (`WL27_2h/raw_3h`, destriped, 216,000 frames, 200 x 200, tuned params with `sparse_snr 0.69`).
 
 | stage | V4 3 h | WL27 3 h |
@@ -309,7 +312,7 @@ V4: 503 units at 3 h vs 496 at 2 h, rank sum 2950 (max 173). WL27: `unit_merge` 
 quality 0.47. Pass 2 is now the longest stage on both; it grew with the rank cap (WL27 2 h:
 51 s before).
 
-Tile store of the 2 h session kept at `/Volumes/Extreme SSD/cafast_v4_2h/processed/store/`
+Tile store of the 2 h session kept at `$SSD/cafast_v4_2h/processed/store/`
 (50 GB) for further pass-2 experiments.
 
 ## PNR refine and pass-2 variants (2026-10-21)

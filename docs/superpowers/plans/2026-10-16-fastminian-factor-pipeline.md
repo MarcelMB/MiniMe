@@ -11,10 +11,10 @@
 **Spec:** `docs/superpowers/specs/2026-10-16-caanfast-factor-pipeline-design.md`
 
 **Prototype root** (read-only, referenced as `$BENCH` below):
-`/Users/mbrosch/Documents/GitKraken_mac/03_analysis-tools/minian_v2.0/scripts/`.
+`$MINIAN_DIR/scripts/`.
 Minian reference source (read-only, `$MINIAN`):
-`/Users/mbrosch/Documents/GitKraken_mac/03_analysis-tools/minian_v2.0/minian/`.
-Test data: `/Users/mbrosch/minian_testing_local/synth_v4_5min/{raw,meta.json}` (9000 frames,
+`$MINIAN_DIR/minian/`.
+Test data: `$DATA/synth_v4_5min/{raw,meta.json}` (9000 frames,
 600×600) and, once Task 1 generates it, `synth_v4_10min`.
 
 ## Global Constraints
@@ -23,7 +23,7 @@ Test data: `/Users/mbrosch/minian_testing_local/synth_v4_5min/{raw,meta.json}` (
 - Dependencies only: numpy, scipy, numba, opencv-python-headless, scikit-learn, pandas, typer. Minian is never imported by package code.
 - Every function signature carries type hints. `ruff format` and `ruff check --fix` clean before each commit (config in `pyproject.toml`: line length 100, rules `E,F,I,UP,B,SIM`).
 - Raw data is read-only. Outputs go to `<raw_dir>/../processed/<run_name>/`.
-- Each test file runs in under 10 s on tiny synthetic data; nothing in `tests/` touches `~/minian_testing_local`.
+- Each test file runs in under 10 s on tiny synthetic data; nothing in `tests/` touches `$DATA`.
 - Commit on branch `feat/factor-pipeline`, one sentence, no body, no attribution trailer. Never push.
 - Numerics follow the prototypes exactly where a prototype exists (same dtypes, same chunking constants). Deviations are listed in the task.
 - Shift convention: `shifts[t] = (dy, dx)` as returned by `$BENCH/bench_browser/candidates/motion.py:estimate`; the warp is `cv2.warpAffine` with `M = [[1,0,-dx],[0,1,-dy]]`.
@@ -51,7 +51,7 @@ Test data: `/Users/mbrosch/minian_testing_local/synth_v4_5min/{raw,meta.json}` (
   - `synth.true_centroids(setup) -> np.ndarray` (n_cells, 2) float: `(ys + 7 - margin, xs + 7 - margin)` in frame coordinates of an unshifted frame.
   - `synth.write_session(out_dir: Path, minutes: float, fps: int = 30, segment: int = 1000, seed: int = 0, side: int = 600) -> dict` — writes `N.avi` (fourcc GREY) into `out_dir` and `meta.json` into `out_dir.parent`, as `$BENCH/bench_browser/gen_dataset.py`.
   - `tests/conftest.py` fixture `tiny_session(tmp_path)` → dict with `raw_dir` (3 segments of 100 frames, 64×64, seed 0), `setup`, `T=300`.
-  - CLI `caanfast synth --minutes 10 --out ~/minian_testing_local/synth_v4_10min/raw`.
+  - CLI `caanfast synth --minutes 10 --out $DATA/synth_v4_10min/raw`.
 
 - [ ] **Step 1: Write pyproject, venv, package skeleton**
 
@@ -181,7 +181,7 @@ git add -A && git commit -m "Scaffold package with synthetic session generator a
 - [ ] **Step 6: Generate the 10-min dataset (background, ~1 min)**
 
 ```bash
-.venv/bin/caanfast synth /Users/mbrosch/minian_testing_local/synth_v4_10min/raw --minutes 10
+.venv/bin/caanfast synth $DATA/synth_v4_10min/raw --minutes 10
 ```
 Verify `meta.json` says 18000 frames, 18 segments, and `0.avi` from `synth_v4_5min/raw` and `synth_v4_10min/raw` are byte-identical (same seed, same first segment).
 
@@ -990,7 +990,7 @@ def test_pipeline_end_to_end_tiny(tiny_session):
   - `score.match_units(unit_centroids: np.ndarray, true_centroids: np.ndarray, max_dist: float = 5.0) -> tuple[np.ndarray, np.ndarray]` greedy one-to-one by increasing distance; returns `(unit_idx, true_idx)` of matches.
   - `score.score_run(A: csr_matrix, traces: np.ndarray, H: int, W: int, meta_path: Path, shifts: np.ndarray) -> dict` with `recall, precision, f1, n_units, n_true, trace_corr_median, trace_corr_q25, align_offset_px`: truth from `synth.synth_setup(meta)`, true centroids shifted by the fitted motion offset (`bench_opt.motion_fit(est_shifts, setup.shifts)` → `c`, `sign`: template coordinates = frame coordinates + mean correction; derive and document the sign from the warp convention, then verify with the pipeline's own units: the median matched distance must be < 1.5 px, otherwise flip), trace corr = Pearson(`traces[k]`, `setup.C[j] − 20`).
   - CLI `caanfast score RUN_DIR` → prints JSON and writes `RUN_DIR/score.json`; reads `cnmf/A.npz`, `cnmf/YrA.npy`, `motion/arrays.npz`, `factors/meta.json`, `<raw>/../meta.json`.
-  - `bench/minian_export.py RUN_OUT_DIR`: opens Minian's zarr intermediates (`minian_intermediate/A_new.zarr/A_new`, `C_new.zarr/C_new`) and `minian/motion.zarr/motion` with `zarr` + `xarray` from the **minian venv** (`/Users/mbrosch/Documents/GitKraken_mac/03_analysis-tools/minian_v2.0/.venv/bin/python`, this script is run there, not in ours), writes `minian_units.npz` with `A (K, H*W) float32 dense`, `C (K, T)`, `shifts (T, 2)` (Minian's `motion` is (frame, shift_dim) in (height, width) order); then `caanfast score --minian minian_units.npz --raw <raw_dir>` scores it with the same function.
+  - `bench/minian_export.py RUN_OUT_DIR`: opens Minian's zarr intermediates (`minian_intermediate/A_new.zarr/A_new`, `C_new.zarr/C_new`) and `minian/motion.zarr/motion` with `zarr` + `xarray` from the **minian venv** (`$MINIAN_DIR/.venv/bin/python`, this script is run there, not in ours), writes `minian_units.npz` with `A (K, H*W) float32 dense`, `C (K, T)`, `shifts (T, 2)` (Minian's `motion` is (frame, shift_dim) in (height, width) order); then `caanfast score --minian minian_units.npz --raw <raw_dir>` scores it with the same function.
 
 - [ ] **Step 1: Failing test**
 
@@ -1011,10 +1011,10 @@ def test_match_units_greedy_one_to_one():
 - [ ] **Step 2: Run, verify fail.**
 - [ ] **Step 3: Implement**; then export and score Minian:
 ```bash
-/Users/mbrosch/Documents/GitKraken_mac/03_analysis-tools/minian_v2.0/.venv/bin/python bench/minian_export.py \
-  /Users/mbrosch/minian_testing_local/synth_v4_5min/processed/minian_baseline_keep
-.venv/bin/caanfast score --minian /Users/mbrosch/minian_testing_local/synth_v4_5min/processed/minian_baseline_keep/minian_units.npz \
-  --raw /Users/mbrosch/minian_testing_local/synth_v4_5min/raw
+$MINIAN_DIR/.venv/bin/python bench/minian_export.py \
+  $DATA/synth_v4_5min/processed/minian_baseline_keep
+.venv/bin/caanfast score --minian $DATA/synth_v4_5min/processed/minian_baseline_keep/minian_units.npz \
+  --raw $DATA/synth_v4_5min/raw
 ```
 Record Minian's `f1`, `trace_corr_median` in `bench/README.md` together with its 471 s / 24.9 GB from `$BENCH/bench_browser/results/BASELINE_5min.md`. Delete `minian_intermediate/` afterwards (25 GB) once `minian_units.npz` exists.
 - [ ] **Step 4: Run, verify pass; lint; commit** `git commit -m "Add ground-truth scoring and Minian reference export"`
@@ -1028,20 +1028,20 @@ Record Minian's `f1`, `trace_corr_median` in `bench/README.md` together with its
 
 - [ ] **Step 1: 5-min run, 6 workers**
 ```bash
-.venv/bin/caanfast run /Users/mbrosch/minian_testing_local/synth_v4_5min/raw --workers 6 --name fast_5min
-.venv/bin/caanfast score /Users/mbrosch/minian_testing_local/synth_v4_5min/processed/fast_5min
+.venv/bin/caanfast run $DATA/synth_v4_5min/raw --workers 6 --name fast_5min
+.venv/bin/caanfast score $DATA/synth_v4_5min/processed/fast_5min
 ```
 Expected: finishes; `report.json` wall under 160 s; score F1 ≥ Minian F1 − 0.02 and trace corr ≥ Minian − 0.02. If F1 fails, sweep `inita_corr` ∈ {0.6, 0.7, 0.9} via `--params` files, keep the best, and note it in `bench/README.md`. If a stage crashes, fix it in its module with a regression test, commit, rerun.
 - [ ] **Step 2: 10-min run, 6 workers and 1 worker**
 ```bash
-.venv/bin/caanfast run /Users/mbrosch/minian_testing_local/synth_v4_10min/raw --workers 6 --name fast_10min
-.venv/bin/caanfast score /Users/mbrosch/minian_testing_local/synth_v4_10min/processed/fast_10min
-.venv/bin/caanfast run /Users/mbrosch/minian_testing_local/synth_v4_10min/raw --workers 1 --name fast_10min_w1
+.venv/bin/caanfast run $DATA/synth_v4_10min/raw --workers 6 --name fast_10min
+.venv/bin/caanfast score $DATA/synth_v4_10min/processed/fast_10min
+.venv/bin/caanfast run $DATA/synth_v4_10min/raw --workers 1 --name fast_10min_w1
 ```
 Expected: both finish unattended; 6-worker wall ≤ 6 min target (report either way).
 - [ ] **Step 3: Real-data smoke run**
 ```bash
-.venv/bin/caanfast run /Users/mbrosch/minian_testing_local/WL25_demo --workers 6 --name fast_wl25
+.venv/bin/caanfast run $DATA/WL25_demo --workers 6 --name fast_wl25
 ```
 (Check first that `WL25_demo` holds `N.avi` segments directly; if they sit in a subfolder, pass that folder.) Expected: finishes; `units_final` between 50 and 2000; note the count and wall time.
 - [ ] **Step 4: README** — inputs → outputs, the one command, the parameter file, what is out of scope, the measured table (5-min: Minian vs caanfast; 10-min: 1 and 6 workers). Commit `git commit -m "Document runs and results"`.

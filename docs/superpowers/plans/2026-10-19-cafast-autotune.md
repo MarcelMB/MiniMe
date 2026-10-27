@@ -1760,7 +1760,7 @@ git commit -m "Let the tune page measure the cell diameter on the max projection
 - [ ] **Step 1: Prerequisite (the user runs it):** rebuild the WL25 factors with the FFT noise fix (`d616477`). Reading the raw AVIs hangs from Claude sessions, so ask the user to run this in their own terminal:
 
 ```bash
-.venv/bin/cafast run ~/minian_testing_local/WL25_20251204/<raw folder used by cafast_destriped_v2_clean> --workers 6 --name cafast_destriped_v3_fft
+.venv/bin/cafast run $DATA/WL25_20251204/<raw folder used by cafast_destriped_v2_clean> --workers 6 --name cafast_destriped_v3_fft
 ```
 
 The raw folder is in `cafast_destriped_v2_clean/params.json` under `raw_dir`; use the same params file (`--params` with that `params.json`) so only the noise estimate changes.
@@ -1834,17 +1834,17 @@ if __name__ == "__main__":
 - [ ] **Step 3: Run auto-tune and the check on the rebuilt WL25 run**
 
 ```bash
-RUN=~/minian_testing_local/WL25_20251204/processed/cafast_destriped_v3_fft
+RUN=$DATA/WL25_20251204/processed/cafast_destriped_v3_fft
 .venv/bin/cafast cnmf $RUN --name base
 time .venv/bin/cafast autotune $RUN --diameter 8
-.venv/bin/python bench/autotune_check.py $RUN --minian ~/minian_testing_local/WL25_20251204/processed/minian_v2_timing/minian_units.npz
+.venv/bin/python bench/autotune_check.py $RUN --minian $DATA/WL25_20251204/processed/minian_v2_timing/minian_units.npz
 ```
 
 (d = 8 px: Minian's median footprint is 51 px above 10 % of peak → √(51·4/π) ≈ 8.)
 
 - [ ] **Step 4: Calibrate.** A check is working if its `fail_unmatched` is clearly higher than its `fail_matched`. If a check fails more than ~10 % of the Minian-matched units (likely `low_pnr`, given the unchecked default of 12), change that default in `score.Checks` to the value that keeps ~95 % of matched units, re-run Step 3, and record the old → new value in the commit message. Do not tune the thresholds to the acceptance numbers themselves.
 
-- [ ] **Step 5: Acceptance** (from the design): auto `matched` ≥ 110 of 165, auto `size10_median` ≤ base, auto `flagged` < base `flagged`, wall time about 4–5 min. If a criterion fails, stop and report to the user with the `acceptance.json` and `sweep.csv` numbers. Do not change the grids or the score rule without the user's OK. Then run `cafast autotune` on WL27 (no Minian; `~/minian_testing_local/WL27_20251205/`, see its README for the run dir) and look at the flagged gallery and at the units on the striped oval artifact (rows 56–93, cols 120–151).
+- [ ] **Step 5: Acceptance** (from the design): auto `matched` ≥ 110 of 165, auto `size10_median` ≤ base, auto `flagged` < base `flagged`, wall time about 4–5 min. If a criterion fails, stop and report to the user with the `acceptance.json` and `sweep.csv` numbers. Do not change the grids or the score rule without the user's OK. Then run `cafast autotune` on WL27 (no Minian; `$DATA/WL27_20251205/`, see its README for the run dir) and look at the flagged gallery and at the units on the striped oval artifact (rows 56–93, cols 120–151).
 
 - [ ] **Step 6: README** — add under the `cafast tune` section:
 

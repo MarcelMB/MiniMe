@@ -26,7 +26,7 @@
 
 - A run whose raw folder moved or whose drive is unplugged: summary says `raw: false`, `/frame?source=raw` returns 404 with a reason, everything else works (test in Task 4).
 - A run written before this plan (no `seeds/`, `init/`, `progress.jsonl`): seeds and initial units come from the cache after a `202`, and the run folder is byte-for-byte unchanged (test in Task 7).
-- Paths with spaces, like `/Volumes/Extreme SSD/...`: the shared test run lives in a folder whose name contains a space, so every route and the job subprocess are exercised with one (fixture in Task 3, job test in Task 10).
+- Paths with spaces, like `$SSD/...`: the shared test run lives in a folder whose name contains a space, so every route and the job subprocess are exercised with one (fixture in Task 3, job test in Task 10).
 - Boundary indices: frame `T-1` and the last unit work; frame `T`, negative frames and unit `n` return 400, not 500 (tests in Tasks 8 and 9).
 - Launching a run whose output folder already holds a run: refused unless `overwrite` is set, so a launch never silently deletes an earlier run (test in Task 10).
 
@@ -434,7 +434,7 @@ def tiny_run(tmp_path_factory):
     """One finished run (tile store kept) on a 300-frame 64 x 64 synthetic session.
 
     Shared by the serve tests, which must not modify it; the folder name has a space, like
-    ``/Volumes/Extreme SSD``. Use ``run_copy`` to change files.
+    ``$SSD``. Use ``run_copy`` to change files.
     """
     from caanfast import pipeline
     from caanfast.params import Params
@@ -2856,10 +2856,10 @@ from caanfast.serve.server import free_port, start_url
 
 
 def test_start_url_carries_token_and_folder():
-    u = urlparse(start_url(8123, "abc", Path("/Volumes/Extreme SSD/x")))
+    u = urlparse(start_url(8123, "abc", Path("$SSD/x")))
     assert (u.hostname, u.port) == ("127.0.0.1", 8123)
     q = parse_qs(u.query)
-    assert q["token"] == ["abc"] and q["root"] == ["/Volumes/Extreme SSD/x"]
+    assert q["token"] == ["abc"] and q["root"] == ["$SSD/x"]
     assert "root" not in parse_qs(urlparse(start_url(1, "t", None)).query)
 
 
