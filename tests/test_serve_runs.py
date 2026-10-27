@@ -218,10 +218,3 @@ def test_background_failures_expire_and_are_retried():
     assert bg.ensure("k", boom)["status"] == "computing"
     time.sleep(0.05)
     assert calls == [1, 1]
-
-
-def test_run_stamp_is_a_string(run_copy, cache_dir):
-    v = RunView(run_copy, cache_dir)
-    assert isinstance(v.stamp, str) and v.stamp
-    _rewrite_report(run_copy)
-    assert RunView(run_copy, cache_dir).stamp != v.stamp

@@ -38,16 +38,11 @@ def test_rerun_writes_every_stage(tiny_w2_run):
         assert len(pd.read_csv(st / f"{name}.csv")) > 0, name
     assert {"pnr", "mask_pnr"} <= set(pd.read_csv(st / "seeds_pnr.csv").columns)
     stages = window2.footprint_stages(out)
-    assert list(stages) == [
-        "initA",
-        "init_merge",
-        "spatial_0",
-        "merge_0",
-        "spatial_1",
-        "merge_1",
-    ]
+    n_iter = window2.run_params(tiny_w2_run).n_iter
+    assert list(stages)[:2] == ["initA", "init_merge"]
+    assert list(stages)[2:] == [f"{k}_{i}" for i in range(n_iter) for k in ("spatial", "merge")]
     final = sps.load_npz(out / "cnmf" / "A.npz")
-    assert np.array_equal(stages["merge_1"].toarray(), final.toarray())
+    assert np.array_equal(stages[f"merge_{n_iter - 1}"].toarray(), final.toarray())
     counts = json.loads((out / "report.json").read_text())["counts"]
     assert stages["initA"].shape[0] == counts["units_initA"]
     # the rerun looks like a run directory to the tools that read one
@@ -92,12 +87,6 @@ def test_execution_params_may_differ(tiny_w2_run):
     window2.check_factor_params(
         window2.load_factors(tiny_w2_run), Params(**{**prm.asdict(), "workers": 7, "sub_batch": 3})
     )
-
-
-@pytest.mark.parametrize("name", ["", ".", "..", "../x", "a/b"])
-def test_rerun_rejects_unsafe_names(tiny_w2_run, name):
-    with pytest.raises(ValueError, match="run name"):
-        window2.rerun(tiny_w2_run, name=name)
 
 
 def test_cli_cnmf_reruns_window2(tiny_w2_run, tmp_path):

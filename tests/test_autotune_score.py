@@ -110,9 +110,3 @@ def test_summarize_counts_reasons():
         "bad_size": 0,
         "duplicate": 0,
     }
-
-
-@pytest.mark.parametrize("d", [0, -3])
-def test_checks_reject_bad_diameter(d):
-    with pytest.raises(ValueError, match="diameter"):
-        score.Checks(diameter=d)

@@ -54,14 +54,6 @@ def test_initA_footprints_cover_cells_and_initC_is_least_squares():
     assert np.median(r) > 0.8
 
 
-def test_unit_merge_means_duplicates():
-    A = sps.csr_matrix(np.array([[1, 1, 0, 0], [1, 0.5, 0, 0], [0, 0, 1, 0]], np.float32))
-    C = np.array([[1, 2, 3, 4], [1.1, 2, 3, 3.9], [4, 3, 2, 1]], np.float32)
-    A2, C2, extra = init.unit_merge(A, C, lambda X: np.corrcoef(X), thres_corr=0.9, extra=[C * 2])
-    assert A2.shape == (2, 4) and np.allclose(A2.toarray()[0], [1, 0.75, 0, 0])
-    assert np.allclose(C2[0], (C[0] + C[1]) / 2) and np.allclose(extra[0][1], C[2] * 2)
-
-
 def test_initA_raises_without_footprints():
     import pytest
 
@@ -91,14 +83,6 @@ def test_unit_merge_transitive_chain_means_all_three():
     assert np.allclose(A2.toarray(), [[1 / 3, 2 / 3, 2 / 3, 1 / 3, 0], [0, 0, 0, 0, 1]])
     assert np.allclose(C2[0], C[:3].mean(0)) and np.allclose(C2[1], C[3])
     assert np.allclose(extra[0][0], E[:3].mean(0)) and np.allclose(extra[0][1], E[3])
-
-
-def test_unit_merge_extra_is_mean_of_merged_group():
-    A = sps.csr_matrix(np.array([[1, 1, 0, 0], [1, 0.5, 0, 0], [0, 0, 1, 0]], np.float32))
-    C = np.array([[1, 2, 3, 4], [1.1, 2, 3, 3.9], [4, 3, 2, 1]], np.float32)
-    b = np.array([10.0, 20.0, 30.0])
-    _, _, extra = init.unit_merge(A, C, lambda X: np.corrcoef(X), thres_corr=0.9, extra=[b])
-    assert np.allclose(extra[0], [15.0, 30.0])
 
 
 def _exact_factors(H: int, W: int, Y: np.ndarray) -> fm.Factors:

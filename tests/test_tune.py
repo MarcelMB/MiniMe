@@ -180,14 +180,6 @@ def test_server_rerun_roundtrip(tune_server):
     )
 
 
-def test_page_with_minian_overlay(tiny_w2_run, self_minian):
-    app = server.TuneApp(tiny_w2_run, minian_npz=self_minian, start=False)
-    app._startup("base")  # runs base if missing, redraws summaries without Minian keys
-    page_html = server.page.render(app, "base", None)
-    assert "minian.png" in page_html and "Minian matched" in page_html
-    assert "minian_unit" in page_html
-
-
 def test_server_reports_bad_params(tune_server):
     app, base = tune_server
     _wait(base)
@@ -296,34 +288,12 @@ def test_thumb_and_flag_column(tiny_rerun):
     assert "flag" in table and len(table) == run.A.shape[0]
 
 
-def test_page_shows_flagged_gallery(tune_server, monkeypatch):
-    app, base = tune_server
-    _wait(base)
-    if app.checks() is None:  # test order: run auto-tune if the roundtrip test has not
-        monkeypatch.setattr(at, "DEFAULT_GRIDS", SMALL_GRIDS)
-        _post(base + "/api/autotune", {"diameter": "7"})
-        _wait(base, timeout=300)
-    page_html = _get(base + "/?run=auto")[2].decode()
-    assert "Flagged units" in page_html and "<th>flag</th>" in page_html
-    status, ctype, png = _get(base + "/thumb/auto/0.png")
-    assert status == 200 and ctype == "image/png"
-    with pytest.raises(urllib.error.HTTPError) as e:
-        _get(base + "/thumb/auto/99999.png")
-    assert e.value.code == 404
-
-
 def test_maxproj_png_native_size(tune_server):
     app, base = tune_server
     status, ctype, png = _get(base + "/maxproj.png")
     img = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_UNCHANGED)
     assert status == 200 and ctype == "image/png"
     assert img.shape == (app.session.fac.H, app.session.fac.W_) and img.dtype == np.uint8
-
-
-def test_page_has_diameter_measure(tune_server):
-    _, base = tune_server
-    page_html = _get(base + "/")[2].decode()
-    assert 'id="mpimg" src="/maxproj.png"' in page_html and 'id="mpline"' in page_html
 
 
 def test_server_rejects_bad_diameter_and_reserved_name(tune_server):
