@@ -14,3 +14,4 @@ src/minime/serve/static/
 dist/
 LOCAL_DATA.md
 docs/superpowers/
+.superpowers/
