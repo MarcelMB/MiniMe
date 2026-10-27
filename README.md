@@ -148,6 +148,21 @@ Gate (spec section 7): F1 >= 0.809 and trace corr >= 0.944 on the 5-min session:
 Peak disk = raw size (tile store) + factors (52 MB / 93 MB). Details and per-stage times:
 `bench/README.md`.
 
+## Synthetic data
+
+`minime synth OUT --minutes 5 --side 600 --scenario realistic` writes a session with known
+truth (`meta.json`); `minime score RUN` scores a run against it. Scenarios
+(`minime.testing.synth.SCENARIOS`): `clean`, one per effect (`background`, `neuropil`,
+`overlap`, `late_active`, `bleach`, `vessels`, `large_motion`, `nonrigid`, `dropped`,
+`cell_variation`, `low_snr`, `bursts`, `hemo`, `edge`) and `realistic` (all tier-1 effects).
+In Python, `SynthOptions` sets any combination; the defaults reproduce the legacy session
+byte for byte. The truth (`synth_setup`) has per-cell size, amplitude, spikes, first active
+frame and overlap group, the background and neuropil components, the vessel mask, the warp,
+the bleaching envelope and the frame map; `detectable` marks the cells a pipeline can be
+expected to find. `tests/test_synth_effects.py` shows what the pipeline does with each
+effect; its `xfail` marks are known weaknesses. The effect models follow
+[minisim](https://github.com/miniscope/minisim).
+
 ## Out of scope
 
 - Temporal update (OASIS deconvolution). `C` is the clipped residual trace (`YrA`) instead.
