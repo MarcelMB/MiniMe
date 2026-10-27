@@ -6,21 +6,27 @@ import json
 import resource
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 
 class StageTimer:
-    """``with timer("name"): ...`` appends ``{"stage", "seconds"}`` (wall) to ``rows``."""
+    """``with timer("name"): ...`` appends ``{"stage", "seconds"}`` (wall) to ``rows``.
 
-    def __init__(self) -> None:
+    ``on_stage(name)``, if given, is called as each stage starts (progress display).
+    """
+
+    def __init__(self, on_stage: Callable[[str], None] | None = None) -> None:
         self.rows: list[dict[str, Any]] = []
         self.counts: dict[str, int] = {}
+        self.on_stage = on_stage
 
     @contextmanager
     def __call__(self, stage: str) -> Iterator[None]:
+        if self.on_stage is not None:
+            self.on_stage(stage)
         t0 = time.perf_counter()
         try:
             yield
