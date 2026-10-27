@@ -93,6 +93,14 @@ def test_run_cache_roundtrip(cache_dir):
     np.testing.assert_array_equal(c.load_npy("x.npy"), [0, 1, 2])
 
 
+def _until(pred, timeout=5.0):
+    """Poll ``pred`` instead of sleeping a fixed time: CI runners can be slow."""
+    t0 = time.time()
+    while not pred():
+        assert time.time() - t0 < timeout, "condition not reached"
+        time.sleep(0.01)
+
+
 def test_background_runs_once_and_reports_failure():
     calls = []
     bg = Background()
@@ -103,14 +111,14 @@ def test_background_runs_once_and_reports_failure():
 
     assert bg.ensure("a", slow)["status"] == "computing"
     assert bg.ensure("a", slow)["status"] == "computing"
-    time.sleep(0.4)
+    _until(lambda: "a" not in bg._running)
     assert calls == [1]
 
     def boom():
         raise RuntimeError("no")
 
     bg.ensure("b", boom)
-    time.sleep(0.1)
+    _until(lambda: bg.ensure("b", boom)["status"] == "failed")
     assert bg.ensure("b", boom) == {"status": "failed", "error": "RuntimeError: no"}
 
 
@@ -212,9 +220,7 @@ def test_background_failures_expire_and_are_retried():
         raise RuntimeError("no")
 
     bg.ensure("k", boom)
-    time.sleep(0.05)
-    assert bg.ensure("k", boom)["status"] == "failed"
-    time.sleep(0.15)
-    assert bg.ensure("k", boom)["status"] == "computing"
-    time.sleep(0.05)
-    assert calls == [1, 1]
+    _until(lambda: bg.ensure("k", boom)["status"] == "failed")
+    assert calls == [1]
+    _until(lambda: bg.ensure("k", boom)["status"] == "computing")  # the failure expired
+    _until(lambda: calls == [1, 1])

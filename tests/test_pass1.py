@@ -260,7 +260,8 @@ def test_pass1_worker_streams_single_segment_in_batches(tmp_path):
         assert np.array_equal(res["shifts"], ref["shifts"])
         assert np.array_equal(res["block_max"], ref["block_max"])
         assert np.array_equal(res["max_proj"], ref["max_proj"])
-        assert np.array_equal(res["quality"], ref["quality"])
+        # quality is a float32 correlation: batch boundaries change the summation order
+        assert np.allclose(res["quality"], ref["quality"], atol=1e-6)
         assert all(np.array_equal(a, b) for a, b in zip(tl, ref_tiles, strict=True))
 
 
