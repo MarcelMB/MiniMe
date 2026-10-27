@@ -1,4 +1,5 @@
 import hashlib
+import json
 
 import numpy as np
 import pytest
@@ -273,3 +274,13 @@ def test_vessels_darken_movie():
 def test_edge_band_darkens_border():
     m = synth.synth_movie(64, 64, 5, seed=0, options=synth.SynthOptions(edge_band=4))
     assert m[:, :4].mean() < 0.4 * m[:, 10:-10, 10:-10].mean()
+
+
+def test_write_session_stores_options(tmp_path):
+    o = synth.SynthOptions(vessels=1, dropped=2)
+    meta = synth.write_session(tmp_path / "raw", 0.05, segment=30, seed=0, side=32, options=o)
+    assert meta["options"] == o.to_dict()
+    saved = json.loads((tmp_path / "meta.json").read_text())
+    assert synth.SynthOptions.from_dict(saved["options"]) == o
+    plain = synth.write_session(tmp_path / "raw2", 0.05, segment=30, side=32)
+    assert synth.SynthOptions.from_dict(plain["options"]) == synth.SynthOptions()
