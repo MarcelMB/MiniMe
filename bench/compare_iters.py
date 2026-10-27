@@ -1,4 +1,4 @@
-"""Compare two caanfast runs of one session that differ in CNMF iterations (e.g. n_iter 1 vs 2).
+"""Compare two minime runs of one session that differ in CNMF iterations (e.g. n_iter 1 vs 2).
 
     .venv/bin/python bench/compare_iters.py RUN_A RUN_B [--frac 0.1] [--out FILE.json]
 

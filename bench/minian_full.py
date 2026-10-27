@@ -1,14 +1,14 @@
-"""Time the full Minian v2.0 pipeline on raw AVIs with a caanfast run's parameters.
+"""Time the full Minian v2.0 pipeline on raw AVIs with a minime run's parameters.
 
-Run under the Minian venv (needs minian + dask), not the caanfast venv::
+Run under the Minian venv (needs minian + dask), not the minime venv::
 
-    <minian_v2.0>/.venv/bin/python bench/minian_full.py RAW_DIR CAFAST_PARAMS_JSON OUT_DIR
+    <minian_v2.0>/.venv/bin/python bench/minian_full.py RAW_DIR MINIME_PARAMS_JSON OUT_DIR
 
 Follows ``pipeline.ipynb``: load, glow removal + median denoise + tophat, motion, seeds,
 PNR, seed merge, initA/initC, unit merge, background, noise, then n_iter x [spatial,
-background, traces, merge]. ``ks_refine`` and the temporal update are skipped, as caanfast
-has neither. Parameters come from the caanfast ``params.json`` (``sparse_penal`` =
-``sparse_snr / sqrt(T)``); caanfast's motion-before-tophat and tree seed merge have no
+background, traces, merge]. ``ks_refine`` and the temporal update are skipped, as minime
+has neither. Parameters come from the minime ``params.json`` (``sparse_penal`` =
+``sparse_snr / sqrt(T)``); minime's motion-before-tophat and tree seed merge have no
 Minian equivalent, Minian's own order and connected-component merge are used.
 
 Inputs that are no longer needed (``varr`` after preprocessing, ``varr_ref`` after the
@@ -138,7 +138,7 @@ class Timer:
 
 
 def minian_params(cp: dict[str, Any], T: int) -> dict[str, Any]:
-    """Minian keyword arguments per step from a caanfast ``params.json``."""
+    """Minian keyword arguments per step from a minime ``params.json``."""
     nf = cp["noise_freq"]
     return {
         "denoise": {"method": "median", "ksize": cp["median_ksize"]},
@@ -328,7 +328,7 @@ def main() -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("raw", type=Path)
-    ap.add_argument("params", type=Path, help="caanfast params.json")
+    ap.add_argument("params", type=Path, help="minime params.json")
     ap.add_argument("out", type=Path)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--mem-limit", default="4GB")
@@ -343,7 +343,7 @@ def main() -> None:
     mon = Monitor(a.out, a.min_free_gb, a.poll)
     mon.start()
     header = {
-        "pipeline": "minian v2.0 pipeline.ipynb order; caanfast params; no ks_refine, no temporal",
+        "pipeline": "minian v2.0 pipeline.ipynb order; minime params; no ks_refine, no temporal",
         "cluster": f"LocalCluster {a.workers} workers x 2 threads, {a.mem_limit}/worker",
         "raw": str(a.raw),
         "cafast_params": str(a.params),

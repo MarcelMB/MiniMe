@@ -5,7 +5,7 @@ import numpy as np
 from scipy import sparse
 
 from bench import score
-from caanfast.testing import synth
+from minime.testing import synth
 
 
 def test_match_units_greedy_one_to_one() -> None:

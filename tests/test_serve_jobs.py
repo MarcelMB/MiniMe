@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from caanfast.serve.app import create_app
-from caanfast.serve.jobs import JobManager
-from caanfast.testing import synth
+from minime.serve.app import create_app
+from minime.serve.jobs import JobManager
+from minime.testing import synth
 from tests.conftest import TINY_PARAMS
 
 

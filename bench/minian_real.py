@@ -1,6 +1,6 @@
 """Time Minian v2.0 on a real session with that session's parameter JSON.
 
-Run under the Minian venv (needs minian + dask), not the caanfast venv::
+Run under the Minian venv (needs minian + dask), not the minime venv::
 
     <minian_v2.0>/.venv/bin/python bench/minian_real.py VIDEO PARAMS_JSON OUT_DIR
 
@@ -8,7 +8,7 @@ Run under the Minian venv (needs minian + dask), not the caanfast venv::
 denoise and tophat are skipped, as in the modified WL25 pipeline). ``PARAMS_JSON`` is the
 session's Minian parameter file (``parameters.{seeds_init, pnr_refine, ks_refine,
 seeds_merge, initialize, init_merge, get_noise, first_spatial, first_merge,
-second_spatial, second_merge}``). Stages match caanfast's: motion, seeds, PNR (+ ks_refine,
+second_spatial, second_merge}``). Stages match minime's: motion, seeds, PNR (+ ks_refine,
 timed on its own), seed merge, initA/initC, unit merge, background, then
 2 x [spatial, background, traces, merge]. No temporal update, no ``drop_correlated_pairs``
 or post-hoc filters. Cluster as in ``run_minian_baseline.py``: 4 workers x 2 threads, 4 GB.

@@ -1,6 +1,6 @@
-"""Static per-stage viewer of one caanfast run (figures + a clickable unit browser).
+"""Static per-stage viewer of one minime run (figures + a clickable unit browser).
 
-Run under the caanfast venv::
+Run under the minime venv::
 
     .venv/bin/python bench/stage_viewer.py RUN_DIR [--frames 0,72000,144000,215999]
     python3 -m http.server -d RUN_DIR/viewer 8765
@@ -26,10 +26,10 @@ import numpy as np  # noqa: E402
 import scipy.sparse as sps  # noqa: E402
 from scipy.ndimage import binary_erosion  # noqa: E402
 
-from caanfast import corr, io, motion, pipeline  # noqa: E402
-from caanfast.factors import Factors  # noqa: E402
-from caanfast.params import Params  # noqa: E402
-from caanfast.report import StageTimer  # noqa: E402
+from minime import corr, io, motion, pipeline  # noqa: E402
+from minime.factors import Factors  # noqa: E402
+from minime.params import Params  # noqa: E402
+from minime.report import StageTimer  # noqa: E402
 
 DPI = 110
 
@@ -420,7 +420,7 @@ def main() -> None:
     plt.imsave(out / "maxproj.png", fac.max_proj, cmap="gray", vmin=lo, vmax=hi)
 
     print("recomputing seeds + init from factors", flush=True)
-    import caanfast.seeds as seeds_mod
+    import minime.seeds as seeds_mod
 
     timer = StageTimer()
     fc = corr.FactorCorr(fac, params.noise_freq)

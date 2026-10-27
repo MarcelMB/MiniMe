@@ -3,8 +3,8 @@ import json
 import numpy as np
 from fastapi.testclient import TestClient
 
-from caanfast.serve.app import create_app
-from caanfast.serve.arrays import decode
+from minime.serve.app import create_app
+from minime.serve.arrays import decode
 from tests.conftest import wait_ok
 
 
@@ -44,9 +44,9 @@ def test_wrong_host_is_rejected(cache_dir, tmp_path):
 def test_static_page_and_missing_build(cache_dir, tmp_path):
     static = tmp_path / "static"
     static.mkdir()
-    (static / "index.html").write_text("<html>caanfast</html>")
+    (static / "index.html").write_text("<html>minime</html>")
     c = TestClient(create_app("tok", cache_root=cache_dir, static_dir=static))
-    assert "caanfast" in c.get("/").text
+    assert "minime" in c.get("/").text
     c2 = TestClient(create_app("tok", cache_root=cache_dir, static_dir=tmp_path / "none"))
     assert "npm run build" in c2.get("/").text
 
@@ -111,7 +111,7 @@ def test_a_missing_file_is_404_without_the_full_path(client, run_copy):
 def test_cache_root_ignores_an_empty_env_var(monkeypatch):
     from pathlib import Path
 
-    from caanfast.serve.cache import cache_root
+    from minime.serve.cache import cache_root
 
-    monkeypatch.setenv("CAANFAST_CACHE", "")
-    assert cache_root() == Path.home() / ".cache" / "caanfast"
+    monkeypatch.setenv("MINIME_CACHE", "")
+    assert cache_root() == Path.home() / ".cache" / "minime"

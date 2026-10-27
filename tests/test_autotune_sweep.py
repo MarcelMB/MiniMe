@@ -7,11 +7,11 @@ import pytest
 import scipy.sparse as sps
 from typer.testing import CliRunner
 
-from caanfast import cli, window2
-from caanfast.autotune import run as at
-from caanfast.autotune import score, sweep
-from caanfast.params import Params
-from caanfast.report import StageTimer
+from minime import cli, window2
+from minime.autotune import run as at
+from minime.autotune import score, sweep
+from minime.params import Params
+from minime.report import StageTimer
 
 D = 7.0  # synthetic cells: Gaussian sigma 3 px
 SMALL = sweep.Grids(

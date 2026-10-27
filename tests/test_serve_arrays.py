@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from caanfast.serve.arrays import array_response, decode
+from minime.serve.arrays import array_response, decode
 
 
 def test_array_roundtrip_keeps_shape_and_dtype():

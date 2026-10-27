@@ -8,9 +8,9 @@ import pytest
 import scipy.sparse as sps
 from typer.testing import CliRunner
 
-from caanfast import cli, pipeline, report
-from caanfast.params import Params
-from caanfast.testing import synth
+from minime import cli, pipeline, report
+from minime.params import Params
+from minime.testing import synth
 
 
 def test_pipeline_end_to_end_tiny(tiny_session):
@@ -40,7 +40,7 @@ def test_pipeline_end_to_end_tiny(tiny_session):
     assert rep["counts"]["units_final"] == A.shape[0]
     cents = synth.true_centroids(tiny_session["setup"])
     cents = cents[(cents >= 4).all(1) & (cents < 60).all(1)]
-    from caanfast.init import centroids
+    from minime.init import centroids
 
     uc = centroids(A, 64, 64)
     d = np.sqrt(((cents[:, None] - uc[None]) ** 2).sum(-1)).min(1)
@@ -54,7 +54,7 @@ def test_pipeline_end_to_end_tiny(tiny_session):
     assert len(units) == A.shape[0]
     prm = json.loads((out / "params.json").read_text())
     assert prm["tile"] == 32 and prm["raw_dir"] == str(tiny_session["raw_dir"].resolve())
-    assert {"raw_hash", "caanfast_version"} <= set(prm)
+    assert {"raw_hash", "minime_version"} <= set(prm)
     assert (out / "motion" / "meta.json").exists()
     assert rep["motion"]["sidecar_reused"] is False
     assert rep["bytes"]["store_peak"] > 0 and rep["bytes"]["factors"] > 0
@@ -78,7 +78,7 @@ def test_pipeline_end_to_end_tiny(tiny_session):
 
 
 def test_stage_timer_progress(tmp_path):
-    from caanfast.report import StageTimer
+    from minime.report import StageTimer
 
     timer = StageTimer()
     with timer("probe"):
@@ -96,7 +96,7 @@ def test_stage_timer_progress(tmp_path):
 
 
 def test_a_failed_stage_is_logged_as_error(tmp_path):
-    from caanfast.report import StageTimer
+    from minime.report import StageTimer
 
     timer = StageTimer()
     timer.attach_progress(tmp_path / "progress.jsonl")
@@ -153,7 +153,7 @@ def test_cli_run_wires_options(tmp_path, monkeypatch):
 def test_seeds_stage_runs_gmm_refine_only_when_enabled(monkeypatch, use_gmm):
     from types import SimpleNamespace
 
-    from caanfast import corr, seeds
+    from minime import corr, seeds
 
     df = pd.DataFrame({"height": [1, 2, 3], "width": [1, 2, 3]})
     called = []
@@ -184,7 +184,7 @@ def test_pipeline_rejects_unsafe_run_names(tmp_path, name):
     raw.mkdir()
     keep = tmp_path / "processed" / "other_run"
     keep.mkdir(parents=True)
-    (keep / "params.json").write_text(json.dumps({"caanfast_version": "0"}))
+    (keep / "params.json").write_text(json.dumps({"minime_version": "0"}))
     with pytest.raises(ValueError, match="run name"):
         pipeline.run(raw, Params(), run_name=name)
     assert (keep / "params.json").exists()
@@ -195,13 +195,13 @@ def test_pipeline_refuses_to_wipe_foreign_dir(tmp_path):
     raw.mkdir()
     foreign = tmp_path / "processed" / "mine"
     foreign.mkdir(parents=True)
-    (foreign / "notes.txt").write_text("not a caanfast run")
+    (foreign / "notes.txt").write_text("not a minime run")
     with pytest.raises(ValueError, match="refusing to delete"):
         pipeline.run(raw, Params(), run_name="mine")
-    assert (foreign / "notes.txt").read_text() == "not a caanfast run"
+    assert (foreign / "notes.txt").read_text() == "not a minime run"
 
 
-def test_reset_dir_wipes_only_empty_or_caanfast_dirs(tmp_path):
+def test_reset_dir_wipes_only_empty_or_minime_dirs(tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()
     pipeline._reset_dir(empty)
@@ -219,7 +219,7 @@ def test_reset_dir_wipes_only_empty_or_caanfast_dirs(tmp_path):
     assert old.is_dir() and not any(old.iterdir())
     fake = tmp_path / "fake"
     fake.mkdir()
-    (fake / "params.json").write_text(json.dumps({"tile": 64}))  # no caanfast marker key
+    (fake / "params.json").write_text(json.dumps({"tile": 64}))  # no minime marker key
     with pytest.raises(ValueError, match="refusing to delete"):
         pipeline._reset_dir(fake)
     assert (fake / "params.json").exists()

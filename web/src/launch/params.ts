@@ -46,7 +46,7 @@ export function changedOnly(
 
 export function defaultRunName(now: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
-  return `caanfast_${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}_${p(now.getHours())}${p(now.getMinutes())}`;
+  return `minime_${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}_${p(now.getHours())}${p(now.getMinutes())}`;
 }
 
 export type ProgressEvent = {

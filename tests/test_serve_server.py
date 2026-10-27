@@ -4,8 +4,8 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from typer.testing import CliRunner
 
-from caanfast.cli import app
-from caanfast.serve.server import free_port, start_url
+from minime.cli import app
+from minime.serve.server import free_port, start_url
 
 
 def test_start_url_carries_token_and_folder():
@@ -26,7 +26,7 @@ def test_cli_serve_wires_options(monkeypatch, tmp_path):
     def fake(folder, port=0, open_browser=True, token=None):
         seen.update(folder=folder, port=port, open_browser=open_browser, token=token)
 
-    monkeypatch.setattr("caanfast.serve.server.serve_forever", fake)
+    monkeypatch.setattr("minime.serve.server.serve_forever", fake)
     r = CliRunner().invoke(app, ["serve", str(tmp_path), "--port", "9001", "--no-browser"])
     assert r.exit_code == 0, r.output
     assert seen == {"folder": tmp_path, "port": 9001, "open_browser": False, "token": None}
@@ -37,9 +37,9 @@ def test_serve_forever_runs_uvicorn_quietly_on_loopback(monkeypatch, tmp_path):
 
     import uvicorn
 
-    from caanfast.serve.server import serve_forever
+    from minime.serve.server import serve_forever
 
-    monkeypatch.setenv("CAANFAST_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setenv("MINIME_CACHE", str(tmp_path / "cache"))
     seen, handlers = {}, {}
     monkeypatch.setattr(uvicorn, "run", lambda *a, **kw: seen.update(kw))
     monkeypatch.setattr(signal, "signal", lambda sig, h: handlers.update({sig: h}))
@@ -57,10 +57,10 @@ def test_serve_forever_runs_uvicorn_quietly_on_loopback(monkeypatch, tmp_path):
 def test_a_second_server_on_the_same_cache_exits_with_status_1(monkeypatch, tmp_path, capsys):
     import uvicorn
 
-    from caanfast.serve.jobs import JobManager
-    from caanfast.serve.server import serve_forever
+    from minime.serve.jobs import JobManager
+    from minime.serve.server import serve_forever
 
-    monkeypatch.setenv("CAANFAST_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setenv("MINIME_CACHE", str(tmp_path / "cache"))
     monkeypatch.setattr(uvicorn, "run", lambda *a, **kw: pytest.fail("must not start"))
     first = JobManager()
     with pytest.raises(SystemExit) as e:

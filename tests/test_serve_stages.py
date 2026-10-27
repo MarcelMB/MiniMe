@@ -2,9 +2,9 @@ import shutil
 
 import numpy as np
 
-from caanfast.params import Params
-from caanfast.serve.arrays import decode
-from caanfast.serve.paramsmeta import COMMON, GROUPS, HELP, defaults
+from minime.params import Params
+from minime.serve.arrays import decode
+from minime.serve.paramsmeta import COMMON, GROUPS, HELP, defaults
 from tests.conftest import wait_ok
 
 

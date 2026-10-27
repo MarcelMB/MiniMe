@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from caanfast import pipeline
-from caanfast.params import Params
-from caanfast.testing import synth
+from minime import pipeline
+from minime.params import Params
+from minime.testing import synth
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -73,7 +73,7 @@ def cache_dir(tmp_path):
 def client(cache_dir, tmp_path):
     from fastapi.testclient import TestClient
 
-    from caanfast.serve.app import create_app
+    from minime.serve.app import create_app
 
     app = create_app("tok", cache_root=cache_dir, static_dir=tmp_path / "no-static")
     c = TestClient(app)

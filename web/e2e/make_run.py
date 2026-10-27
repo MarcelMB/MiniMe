@@ -3,9 +3,9 @@
 import sys
 from pathlib import Path
 
-from caanfast import pipeline
-from caanfast.params import Params
-from caanfast.testing import synth
+from minime import pipeline
+from minime.params import Params
+from minime.testing import synth
 
 
 def main(root: Path) -> None:

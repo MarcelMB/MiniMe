@@ -65,7 +65,7 @@ describe("requests", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "bad token" }), { status: 401 })));
     await expect(getJSON("/a")).rejects.toMatchObject({
       status: 401,
-      message: "This page's access key is no longer valid. Open the link that `caanfast serve` printed again.",
+      message: "This page's access key is no longer valid. Open the link that `minime serve` printed again.",
     });
   });
 
