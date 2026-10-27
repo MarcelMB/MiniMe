@@ -7,8 +7,10 @@ twice (pass 1: preprocess + motion correction; pass 2: per-tile low-rank compres
 CNMF stage after that runs on the stored factors and never rereads the movie.
 
 ## Install
+Released versions: `pip install minime-cnmf` (the import and the command are `minime`).
 
-    uv venv -p 3.11 && uv pip install -e ".[dev]"    # add ,bench for cafast tune
+
+    uv venv -p 3.11 && uv pip install -e ".[dev]"    # add ,bench for minime tune
     .venv/bin/pytest
 
 ## Run

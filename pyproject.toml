@@ -1,5 +1,5 @@
 [project]
-name = "minime"
+name = "minime-cnmf"
 version = "0.0.1"
 description = "Factor-first CNMF pipeline for one-photon miniscope data"
 readme = "README.md"
