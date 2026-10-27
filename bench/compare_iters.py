@@ -28,7 +28,7 @@ import numpy as np
 from scipy import sparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root: bench/ is not packaged
-from bench.score import (  # noqa: E402
+from minime.score import (  # noqa: E402
     MAX_DIST_PX,
     footprint_centroids,
     match_units,

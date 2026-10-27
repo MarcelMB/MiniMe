@@ -13,3 +13,4 @@ web/e2e/.data/
 src/minime/serve/static/
 dist/
 LOCAL_DATA.md
+docs/superpowers/

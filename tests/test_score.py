@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 from scipy import sparse
 
-from bench import score
+from minime import score
 from minime.testing import synth
 
 

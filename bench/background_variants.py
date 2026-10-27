@@ -26,11 +26,11 @@ import numpy as np
 import scipy.sparse as sps
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root: bench/ is not packaged
-from bench.score import match_units  # noqa: E402
 from minime import cnmf, corr, init, pipeline  # noqa: E402
 from minime.factors import Factors  # noqa: E402
 from minime.params import RUN_METADATA_KEYS, Params  # noqa: E402
 from minime.report import StageTimer  # noqa: E402
+from minime.score import match_units  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Run
