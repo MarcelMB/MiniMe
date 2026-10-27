@@ -453,6 +453,7 @@ def write_session(
     segment: int = 1000,
     seed: int = 0,
     side: int = 600,
+    options: SynthOptions | None = None,
 ) -> dict:
     """Write ``N.avi`` segments (uncompressed, fourcc GREY) to ``out_dir`` and ``meta.json``
     to ``out_dir.parent``; returns the metadata dict."""
@@ -461,7 +462,7 @@ def write_session(
     fourcc = cv2.VideoWriter_fourcc(*"GREY")
     t0 = time.perf_counter()
     seg = -1
-    for f0, chunk in synth_chunks(side, side, T, seed, chunk=segment):
+    for f0, chunk in synth_chunks(side, side, T, seed, chunk=segment, options=options):
         seg = f0 // segment
         writer = cv2.VideoWriter(str(out_dir / f"{seg}.avi"), fourcc, fps, (side, side), False)
         for frame in chunk:
@@ -476,6 +477,7 @@ def write_session(
         "segments": seg + 1,
         "fourcc": "GREY",
         "seed": seed,
+        "options": (options or SynthOptions()).to_dict(),
         "bytes_raw": T * side * side,
         "generate_seconds": time.perf_counter() - t0,
     }

@@ -119,12 +119,23 @@ def tune(
 
 @app.command()
 def synth(
-    out: Path, minutes: float = 10.0, fps: int = 30, segment: int = 1000, seed: int = 0
+    out: Path,
+    minutes: float = 10.0,
+    fps: int = 30,
+    segment: int = 1000,
+    seed: int = 0,
+    side: int = 600,
+    scenario: str = "clean",
 ) -> None:
-    """Write a synthetic Miniscope session (N.avi, GREY) and meta.json."""
-    from minime.testing.synth import write_session
+    """Write a synthetic Miniscope session (N.avi, GREY) and meta.json.
 
-    typer.echo(write_session(out, minutes, fps, segment, seed))
+    SCENARIO is one of minime.testing.synth.SCENARIOS (clean, realistic, one per effect).
+    """
+    from minime.testing.synth import SCENARIOS, write_session
+
+    if scenario not in SCENARIOS:
+        raise typer.BadParameter(f"unknown scenario {scenario!r}; one of {sorted(SCENARIOS)}")
+    typer.echo(write_session(out, minutes, fps, segment, seed, side, SCENARIOS[scenario]))
 
 
 @app.command()
