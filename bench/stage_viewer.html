@@ -1,0 +1,46 @@
+<!doctype html><html><head><meta charset="utf-8"><title>CaFast Stage Viewer</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{--bg:#fafafa;--fg:#222;--card:#fff;--mut:#666;--line:#ddd}
+@media (prefers-color-scheme:dark){:root{--bg:#161616;--fg:#e6e6e6;--card:#202020;--mut:#999;--line:#333}}
+body{background:var(--bg);color:var(--fg);font:14px/1.45 -apple-system,system-ui,sans-serif;margin:0 auto;max-width:1400px;padding:16px}
+h1{font-size:20px}h2{font-size:16px;margin-top:28px;border-bottom:1px solid var(--line);padding-bottom:4px}
+img{max-width:100%;background:#fff;border-radius:4px}
+table{border-collapse:collapse;font-variant-numeric:tabular-nums}td,th{padding:2px 10px;border-bottom:1px solid var(--line);text-align:right}
+td:first-child,th:first-child{text-align:left}.mut{color:var(--mut)}
+#browser{display:flex;gap:16px;flex-wrap:wrap}canvas{border:1px solid var(--line);max-width:100%}
+nav a{margin-right:12px}
+</style></head><body>
+<h1>__TITLE__</h1>
+<nav><a href="#t">timings</a><a href="#f">frames</a><a href="#m">motion</a><a href="#fa">factors</a><a href="#s">seeds</a><a href="#u">units</a><a href="#b">unit browser</a><a href="#tr">traces</a><a href="#z">zooms</a></nav>
+<h2 id="t">Clock times per stage</h2>
+<div style="display:flex;gap:24px;flex-wrap:wrap"><div>__TABLE__</div><img src="timings.png" style="max-width:640px"></div>
+<h2 id="f">Preprocessing + motion correction (pass 1): raw &rarr; preprocessed (denoise, motion, tophat) &rarr; reconstruction from the compressed factors</h2><img src="frames.png">
+<h2 id="m">Motion correction</h2><img src="motion.png">
+<h2 id="d">Registration consistency <span class="mut">(residual shift of each corrected block; should stay ~0 px)</span></h2><img src="drift.png">
+<h2 id="fa">Compression (pass 2): per-tile low-rank factors</h2><img src="factors.png">
+<h2 id="s">Seeds</h2><img src="seeds.png">
+<h2 id="u">Initialisation &rarr; CNMF</h2><img src="units.png">
+<h2 id="b">Unit browser <span class="mut">(click a unit)</span></h2>
+<div id="browser"><canvas id="img" width="600" height="600"></canvas><div style="flex:1;min-width:300px"><div id="info" class="mut">click a footprint</div><canvas id="trc" width="760" height="220"></canvas></div></div>
+<h2 id="tr">Traces</h2><img src="traces.png">
+<h2 id="z">Zooms <span class="mut">(the 10 brightest units, 5 min windows, 3 per hour)</span></h2><img src="zoom.png">
+<script>
+const bgimg=new Image();bgimg.src="maxproj.png";
+fetch("units.json").then(r=>r.json()).then(D=>{
+ const cv=document.getElementById("img"),cx=cv.getContext("2d"),own=new Int32Array(D.H*D.W).fill(-1);
+ D.units.forEach((u,k)=>u.px.forEach(p=>own[p]=k));
+ let sel=-1;
+ function draw(){cx.drawImage(bgimg,0,0,D.W,D.H);const im=cx.getImageData(0,0,D.W,D.H);
+  for(let p=0;p<own.length;p++){const k=own[p];if(k<0)continue;const i=4*p;
+   if(k===sel){im.data[i]=255;im.data[i+1]=60;im.data[i+2]=40}else{im.data[i+1]=Math.min(255,im.data[i+1]+70)}}
+  cx.putImageData(im,0,0)}
+ function plot(k){const c=document.getElementById("trc"),g=c.getContext("2d"),t=D.units[k].trace;
+  g.clearRect(0,0,c.width,c.height);g.strokeStyle=getComputedStyle(document.body).color;g.lineWidth=1;g.beginPath();
+  t.forEach((v,i)=>{const x=i/(t.length-1)*(c.width-10)+5,y=c.height-10-v*(c.height-20);i?g.lineTo(x,y):g.moveTo(x,y)});g.stroke();
+  document.getElementById("info").textContent=`unit ${k}: ${D.units[k].px.length} px; C over ${D.hours.toFixed(2)} h (max per bin, normalised)`}
+ cv.onclick=e=>{const r=cv.getBoundingClientRect(),x=Math.floor((e.clientX-r.left)/r.width*D.W),y=Math.floor((e.clientY-r.top)/r.height*D.H);
+  const k=own[y*D.W+x];if(k>=0){sel=k;draw();plot(k)}};
+ if(bgimg.complete)draw();else bgimg.onload=draw;
+});
+</script></body></html>
