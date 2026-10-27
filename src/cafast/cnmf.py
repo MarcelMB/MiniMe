@@ -376,8 +376,13 @@ def run_cnmf(
     C: np.ndarray,
     params: Params,
     fc_traces: Callable[[np.ndarray], np.ndarray],
+    record: Callable[[str, sps.csr_matrix], None] | None = None,
 ) -> CnmfResult:
-    """Background, then ``params.n_iter`` x (spatial, background, traces, merge)."""
+    """Background, then ``params.n_iter`` x (spatial, background, traces, merge).
+
+    ``record(name, A)``, if given, receives the footprints after each spatial update
+    (``spatial_{it}``) and after each unit merge (``merge_{it}``).
+    """
     sn = fac.sigma_flat()
     counts: dict[str, int] = {}
     b, fb = update_background(fac, A, C, clip=params.background_clip)
@@ -391,6 +396,8 @@ def run_cnmf(
         C_sp = (np.asarray(C)[mask] * nf[:, None]).astype(np.float32)
         _check_finite(f"spatial update (iteration {it})", A_data=A.data, C=C_sp)
         counts[f"units_after_spatial_{it}"] = A.shape[0]
+        if record is not None:
+            record(f"spatial_{it}", A)
         last = it == params.n_iter - 1
         b, fb = update_background(fac, A, C_sp, b=None if last else b, clip=params.background_clip)
         _check_finite(f"background (iteration {it})", b=b, f=fb)
@@ -399,5 +406,7 @@ def run_cnmf(
         A, YrA, (C_sp,) = init.unit_merge(A, YrA, fc_traces, params.loop_merge_corr, [C_sp])
         C = YrA
         counts[f"units_after_merge_{it}"] = A.shape[0]
+        if record is not None:
+            record(f"merge_{it}", A)
     counts["iter"] = params.n_iter
     return CnmfResult(A, C_sp, YrA, b, fb, counts)

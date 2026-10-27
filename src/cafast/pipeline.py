@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -136,8 +137,18 @@ def _filter(df: pd.DataFrame, col: str) -> pd.DataFrame:
     return df[df[col].to_numpy(bool)].reset_index(drop=True)
 
 
-def _seeds(fac: Factors, fc: corr.FactorCorr, params: Params, timer: StageTimer) -> pd.DataFrame:
+def seeds_unmerged(
+    fac: Factors,
+    params: Params,
+    timer: StageTimer,
+    stages: dict[str, pd.DataFrame] | None = None,
+) -> pd.DataFrame:
+    """Seeds after init, PNR and GMM (opt-in), before the merge; ``stages`` collects each table.
+
+    ``stages["seeds_pnr"]`` holds every initial seed with its ``pnr`` and ``mask_pnr``.
+    """
     p, n = params, timer.counts
+    st = {} if stages is None else stages
     with timer("seeds_init"):
         s = seeds.seeds_init(
             fac.block_max,
@@ -149,31 +160,85 @@ def _seeds(fac: Factors, fc: corr.FactorCorr, params: Params, timer: StageTimer)
             p.seeds_diff_thres,
         )
     n["seeds_init"] = len(s)
+    st["seeds_init"] = s
     with timer("pnr_refine"):
-        s = _filter(seeds.pnr_refine(fac, s, thres=p.pnr_thres), "mask_pnr")
+        st["seeds_pnr"] = seeds.pnr_refine(fac, s, thres=p.pnr_thres)
+        s = _filter(st["seeds_pnr"], "mask_pnr")
     n["seeds_pnr"] = len(s)
     if p.gmm_refine:
         with timer("gmm_refine"):
             s = _filter(seeds.gmm_refine(fac, s), "mask_gmm")
+        st["seeds_gmm"] = s
     n["seeds_gmm"] = len(s)  # equals seeds_pnr when gmm_refine is off
-    with timer("seeds_merge"):
-        s = _filter(corr.seeds_merge(fc, s, fac.max_proj, p.merge_dist, p.merge_corr), "mask_mrg")
-    n["seeds_merged"] = len(s)
     return s
 
 
-def _init_units(
-    fac: Factors, fc: corr.FactorCorr, s: pd.DataFrame, params: Params, timer: StageTimer
+def seeds_merged(
+    fac: Factors,
+    fc: corr.FactorCorr,
+    s: pd.DataFrame,
+    params: Params,
+    timer: StageTimer,
+    stages: dict[str, pd.DataFrame] | None = None,
+) -> pd.DataFrame:
+    """The seed merge on ``s`` (left unchanged, so a cached ``seeds_unmerged`` can be reused)."""
+    p = params
+    with timer("seeds_merge"):
+        s = _filter(corr.seeds_merge(fc, s, fac.max_proj, p.merge_dist, p.merge_corr), "mask_mrg")
+    timer.counts["seeds_merged"] = len(s)
+    if stages is not None:
+        stages["seeds_merged"] = s
+    return s
+
+
+def init_units(
+    fac: Factors,
+    fc: corr.FactorCorr,
+    s: pd.DataFrame,
+    params: Params,
+    timer: StageTimer,
+    footprints: dict[str, sps.csr_matrix] | None = None,
 ) -> tuple[sps.csr_matrix, np.ndarray]:
+    """initA, initC and the initial unit merge on the merged seeds ``s``."""
+    fp = {} if footprints is None else footprints
     with timer("initA"):
         A = init.initA(fc, s, params.inita_corr, params.inita_wnd)
     timer.counts["units_initA"] = A.shape[0]
+    fp["initA"] = A
     with timer("initC"):
         C = init.initC(fac, A)
     with timer("unit_merge"):
         A, C, _ = init.unit_merge(A, C, fc.traces_corr, params.init_merge_corr)
     timer.counts["units_init_merge"] = A.shape[0]
+    fp["init_merge"] = A
     return A, C
+
+
+@dataclass
+class Window2Result:
+    """Window 2 on the factors, with every intermediate stage the tuning figures show."""
+
+    seeds: dict[str, pd.DataFrame]  # seeds_init, seeds_pnr (all, with pnr), seeds_merged
+    footprints: dict[str, sps.csr_matrix]  # initA, init_merge, spatial_{i}, merge_{i}
+    cnmf: CnmfResult
+
+
+def run_window2(
+    fac: Factors, params: Params, timer: StageTimer, fc: corr.FactorCorr | None = None
+) -> Window2Result:
+    """Seeds, initA/initC, unit merge and the CNMF loop on ``fac`` (``fc`` built if not given)."""
+    if fc is None:
+        with timer("corr_setup"):
+            fc = corr.FactorCorr(fac, params.noise_freq)
+    st: dict[str, pd.DataFrame] = {}
+    fp: dict[str, sps.csr_matrix] = {}
+    s = seeds_merged(fac, fc, seeds_unmerged(fac, params, timer, st), params, timer, st)
+    A, C = init_units(fac, fc, s, params, timer, fp)
+    with timer("cnmf"):
+        res = run_cnmf(fac, A, C, params, fc.traces_corr, record=fp.__setitem__)
+    timer.counts.update(res.counts)
+    timer.counts["units_final"] = res.A.shape[0]
+    return Window2Result(st, fp, res)
 
 
 # ---------------------------------------------------------------------------
@@ -267,14 +332,7 @@ def run(
     if not keep_store:
         store.remove()
 
-    with timer("corr_setup"):
-        fc = corr.FactorCorr(fac, params.noise_freq)
-    s = _seeds(fac, fc, params, timer)
-    A, C = _init_units(fac, fc, s, params, timer)
-    with timer("cnmf"):
-        res = run_cnmf(fac, A, C, params, fc.traces_corr)
-    timer.counts.update(res.counts)
-    timer.counts["units_final"] = res.A.shape[0]
+    res = run_window2(fac, params, timer).cnmf
 
     with timer("write_outputs"):
         _write_cnmf(out / "cnmf", res, info.height, info.width)

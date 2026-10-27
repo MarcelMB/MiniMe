@@ -131,7 +131,8 @@ def test_seeds_stage_runs_gmm_refine_only_when_enabled(monkeypatch, use_gmm):
     fac = SimpleNamespace(block_max=None, block_edges=None, T=10, max_proj=None)
     assert Params().gmm_refine is False
     timer = report.StageTimer()
-    s = pipeline._seeds(fac, None, Params(gmm_refine=use_gmm), timer)
+    prm = Params(gmm_refine=use_gmm)
+    s = pipeline.seeds_merged(fac, None, pipeline.seeds_unmerged(fac, prm, timer), prm, timer)
     assert called == ([3] if use_gmm else [])
     assert (
         len(s) == timer.counts["seeds_gmm"] == timer.counts["seeds_merged"] == (2 if use_gmm else 3)
