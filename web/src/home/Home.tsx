@@ -7,7 +7,7 @@ import { href } from "../router";
 import type { Job, RunListing } from "../types";
 import { FolderPicker } from "./FolderPicker";
 
-const ROOT_KEY = "caanfast-root";
+const ROOT_KEY = "minime-root";
 
 function initialRoot(): string {
   const fromUrl = new URLSearchParams(window.location.search).get("root");

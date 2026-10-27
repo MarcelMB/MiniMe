@@ -1,7 +1,7 @@
 import numpy as np
 import scipy.sparse as sps
 
-from caanfast.serve.contours import unit_polygons
+from minime.serve.contours import unit_polygons
 
 
 def _footprints(H, W, masks):

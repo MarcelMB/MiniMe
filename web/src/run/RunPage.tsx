@@ -52,7 +52,7 @@ export function RunPage({ id, page }: { id: string; page: Page }) {
       <div className="page">
         <div className="row">
           <div>
-            <span className="label">CaAnFast · run</span>
+            <span className="label">MiniMe · run</span>
             <h1>{s.name}</h1>
           </div>
           <span className="spacer" />

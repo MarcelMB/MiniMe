@@ -2,11 +2,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from caanfast import compress, tiles
-from caanfast import factors as fm
-from caanfast import seeds as sd
-from caanfast.pass1 import seed_block_edges
-from caanfast.testing import synth
+from minime import compress, tiles
+from minime import factors as fm
+from minime import seeds as sd
+from minime.pass1 import seed_block_edges
+from minime.testing import synth
 
 
 def _session(H=64, W=64, T=600, seed=0):

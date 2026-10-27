@@ -3,11 +3,11 @@ import json
 import numpy as np
 import scipy.sparse as sps
 
-from caanfast import compress, pass2, tiles
-from caanfast import factors as fm
-from caanfast.params import Params
-from caanfast.pass1 import Pass1Result
-from caanfast.testing import synth
+from minime import compress, pass2, tiles
+from minime import factors as fm
+from minime.params import Params
+from minime.pass1 import Pass1Result
+from minime.testing import synth
 
 
 def _tile_movie(T=400, side=32, seed=3):
@@ -193,7 +193,7 @@ def test_compression_gate_against_noise_free_truth(tmp_path):
     against the noise-free movie and cell capture >= 0.97 (prototype, 600 x 600 x 9000:
     0.145 / 0.991). Known shifts are undone on both the noisy and the noise-free movie,
     so this measures compression only. Measured here: 0.217 / 0.981."""
-    from caanfast import motion, preprocess
+    from minime import motion, preprocess
 
     H = W = 128
     T = 1000

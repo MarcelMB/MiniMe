@@ -40,7 +40,7 @@ describe("parameter values", () => {
 describe("launcher helpers", () => {
   it("names runs by date", () => {
     expect(defaultRunName(new Date(2026, 9, 21, 14, 5))).toBe(
-      "caanfast_2026-10-21_1405",
+      "minime_2026-10-21_1405",
     );
   });
   it("turns progress events into stage rows", () => {

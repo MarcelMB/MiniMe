@@ -17,7 +17,7 @@ export class ApiError extends Error {
   }
 }
 
-const KEY = "caanfast-token";
+const KEY = "minime-token";
 let token = "";
 
 export function readToken(search: string, store: Pick<Storage, "getItem" | "setItem">): string {
@@ -71,7 +71,7 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
       /* plain text body */
     }
     if (r.status === 401) {
-      msg = "This page's access key is no longer valid. Open the link that `caanfast serve` printed again.";
+      msg = "This page's access key is no longer valid. Open the link that `minime serve` printed again.";
     }
     throw new ApiError(r.status, String(msg));
   }

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from caanfast.serve.traces import lowpass, lowpass_gain, overview, window, zooms
+from minime.serve.traces import lowpass, lowpass_gain, overview, window, zooms
 
 
 def test_gain_is_one_below_half_cutoff_half_at_cutoff_zero_above():

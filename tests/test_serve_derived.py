@@ -3,8 +3,8 @@ import shutil
 import numpy as np
 import scipy.sparse as sps
 
-from caanfast.serve import derived
-from caanfast.serve.runs import RunView
+from minime.serve import derived
+from minime.serve.runs import RunView
 
 
 def _snapshot(d):

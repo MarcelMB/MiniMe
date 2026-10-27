@@ -7,8 +7,8 @@ import scipy.sparse as sps
 from conftest import TINY
 from typer.testing import CliRunner
 
-from caanfast import cli, window2
-from caanfast.params import Params
+from minime import cli, window2
+from minime.params import Params
 
 CNMF_FILES = ("A.npz", "C.npy", "YrA.npy", "b.npy", "f.npy")
 
@@ -121,8 +121,8 @@ def test_cli_cnmf_reports_refused_params(tiny_w2_run, tmp_path):
 
 
 def test_split_seed_stages_match_run_window2(tiny_w2_run):
-    from caanfast import corr, pipeline
-    from caanfast.report import StageTimer
+    from minime import corr, pipeline
+    from minime.report import StageTimer
 
     fac = window2.load_factors(tiny_w2_run)
     prm = window2.run_params(tiny_w2_run)

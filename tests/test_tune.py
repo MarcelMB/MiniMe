@@ -12,14 +12,14 @@ import pandas as pd
 import pytest
 import scipy.sparse as sps
 
-from caanfast import window2
-from caanfast.autotune import run as at
-from caanfast.autotune import score, sweep
-from caanfast.params import Params
+from minime import window2
+from minime.autotune import run as at
+from minime.autotune import score, sweep
+from minime.params import Params
 
 pytest.importorskip("matplotlib")
 
-from caanfast.tune import figures, minian, preview, server  # noqa: E402
+from minime.tune import figures, minian, preview, server  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Footprint metrics
@@ -66,7 +66,7 @@ def tiny_rerun(tiny_w2_run):
 
 @pytest.fixture(scope="module")
 def self_minian(tiny_w2_run, tmp_path_factory):
-    """A 'Minian' result that is the caanfast run itself, shifted by (2, -1) px."""
+    """A 'Minian' result that is the minime run itself, shifted by (2, -1) px."""
     A = sps.load_npz(tiny_w2_run / "cnmf" / "A.npz").toarray().reshape(-1, 64, 64)
     mp = np.load(tiny_w2_run / "factors" / "max_proj.npy").astype(np.float32)
     path = tmp_path_factory.mktemp("mn") / "minian_units.npz"
@@ -235,7 +235,7 @@ SMALL_GRIDS = sweep.Grids(
 
 
 def test_best_per_value_and_curves(tmp_path):
-    from caanfast.tune import autofig
+    from minime.tune import autofig
 
     df = pd.DataFrame(
         {
@@ -285,8 +285,8 @@ def test_server_autotune_roundtrip(tune_server, monkeypatch):
 
 
 def test_thumb_and_flag_column(tiny_rerun):
-    from caanfast.autotune.score import Checks
-    from caanfast.tune import autofig
+    from minime.autotune.score import Checks
+    from minime.tune import autofig
 
     run = figures.load_run(tiny_rerun)
     png = autofig.thumb_png(run, 0)
@@ -341,8 +341,8 @@ def test_server_rejects_bad_diameter_and_reserved_name(tune_server):
 def test_proposal_marks_only_numerically_different_values(tmp_path):
     from types import SimpleNamespace
 
-    from caanfast.autotune import sweep as sw
-    from caanfast.tune import page
+    from minime.autotune import sweep as sw
+    from minime.tune import page
 
     app = SimpleNamespace(reruns_dir=tmp_path, figure_path=lambda run, fig: None)
     run_values = {k: 1.0 for k in sw.SEARCHED}

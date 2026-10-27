@@ -2,9 +2,9 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sps
 
-from caanfast import compress, corr, tiles
-from caanfast import factors as fm
-from caanfast.testing import synth
+from minime import compress, corr, tiles
+from minime import factors as fm
+from minime.testing import synth
 
 
 def _session(H=64, W=64, T=800, seed=0):

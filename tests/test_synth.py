@@ -1,6 +1,6 @@
 import numpy as np
 
-from caanfast.testing import synth
+from minime.testing import synth
 
 
 def test_synth_movie_is_deterministic_uint8():

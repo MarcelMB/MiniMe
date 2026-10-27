@@ -1,7 +1,7 @@
 import numpy as np
 
-from caanfast import motion, preprocess
-from caanfast.testing import synth
+from minime import motion, preprocess
+from minime.testing import synth
 
 
 def _aligned_rmse(est, true):
@@ -130,8 +130,8 @@ def test_sidecar_roundtrip_and_validation(tmp_path):
 def test_template_image_shape_for_odd_sizes():
     from types import SimpleNamespace
 
-    from caanfast import pipeline
-    from caanfast.params import Params
+    from minime import pipeline
+    from minime.params import Params
 
     h, w = 603, 601  # cv2.resize gives 302 x 300 here, not h // 2 x w // 2 = 301 x 300
     pre = preprocess.preprocess(synth.synth_movie(h, w, 4, 0), 7, 15)

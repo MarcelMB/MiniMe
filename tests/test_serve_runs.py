@@ -4,8 +4,8 @@ import time
 
 import pytest
 
-from caanfast.serve.cache import Background, RunCache
-from caanfast.serve.runs import (
+from minime.serve.cache import Background, RunCache
+from minime.serve.runs import (
     Registry,
     RunView,
     changed_params,
@@ -184,7 +184,7 @@ def test_only_the_two_most_recent_runs_keep_their_heavy_data(run_copy, cache_dir
 def test_heavy_parts_load_once_under_concurrency(run_copy, cache_dir, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
 
-    from caanfast import factors as factors_mod
+    from minime import factors as factors_mod
 
     calls = []
     real = factors_mod.Factors.load

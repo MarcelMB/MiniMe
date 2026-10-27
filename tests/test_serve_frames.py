@@ -4,9 +4,9 @@ import shutil
 import numpy as np
 import pytest
 
-from caanfast import io
-from caanfast.serve.frames import FrameSource, raw_frame, recon_frame, store_frame
-from caanfast.serve.runs import RunView
+from minime import io
+from minime.serve.frames import FrameSource, raw_frame, recon_frame, store_frame
+from minime.serve.runs import RunView
 
 
 @pytest.mark.parametrize("t", [0, 99, 100, 250, 299])

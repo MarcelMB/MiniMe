@@ -10,7 +10,7 @@ export function App() {
     <>
       <header className="topbar">
         <a className="brand" href={href({ name: "home" })}>
-          CaAnFast
+          MiniMe
         </a>
         <nav aria-label="Main">
           <a className="btn" href={href({ name: "home" })}>
