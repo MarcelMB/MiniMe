@@ -230,7 +230,10 @@ def test_overlap_pairs_are_close_and_correlated():
 
 def test_late_active_clamped_and_first_active():
     s = synth.synth_setup(64, 64, 300, seed=0, options=synth.SynthOptions(late_active=99))
-    assert (s.spikes[:, :210] == 0).all() and (s.first_active >= 210).all()
+    c = synth.true_centroids(s)
+    inside = (c >= 5).all(axis=1) & (c < 59).all(axis=1)
+    assert inside.any() and (s.spikes[inside, :210] == 0).all()
+    assert (s.first_active[inside] >= 210).all() and (s.first_active[~inside] < 210).any()
     base = synth.synth_setup(64, 64, 300, seed=0)
     has = base.spikes.any(axis=1)
     assert (base.first_active[has] < 300).all() and (base.first_active[~has] == 300).all()
@@ -284,3 +287,23 @@ def test_write_session_stores_options(tmp_path):
     assert synth.SynthOptions.from_dict(saved["options"]) == o
     plain = synth.write_session(tmp_path / "raw2", 0.05, segment=30, side=32)
     assert synth.SynthOptions.from_dict(plain["options"]) == synth.SynthOptions()
+
+
+def test_detectable_cells_inside_and_active():
+    s = synth.synth_setup(128, 128, 300, seed=0)
+    det = synth.detectable(s, 128, 128)
+    c = synth.true_centroids(s)
+    nspk = (s.spikes > 0).sum(axis=1)
+    inside = (c >= 5).all(axis=1) & (c < 123).all(axis=1)
+    assert det.dtype == bool and det.shape == (s.ys.size,)
+    assert np.array_equal(det, inside & (nspk >= 2))
+    assert 0 < det.sum() < s.ys.size
+
+
+def test_late_active_cells_are_detectable_and_fire_late():
+    o = synth.SynthOptions(late_active=2)
+    s = synth.synth_setup(128, 128, 300, seed=0, options=o)
+    late = np.flatnonzero((s.first_active >= 210) & (s.first_active < 300))
+    assert late.size >= 2
+    assert synth.detectable(s, 128, 128)[late].all()
+    assert ((s.spikes[late, 210:] > 0).sum(axis=1) >= 2).all()

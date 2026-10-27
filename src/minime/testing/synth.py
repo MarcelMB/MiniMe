@@ -33,7 +33,12 @@ DECAY_TAU = 15.0  # frames (0.5 s at 30 fps)
 PATCH_MIN = 15
 
 # child RNG streams, one per effect
-_S_SIZE, _S_BURST, _S_OVERLAP, _S_BG, _S_NP, _S_VESSEL, _S_WARP, _S_FRAMES, _S_HEMO = range(9)
+(_S_SIZE, _S_BURST, _S_OVERLAP, _S_BG, _S_NP, _S_VESSEL, _S_WARP, _S_FRAMES, _S_HEMO, _S_LATE) = (
+    range(10)
+)
+DETECT_BORDER = 5  # px: a cell centred closer to the frame edge is not counted as detectable
+DETECT_SPIKES = 2  # a cell with fewer spikes in the session is not counted as detectable
+LATE_RATE = 0.05  # spikes per frame of a late-active cell once it starts
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +54,7 @@ class SynthOptions:
     neuropil: float = 0.0  # grey levels of 3 cell-scale fields coupled to activity
     overlap: int = 0  # extra cells 0.4-0.8 diameters from an existing cell
     overlap_corr: float = 0.8  # share of the partner's spikes an overlap cell inherits
-    late_active: int = 0  # cells with no spikes before late_active_start * T
+    late_active: int = 0  # in-frame cells silent before late_active_start * T, bursting after
     late_active_start: float = 0.7
     bleach_tau: float | None = None  # frames; global envelope 0.5 + 0.5 exp(-t / tau)
     vessels: int = 0  # dark tortuous curves moving with the tissue
@@ -78,7 +83,7 @@ SCENARIOS: dict[str, SynthOptions] = {
     "clean": SynthOptions(),
     "background": SynthOptions(background_drift=15.0),
     "neuropil": SynthOptions(neuropil=10.0),
-    "overlap": SynthOptions(overlap=3),
+    "overlap": SynthOptions(overlap=3, overlap_corr=0.5),
     "late_active": SynthOptions(late_active=2),
     "bleach": SynthOptions(bleach_tau=3000.0),
     "vessels": SynthOptions(vessels=2),
@@ -155,11 +160,12 @@ def _patch_size(sigma: np.ndarray) -> int:
 
 
 def _cells(
-    rng: np.random.Generator, child, o: SynthOptions, ch: int, cw: int, T: int
+    rng: np.random.Generator, child, o: SynthOptions, h: int, w: int, m: int, T: int
 ) -> tuple[np.ndarray, ...]:
     """Positions, spikes and amplitudes of all cells. Legacy draws (positions, spikes, spike
     amplitudes, motion steps) first, in the legacy order, then the effects on their streams.
     Returns ``(ys, xs, spikes, amp_u, steps, sigma, amp_f, group)``."""
+    ch, cw = h + 2 * m, w + 2 * m
     n_base = max(1, int(ch * cw / 900))
     n = n_base + o.overlap
     r_size = child(_S_SIZE)
@@ -176,8 +182,15 @@ def _cells(
     if o.bursts:
         spikes = fx.markov_spikes(child(_S_BURST), n_base, T)
     if o.late_active > 0:
-        k = min(o.late_active, n_base)
-        spikes[n_base - k :, : int(o.late_active_start * T)] = 0.0
+        # the last late_active cells whose centre is well inside the frame: silent, then
+        # bursting at LATE_RATE from late_active_start on (the long-recording unit-loss case)
+        cy, cx = ys + ps // 2 - m, xs + ps // 2 - m
+        inside = (cy >= DETECT_BORDER) & (cy < h - DETECT_BORDER)
+        inside &= (cx >= DETECT_BORDER) & (cx < w - DETECT_BORDER)
+        late = np.flatnonzero(inside)[-o.late_active :]
+        start = int(o.late_active_start * T)
+        spikes[late] = 0.0
+        spikes[late, start:] = child(_S_LATE).random((late.size, T - start)) < LATE_RATE
     group = np.full(n, -1)
     if o.overlap > 0:
         r = child(_S_OVERLAP)
@@ -202,14 +215,14 @@ def _build(
     """All draws before the frame loop; returns the truth and the RNG positioned for noise."""
     o = options or SynthOptions()
     rng = np.random.default_rng(seed)
-    kids = np.random.SeedSequence(seed).spawn(9)
+    kids = np.random.SeedSequence(seed).spawn(10)
 
     def child(i: int) -> np.random.Generator:
         return np.random.default_rng(kids[i])
 
     m = o.motion_margin
     ch, cw = h + 2 * m, w + 2 * m
-    ys, xs, spikes, amp_u, steps, sigma, amp_f, group = _cells(rng, child, o, ch, cw, T)
+    ys, xs, spikes, amp_u, steps, sigma, amp_f, group = _cells(rng, child, o, h, w, m, T)
     n = ys.size
 
     scale = (CELL_AMP * amp_f).astype(np.float32)  # exactly 60.0 per cell when amp_cv == 0
@@ -307,6 +320,14 @@ def true_centroids(setup: SynthSetup) -> np.ndarray:
     return np.stack(
         [setup.ys + half - setup.margin, setup.xs + half - setup.margin], axis=1
     ).astype(float)
+
+
+def detectable(setup: SynthSetup, h: int, w: int) -> np.ndarray:
+    """(n,) bool: cells a pipeline can be expected to find, i.e. centred at least
+    ``DETECT_BORDER`` px inside the frame with at least ``DETECT_SPIKES`` spikes."""
+    c = true_centroids(setup)
+    inside = (c >= DETECT_BORDER).all(axis=1) & (c < np.array([h, w]) - DETECT_BORDER).all(axis=1)
+    return inside & ((setup.spikes > 0).sum(axis=1) >= DETECT_SPIKES)
 
 
 # ---------------------------------------------------------------------------
