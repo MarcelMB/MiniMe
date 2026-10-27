@@ -1,5 +1,7 @@
 import hashlib
 import json
+import platform
+import sys
 
 import numpy as np
 import pytest
@@ -43,8 +45,13 @@ def _digest(h, w, T, seed, **kw):
     return hashlib.sha256(synth.synth_movie(h, w, T, seed, **kw).tobytes()).hexdigest()[:16]
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin" or platform.machine() != "arm64",
+    reason="the byte pins hold only on the platform they were taken on: float32 exp/sin "
+    "differ by an ULP between SIMD targets, which flips a few uint8 roundings",
+)
 def test_default_session_is_byte_identical():
-    # pinned on 2026-10-27 from the pre-options generator
+    # pinned on 2026-10-27 on Apple silicon from the pre-options generator
     assert _digest(64, 64, 300, 0) == "ce39843f43462047"
     assert _digest(32, 32, 20, 1) == "de776615f5097caf"
 
