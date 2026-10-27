@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.optimize import nnls
 
-from cafast.spatial_kernel import solve_nnqp
+from caanfast.spatial_kernel import solve_nnqp
 
 
 def test_nnqp_matches_nnls_per_pixel():

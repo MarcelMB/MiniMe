@@ -1,6 +1,6 @@
 """Time cala (Aharoni-Lab/cala, online OnACID-style) on raw AVIs at full field of view.
 
-Run under a cala venv (cala main + its pinned ``noob``), not the cafast venv::
+Run under a cala venv (cala main + its pinned ``noob``), not the caanfast venv::
 
     <cala>/.venv/bin/python bench/cala_full.py RAW_DIR OUT_DIR [--max-files 1]
 

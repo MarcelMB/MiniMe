@@ -1,6 +1,6 @@
-"""Static per-stage viewer of one cafast run (figures + a clickable unit browser).
+"""Static per-stage viewer of one caanfast run (figures + a clickable unit browser).
 
-Run under the cafast venv::
+Run under the caanfast venv::
 
     .venv/bin/python bench/stage_viewer.py RUN_DIR [--frames 0,72000,144000,215999]
     python3 -m http.server -d RUN_DIR/viewer 8765
@@ -26,10 +26,10 @@ import numpy as np  # noqa: E402
 import scipy.sparse as sps  # noqa: E402
 from scipy.ndimage import binary_erosion  # noqa: E402
 
-from cafast import corr, io, motion, pipeline  # noqa: E402
-from cafast.factors import Factors  # noqa: E402
-from cafast.params import Params  # noqa: E402
-from cafast.report import StageTimer  # noqa: E402
+from caanfast import corr, io, motion, pipeline  # noqa: E402
+from caanfast.factors import Factors  # noqa: E402
+from caanfast.params import Params  # noqa: E402
+from caanfast.report import StageTimer  # noqa: E402
 
 DPI = 110
 
@@ -420,7 +420,7 @@ def main() -> None:
     plt.imsave(out / "maxproj.png", fac.max_proj, cmap="gray", vmin=lo, vmax=hi)
 
     print("recomputing seeds + init from factors", flush=True)
-    import cafast.seeds as seeds_mod
+    import caanfast.seeds as seeds_mod
 
     timer = StageTimer()
     fc = corr.FactorCorr(fac, params.noise_freq)
@@ -443,7 +443,7 @@ def main() -> None:
         [("seeds_init", hw(s0)), ("after PNR", hw(s1)), ("after merge", hw(s2))],
         out / "seeds.png",
     )
-    A0, _ = pipeline._init_units(fac, fc, s2, params, timer)
+    A0, _ = pipeline.init_units(fac, fc, s2, params, timer)
 
     print("figures: units, traces, unit browser", flush=True)
     A = sps.load_npz(run / "cnmf" / "A.npz").tocsr()

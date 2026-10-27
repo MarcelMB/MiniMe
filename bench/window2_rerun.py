@@ -4,7 +4,7 @@
 
 ``--set`` takes ``key=value`` pairs (value parsed as JSON, else kept as a string) applied on
 top of ``SRC_RUN/params.json``. Writes ``OUT_DIR/{cnmf/, params.json, report.json}`` and
-symlinks ``factors/`` and ``motion/`` from ``SRC_RUN``, so ``cafast score OUT_DIR``,
+symlinks ``factors/`` and ``motion/`` from ``SRC_RUN``, so ``caanfast score OUT_DIR``,
 ``bench/compare_minian.py`` and ``bench/compare_iters.py`` work on it.
 
 ``--set noise_frames=N`` only changes the per-pixel noise ``sigma`` of the factors (``W``,
@@ -21,12 +21,12 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root: bench/ is not packaged
-from cafast import compress, corr, pipeline  # noqa: E402
-from cafast.cnmf import run_cnmf  # noqa: E402
-from cafast.factors import Factors  # noqa: E402
-from cafast.params import RUN_METADATA_KEYS, Params  # noqa: E402
-from cafast.report import StageTimer  # noqa: E402
-from cafast.tiles import TileStore  # noqa: E402
+from caanfast import compress, corr, pipeline  # noqa: E402
+from caanfast.cnmf import run_cnmf  # noqa: E402
+from caanfast.factors import Factors  # noqa: E402
+from caanfast.params import RUN_METADATA_KEYS, Params  # noqa: E402
+from caanfast.report import StageTimer  # noqa: E402
+from caanfast.tiles import TileStore  # noqa: E402
 
 
 def parse_sets(items: list[str]) -> dict[str, Any]:
@@ -77,7 +77,7 @@ def main() -> None:
     with timer("corr_setup"):
         fc = corr.FactorCorr(fac, params.noise_freq)
     s = pipeline._seeds(fac, fc, params, timer)
-    A, C = pipeline._init_units(fac, fc, s, params, timer)
+    A, C = pipeline.init_units(fac, fc, s, params, timer)
     with timer("cnmf"):
         res = run_cnmf(fac, A, C, params, fc.traces_corr)
     timer.counts.update(res.counts)

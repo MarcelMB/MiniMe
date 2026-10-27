@@ -1,12 +1,12 @@
-"""Compare a cafast run with a Minian result on a real session (no ground truth).
+"""Compare a caanfast run with a Minian result on a real session (no ground truth).
 
     .venv/bin/python bench/compare_minian.py RUN_DIR MINIAN_NPZ [--fps 20] [--label NAME]
 
 ``MINIAN_NPZ`` holds ``A (K, H*W)``, ``C (K, T)`` and ``max_proj (H, W)`` (written by
 ``bench/minian_export.py --final MINIAN_DIR`` under the Minian venv). The two pipelines
-register to different references, so Minian's coordinates are mapped onto cafast's by
+register to different references, so Minian's coordinates are mapped onto caanfast's by
 phase-correlating the two max projections. Units are matched one-to-one by footprint
-centroid (``score.match_units``, 5 px) and matched traces are correlated (cafast ``YrA``
+centroid (``score.match_units``, 5 px) and matched traces are correlated (caanfast ``YrA``
 vs Minian ``C``; neither is deconvolved).
 
 Writes ``RUN_DIR/compare_minian.json`` and ``RUN_DIR/compare_minian.png``.
@@ -25,9 +25,9 @@ from scipy import sparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root: bench/ is not packaged
 from bench.score import MAX_DIST_PX, footprint_centroids, match_units  # noqa: E402
-from cafast import preprocess  # noqa: E402
+from caanfast import preprocess  # noqa: E402
 
-CAFAST_COLOR = "#2a78d6"  # categorical slot 1 (blue)
+CAANFAST_COLOR = "#2a78d6"  # categorical slot 1 (blue)
 MINIAN_COLOR = "#eb6834"  # categorical slot 2 (orange)
 INK, MUTED, GRID = "#1f1f1e", "#6b6a64", "#e4e3dd"
 
@@ -98,7 +98,7 @@ def compare(run: dict, mn: dict) -> dict:
     return {
         "offset_px": off,
         "offset_response": resp,
-        "cafast_centroids": cc,
+        "caanfast_centroids": cc,
         "minian_centroids": mc,
         "ui": ui,
         "mi": mi,
@@ -115,25 +115,25 @@ def summary(run: dict, mn: dict, res: dict) -> dict:
     s10, s01 = res["size10"], res["size01"]
     rep = run["report"]
     return {
-        "cafast_units": n_c,
+        "caanfast_units": n_c,
         "minian_units": n_m,
         "matched": n,
         "frac_minian_found": n / n_m if n_m else float("nan"),
-        "frac_cafast_matched": n / n_c if n_c else float("nan"),
+        "frac_caanfast_matched": n / n_c if n_c else float("nan"),
         "trace_corr_median": float(np.nanmedian(res["corr"])) if n else float("nan"),
         "trace_corr_q25": float(np.nanpercentile(res["corr"], 25)) if n else float("nan"),
         "match_dist_median_px": float(np.median(res["dist"])) if n else float("nan"),
         "offset_px": [float(v) for v in res["offset_px"]],
         "offset_response": res["offset_response"],
         "footprint_px_gt10pct_median": {
-            "cafast": float(np.median(s10[0])),
+            "caanfast": float(np.median(s10[0])),
             "minian": float(np.median(s10[1])),
         },
         "footprint_px_gt1pct_median": {
-            "cafast": float(np.median(s01[0])),
+            "caanfast": float(np.median(s01[0])),
             "minian": float(np.median(s01[1])),
         },
-        "cafast_wall_s": rep.get("wall_total"),
+        "caanfast_wall_s": rep.get("wall_total"),
         "frames": res["T"],
     }
 
@@ -180,17 +180,17 @@ def plot(run: dict, mn: dict, res: dict, s: dict, fps: float, label: str, out: P
     gs = fig.add_gridspec(2, 3, height_ratios=[1, 1], hspace=0.32, wspace=0.28)
     fig.suptitle(label, x=0.01, ha="left", fontsize=13, color=INK, weight="bold")
     legend = [
-        Line2D([], [], color=CAFAST_COLOR, lw=2, label=f"CaFast ({s['cafast_units']} units)"),
+        Line2D([], [], color=CAANFAST_COLOR, lw=2, label=f"CaAnFast ({s['caanfast_units']} units)"),
         Line2D([], [], color=MINIAN_COLOR, lw=2, label=f"Minian ({s['minian_units']} units)"),
     ]
 
     ax = fig.add_subplot(gs[0, 0])
     mp = run["max_proj"]
     ax.imshow(mp, cmap="gray", vmin=np.percentile(mp, 1), vmax=np.percentile(mp, 99.7))
-    _contours(ax, run["A"], H, W, np.zeros(2), CAFAST_COLOR)
+    _contours(ax, run["A"], H, W, np.zeros(2), CAANFAST_COLOR)
     _contours(ax, mn["A"], H, W, res["offset_px"], MINIAN_COLOR)
     ax.set_title(
-        "Footprints (outline at 30 % of peak) on CaFast max projection", fontsize=9, color=INK
+        "Footprints (outline at 30 % of peak) on CaAnFast max projection", fontsize=9, color=INK
     )
     ax.set_axis_off()
     ax.legend(handles=legend, loc="lower left", fontsize=7, framealpha=0.85)
@@ -200,13 +200,13 @@ def plot(run: dict, mn: dict, res: dict, s: dict, fps: float, label: str, out: P
     hi = max(np.percentile(s10[0], 99), np.percentile(s10[1], 99))
     bins = np.linspace(0, hi, 40)
     ax.hist(s10[1], bins, histtype="step", lw=2, color=MINIAN_COLOR)
-    ax.hist(s10[0], bins, histtype="step", lw=2, color=CAFAST_COLOR)
-    for v, c in ((np.median(s10[0]), CAFAST_COLOR), (np.median(s10[1]), MINIAN_COLOR)):
+    ax.hist(s10[0], bins, histtype="step", lw=2, color=CAANFAST_COLOR)
+    for v, c in ((np.median(s10[0]), CAANFAST_COLOR), (np.median(s10[1]), MINIAN_COLOR)):
         ax.axvline(v, color=c, lw=1, ls="--")
     ax.set_xlabel("footprint size: pixels above 10 % of peak")
     ax.set_ylabel("units")
     ax.set_title(
-        f"Footprint size  (median CaFast {np.median(s10[0]):.0f} px, "
+        f"Footprint size  (median CaAnFast {np.median(s10[0]):.0f} px, "
         f"Minian {np.median(s10[1]):.0f} px)",
         fontsize=9,
         color=INK,
@@ -219,7 +219,7 @@ def plot(run: dict, mn: dict, res: dict, s: dict, fps: float, label: str, out: P
         ax.hist(
             res["corr"],
             np.linspace(min(0.0, np.nanmin(res["corr"])), 1, 30),
-            color=CAFAST_COLOR,
+            color=CAANFAST_COLOR,
             edgecolor="white",
             linewidth=1,
         )
@@ -232,7 +232,7 @@ def plot(run: dict, mn: dict, res: dict, s: dict, fps: float, label: str, out: P
             color=INK,
             va="top",
         )
-    ax.set_xlabel("trace correlation (CaFast YrA vs Minian C)")
+    ax.set_xlabel("trace correlation (CaAnFast YrA vs Minian C)")
     ax.set_ylabel("matched pairs")
     ax.set_title(
         f"Matched units: {s['matched']}  (within {MAX_DIST_PX:.0f} px)", fontsize=9, color=INK
@@ -247,7 +247,7 @@ def plot(run: dict, mn: dict, res: dict, s: dict, fps: float, label: str, out: P
     t = (a + np.arange(w)) / fps / 60
     for k, r in enumerate(rows):
         for tr, c in (
-            (run["C"][res["ui"][r], a : a + w], CAFAST_COLOR),
+            (run["C"][res["ui"][r], a : a + w], CAANFAST_COLOR),
             (mn["C"][res["mi"][r], a : a + w], MINIAN_COLOR),
         ):
             z = (tr - np.median(tr)) / (np.ptp(tr) or 1)
@@ -274,17 +274,17 @@ def plot(run: dict, mn: dict, res: dict, s: dict, fps: float, label: str, out: P
     ax = fig.add_subplot(gs[1, 2])
     ax.set_axis_off()
     lines = [
-        ("Units", f"CaFast {s['cafast_units']}   Minian {s['minian_units']}"),
+        ("Units", f"CaAnFast {s['caanfast_units']}   Minian {s['minian_units']}"),
         (
             "Matched",
             f"{s['matched']}  ({100 * s['frac_minian_found']:.0f} % of Minian, "
-            f"{100 * s['frac_cafast_matched']:.0f} % of CaFast)",
+            f"{100 * s['frac_caanfast_matched']:.0f} % of CaAnFast)",
         ),
         ("Trace corr", f"median {s['trace_corr_median']:.2f}, 25th pct {s['trace_corr_q25']:.2f}"),
         ("Match distance", f"median {s['match_dist_median_px']:.1f} px"),
         (
             "Footprint >1 % peak",
-            f"CaFast {s['footprint_px_gt1pct_median']['cafast']:.0f} px, "
+            f"CaAnFast {s['footprint_px_gt1pct_median']['caanfast']:.0f} px, "
             f"Minian {s['footprint_px_gt1pct_median']['minian']:.0f} px",
         ),
         (
@@ -292,7 +292,7 @@ def plot(run: dict, mn: dict, res: dict, s: dict, fps: float, label: str, out: P
             f"offset ({s['offset_px'][0]:.1f}, {s['offset_px'][1]:.1f}) px, "
             f"response {s['offset_response']:.2f}",
         ),
-        ("CaFast wall time", f"{s['cafast_wall_s']:.0f} s for {s['frames']} frames"),
+        ("CaAnFast wall time", f"{s['caanfast_wall_s']:.0f} s for {s['frames']} frames"),
     ]
     for i, (k, v) in enumerate(lines):
         ax.text(0, 0.95 - i * 0.12, k, fontsize=9, color=MUTED, transform=ax.transAxes)

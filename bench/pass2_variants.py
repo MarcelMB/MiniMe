@@ -2,7 +2,7 @@
 
     .venv/bin/python bench/pass2_variants.py RUN_DIR [--tiles 0 17 ...] [--noise-frames 20000]
 
-``RUN_DIR`` is a cafast run that kept ``tiles/`` (the uint8 tile store) and ``factors/``.
+``RUN_DIR`` is a caanfast run that kept ``tiles/`` (the uint8 tile store) and ``factors/``.
 Each tile is compressed the way a pass-2 worker does it (BLAS on one thread) with:
 
 - ``base``: all frames for the noise
@@ -30,9 +30,9 @@ from pathlib import Path  # noqa: E402
 import numpy as np  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cafast import compress  # noqa: E402
-from cafast.params import Params  # noqa: E402
-from cafast.tiles import TileStore, tile_grid  # noqa: E402
+from caanfast import compress  # noqa: E402
+from caanfast.params import Params  # noqa: E402
+from caanfast.tiles import TileStore, tile_grid  # noqa: E402
 
 VARIANTS = {
     "base": {},

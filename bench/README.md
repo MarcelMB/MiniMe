@@ -2,7 +2,7 @@
 
 Inputs -> outputs: a pipeline's units (footprints `A`, traces, motion `shifts`) -> `score.json`
 (recall, precision, F1, trace correlation) against the ground truth of the synthetic session
-(`cafast.testing.synth`, dataset meta in `<raw>/../meta.json`).
+(`caanfast.testing.synth`, dataset meta in `<raw>/../meta.json`).
 
 ## Scoring method (`bench/score.py`)
 - Footprint centroids are intensity-weighted. Units are matched one-to-one to true centroids,
@@ -57,17 +57,17 @@ $MINIAN_PY bench/minian_redo_spatial.py $OUT --scratch $SCRATCH
 # 3. export (A_new from SCRATCH, C_new and motion from the run) -> $OUT/minian_units.npz
 $MINIAN_PY bench/minian_export.py $OUT A_new C_new $SCRATCH
 # 4. score under our venv -> $OUT/score.json
-.venv/bin/cafast score --minian $OUT/minian_units.npz --raw $RAW
-# score a cafast run (--raw only needed if RUN_DIR/params.json is missing)
-.venv/bin/cafast score RUN_DIR [--raw $RAW]                         # -> RUN_DIR/score.json
+.venv/bin/caanfast score --minian $OUT/minian_units.npz --raw $RAW
+# score a caanfast run (--raw only needed if RUN_DIR/params.json is missing)
+.venv/bin/caanfast score RUN_DIR [--raw $RAW]                         # -> RUN_DIR/score.json
 ```
 `bench/minian_export.py` refuses to export if `A_new` contains NaN. Score dicts carry
 `alignment_ok`: False (plus a stderr warning) when neither offset sign gives a median matched
 distance below 1.5 px, i.e. the motion offset could not be verified.
 
-## cafast runs (Task 12, commit 16f6ac8, M1 Max, 10 cores)
+## caanfast runs (Task 12, commit 16f6ac8, M1 Max, 10 cores)
 
-Fresh runs (no motion sidecar reused), default params, scored with `cafast score`.
+Fresh runs (no motion sidecar reused), default params, scored with `caanfast score`.
 
 | session | workers | wall | pass 1 | pass 2 | window 2 (cnmf) | units | recall | precision | F1 | trace corr median / q25 |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -168,7 +168,7 @@ flickering cells and a fixed template goes stale over 33 min (quality 0.49 -> 0.
 
 | registration image, session-start template | jumps >= 3 px | frames at +-19 px |
 |---|---|---|
-| `fftonly_proc` (tophat before motion, old cafast order) | 4305 | 2364 |
+| `fftonly_proc` (tophat before motion, old caanfast order) | 4305 | 2364 |
 | `minizero_preprocess` without tophat (min-proj subtracted) | 2114 | 1423 |
 | destriped, band-pass 1-6 px (`motion_before_tophat`, new default) | 5 | 0 |
 
@@ -180,22 +180,22 @@ end-to-end test keeps the old order.
 
 **vs the existing Minian run** (`bench/compare_minian.py`, params `params_wl25_destriped.json`:
 Minian's WL25 set, `median_ksize 3`, `tophat_wnd 8`, `seeds_diff_thres 8` for gain 1, no
-upper size limit): CaFast 132 units / Minian 158, 115 matched (73 % of Minian, 87 % of
-CaFast), trace corr median 0.80 (CaFast `YrA` vs Minian `C`, neither deconvolved), 49 s.
-Open: CaFast footprints are larger (median 188 vs 54 px above 10 % of peak, 601 vs 67 above
-1 %), so Minian's `size_thres` upper limit 250 drops every CaFast unit. Minian's run is not
+upper size limit): CaAnFast 132 units / Minian 158, 115 matched (73 % of Minian, 87 % of
+CaAnFast), trace corr median 0.80 (CaAnFast `YrA` vs Minian `C`, neither deconvolved), 49 s.
+Open: CaAnFast footprints are larger (median 188 vs 54 px above 10 % of peak, 601 vs 67 above
+1 %), so Minian's `size_thres` upper limit 250 drops every CaAnFast unit. Minian's run is not
 a clean reference: extra unit merge, `drop_correlated_pairs`, post-hoc filters, and its
 `motion.zarr` is all NaN.
 
 **Minian v2.0 timing on WL25** (`bench/minian_real.py`, Minian venv, 4 workers x 2 threads):
 378 s for the 39,822 frames (+ about 25 s of `minizero_preprocess` for its input), 165 units,
-12.4 GB peak disk; cafast on the destriped video: 49 s. Minian skips its own preprocessing
+12.4 GB peak disk; caanfast on the destriped video: 49 s. Minian skips its own preprocessing
 but runs motion (the input is not motion-corrected; the original WL25 run also entered at
-`estimate_motion`). Its last stages overlapped a cafast run, so 378 s is slightly high. Two
+`estimate_motion`). Its last stages overlapped a caanfast run, so 378 s is slightly high. Two
 fixes were needed: the merge results are saved under new names (`save_minian(overwrite=True)`
 deleted `A_init` / `C_init` while they were still being read), and Minian's `LassoLars` gets
 the unit-norm column scaling that scikit-learn < 1.2 applied by default (a local change in
-`minian_v2.0/minian/cnmf.py`, uncommitted there). After the same fix in cafast (`61a63ce`):
+`minian_v2.0/minian/cnmf.py`, uncommitted there). After the same fix in caanfast (`61a63ce`):
 footprints 67 vs 51 px above 10 % of peak, 110 of 165 Minian units matched, trace corr
 median 0.83.
 
@@ -397,7 +397,7 @@ Unclipped vs base (units matched by centroid; every unit matched, same unit coun
 | WL27 | 0.062 | 0.011 | 0.9997 / 0.99996 | 0.9994 / 0.99996 |
 | WL25 | 0.058 | 0.011 | 0.9995 / 0.99995 | 0.9984 / 0.99993 |
 
-Synth score (`cafast score`): base, threads and unclipped all F1 0.9587 (403 units, recall
+Synth score (`caanfast score`): base, threads and unclipped all F1 0.9587 (403 units, recall
 0.938, precision 0.980), trace corr median 0.9941, q25 0.9893 / 0.9893 / 0.9894. WL25 vs
 Minian (`compare_minian.py`): 124 of 158 matched for base and unclipped, trace corr median
 0.813 / 0.812.

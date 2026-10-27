@@ -1,6 +1,6 @@
-# cafast: end-to-end factor-first pipeline
+# caanfast: end-to-end factor-first pipeline
 
-Status: approved design, 2026-10-16. Working package name `cafast` (final name
+Status: approved design, 2026-10-16. Working package name `caanfast` (final name
 undecided; one search-and-replace renames it). Sibling repo of `minian_v2.0`; that repo's
 `scripts/bench_*` directories hold every measured prototype this design builds on, and
 its Obsidian note "Minian spatial update speedup" holds the measurements.
@@ -16,7 +16,7 @@ traces, in two windows:
 - **Window 2, CNMF on factors.** Seeds, PNR, GMM, seed merge, initA, initC, unit merge,
   background, spatial update, traces, merge, two iterations. Never rereads the movie.
 
-Done means: `cafast run <raw_dir>` finishes unattended on a 10-min synthetic session
+Done means: `caanfast run <raw_dir>` finishes unattended on a 10-min synthetic session
 and on the 5-min session, writes `A, C, b, f` and a report, and its cells score at least
 as well as original Minian against the synthetic ground truth. Out of scope: temporal
 update (OASIS, later), `ks_refine` (dropped), browser UI, PyPI shipping, non-rigid motion,
@@ -25,10 +25,10 @@ real-data parameter tuning.
 ## 2. Repository
 
 ```
-cafast/
+caanfast/
   pyproject.toml            # hatchling; deps: numpy scipy numba opencv-python-headless
                             # scikit-learn pandas typer; dev: pytest ruff
-  src/cafast/
+  src/caanfast/
     io.py                   # AVI segment reader, raw-folder listing, content hash
     tiles.py                # tile grid, pack/unpack, tile store (part files)
     preprocess.py           # median denoise, 31x31 square tophat
@@ -201,7 +201,7 @@ svd_k0 40, svd_power_iter 1, rank_rho_min 0.2, rank_z 4, seeds_wnd 1000, seeds_s
 seeds_max_wnd 15, seeds_diff_thres 3, noise_freq 0.06, pnr_thres "auto", merge_dist 10,
 merge_corr 0.8, inita_corr 0.8, inita_wnd 10, unit_merge_corr 0.8 (init) / 0.9 (loop),
 dl_wnd 10, sparse_penal 0.01, size_thres (25, None), n_iter 2, workers 1`.
-`cafast run --params p.json` overrides; the resolved set is written to `params.json`.
+`caanfast run --params p.json` overrides; the resolved set is written to `params.json`.
 
 ## 7. Correctness gates
 

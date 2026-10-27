@@ -13,9 +13,9 @@ from pathlib import Path
 
 import numpy as np
 
-from cafast.autotune import run as at
-from cafast.autotune import score
-from cafast.tune import figures, minian
+from caanfast.autotune import run as at
+from caanfast.autotune import score
+from caanfast.tune import figures, minian
 
 
 def check_rates(run_dir: Path, name: str, npz: Path, checks: score.Checks) -> dict:

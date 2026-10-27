@@ -6,3 +6,9 @@ __pycache__/
 *.egg-info/
 processed/
 .claude/
+web/node_modules/
+web/test-results/
+web/playwright-report/
+web/e2e/.data/
+src/caanfast/serve/static/
+dist/

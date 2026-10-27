@@ -4,7 +4,7 @@ import pytest
 import scipy.sparse as sps
 from scipy.signal import lfilter
 
-from cafast.autotune import score
+from caanfast.autotune import score
 
 H = W = 50
 

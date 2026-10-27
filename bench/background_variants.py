@@ -4,7 +4,7 @@
     .venv/bin/python bench/background_variants.py compare BASE_DIR OTHER_DIR
 
 ``run`` writes ``OUT_DIR/{cnmf/, params.json, report.json}`` and symlinks ``factors/`` and
-``motion/`` from ``SRC_RUN`` so that ``cafast score OUT_DIR`` and ``bench/compare_minian.py``
+``motion/`` from ``SRC_RUN`` so that ``caanfast score OUT_DIR`` and ``bench/compare_minian.py``
 work on it. ``report.json`` holds the ``cnmf`` stage seconds and every ``update_background``
 call's seconds. ``compare`` prints (and writes ``OTHER_DIR/compare_bg.json``) the max relative
 difference of ``b`` and ``f`` and the per-unit trace correlation of ``C`` and ``YrA`` (units
@@ -27,10 +27,10 @@ import scipy.sparse as sps
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root: bench/ is not packaged
 from bench.score import match_units  # noqa: E402
-from cafast import cnmf, corr, init, pipeline  # noqa: E402
-from cafast.factors import Factors  # noqa: E402
-from cafast.params import RUN_METADATA_KEYS, Params  # noqa: E402
-from cafast.report import StageTimer  # noqa: E402
+from caanfast import cnmf, corr, init, pipeline  # noqa: E402
+from caanfast.factors import Factors  # noqa: E402
+from caanfast.params import RUN_METADATA_KEYS, Params  # noqa: E402
+from caanfast.report import StageTimer  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Run
@@ -70,7 +70,7 @@ def run(src: Path, out: Path, threads: int | None, clip: bool) -> dict[str, Any]
     with timer("corr_setup"):
         fc = corr.FactorCorr(fac, params.noise_freq)
     s = pipeline._seeds(fac, fc, params, timer)
-    A, C = pipeline._init_units(fac, fc, s, params, timer)
+    A, C = pipeline.init_units(fac, fc, s, params, timer)
     calls: list[float] = []
     _timed_background(calls, threads)
     with timer("cnmf"):

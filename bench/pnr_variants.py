@@ -27,9 +27,9 @@ import numpy as np
 from sklearn.mixture import GaussianMixture
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cafast import seeds as sd  # noqa: E402
-from cafast.factors import Factors  # noqa: E402
-from cafast.params import Params  # noqa: E402
+from caanfast import seeds as sd  # noqa: E402
+from caanfast.factors import Factors  # noqa: E402
+from caanfast.params import Params  # noqa: E402
 
 Q = (0.1, 99.9)
 
