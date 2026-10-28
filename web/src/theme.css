@@ -68,7 +68,8 @@ a { color: var(--accent); }
   max-width: 1280px; margin: 0 auto; padding: 16px 16px 0;
   display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
 }
-.brand { font-weight: 600; letter-spacing: -0.01em; text-decoration: none; color: var(--text); font-size: 16px; }
+.brand { display: flex; text-decoration: none; }
+.brand img { display: block; height: 26px; width: auto; }
 .topbar nav { display: flex; gap: 8px; }
 
 .page { max-width: 1280px; margin: 0 auto; padding: 20px 16px 48px; display: flex; flex-direction: column; gap: 20px; }

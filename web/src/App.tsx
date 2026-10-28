@@ -10,7 +10,13 @@ export function App() {
     <>
       <header className="topbar">
         <a className="brand" href={href({ name: "home" })}>
-          MiniMe
+          <picture>
+            <source
+              media="(prefers-color-scheme: dark)"
+              srcSet="./minime-logo-dark.svg"
+            />
+            <img src="./minime-logo.svg" alt="MiniMe" />
+          </picture>
         </a>
         <nav aria-label="Main">
           <a className="btn" href={href({ name: "home" })}>

@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/MarcelMB/MiniMe/main/docs/assets/minime-logo-dark-1200.png">
+    <img alt="MiniMe" src="https://raw.githubusercontent.com/MarcelMB/MiniMe/main/docs/assets/minime-logo-1200.png" width="420">
+  </picture>
+</p>
+
 # MiniMe (Miniscope Matrix-factorization Engine)
 
 Formerly CaFast / CaAnFast; runs written under the old name still load.
