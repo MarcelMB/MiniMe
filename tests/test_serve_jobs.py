@@ -133,6 +133,8 @@ def test_shutdown_stops_the_running_job(tmp_path, raw):
     assert jm.get(b.id).status == "queued"  # the worker picks nothing after shutdown
     saved = {d["id"]: d for d in json.loads((tmp_path / "cache" / "jobs.json").read_text())}
     assert saved[a.id]["status"] == "interrupted"
+    jm2 = JobManager(tmp_path / "cache", command=_sleeper)  # the next server
+    assert jm2.get(b.id).status == "cancelled" and "before" in jm2.get(b.id).error
 
 
 def test_app_lifespan_shuts_the_job_runner_down(tmp_path, raw):

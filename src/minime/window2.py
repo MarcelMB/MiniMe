@@ -44,8 +44,8 @@ FACTOR_PARAMS = (
     "rank_rho_min",
     "rank_z",
     "noise_frames",
+    "noise_freq",  # also sets pass 2's per-pixel noise (spatial penalty, PNR)
 )
-SEED_WINDOW_PARAMS = ("seeds_wnd", "seeds_stp")  # must fall on the stored block edges
 EXECUTION_PARAMS = ("workers", "sub_batch")
 WINDOW2_PARAMS = tuple(
     f.name for f in fields(Params) if f.name not in FACTOR_PARAMS + EXECUTION_PARAMS

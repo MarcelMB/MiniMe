@@ -77,7 +77,7 @@ HELP: dict[str, str] = {
     "n_iter": "CNMF iterations (spatial + temporal update).",
     "background_clip": "Background of the clipped residual as Minian (about 2x slower).",
     "workers": "Worker processes; about the number of CPU cores minus one or two.",
-    "sub_batch": "Units per batch in the temporal update.",
+    "sub_batch": "Frames per pass-1 sub-batch.",
 }
 
 

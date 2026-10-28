@@ -169,6 +169,12 @@ def test_find_runs_skips_library(tmp_path, tiny_run):
     assert find_runs(tmp_path) == [tmp_path / "data" / "t"]
 
 
+def test_find_runs_reaches_collection_session_processed_run(tmp_path, tiny_run):
+    run = tmp_path / "coll" / "sess" / "processed" / "r"
+    shutil.copytree(tiny_run, run)
+    assert find_runs(tmp_path) == [run]
+
+
 def test_only_the_two_most_recent_runs_keep_their_heavy_data(run_copy, cache_dir):
     reg = Registry(cache_dir)
     paths = [run_copy]

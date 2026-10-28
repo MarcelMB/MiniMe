@@ -11,6 +11,12 @@ def test_segments_and_probe(tiny_session):
     assert info.segment_frames == [100, 100, 100] and info.fps == 30
 
 
+def test_list_segments_skips_other_avi_names(tmp_path):
+    for n in ("1.avi", "0.avi", "10.avi", "._0.avi", "behavior.avi"):
+        (tmp_path / n).touch()
+    assert [s.name for s in io.list_segments(tmp_path)] == ["0.avi", "1.avi", "10.avi"]
+
+
 def test_read_avi_roundtrip(tiny_session):
     from minime.testing import synth
 

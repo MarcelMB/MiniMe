@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import scipy.sparse as sps
 
@@ -35,7 +37,9 @@ def init_A(run: RunView) -> sps.csr_matrix | None:
 def compute_seeds_and_init(run: RunView) -> None:
     """Rerun the seed and init stages on the saved factors (~2.5 min on 3 h) into the cache."""
     fac = run.factors
-    p = Params.from_json(run.path / "params.json")
+    doc = json.loads((run.path / "params.json").read_text())
+    doc.pop("sparse_penal", None)  # older runs; seeds and init do not use it
+    p = Params.from_dict(doc, source=str(run.path / "params.json"))
     fc = corr.FactorCorr(fac, p.noise_freq)
     timer = StageTimer()
     kept: dict[str, np.ndarray] = {}

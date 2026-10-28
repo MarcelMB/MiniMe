@@ -43,6 +43,14 @@ def test_pnr_flags_noise_and_flat_traces():
     assert score.trace_pnr(np.zeros((1, 100)))[0] == 0.0  # flat: 0, not inf
 
 
+def test_pnr_of_clipped_noise_is_finite_and_low():
+    # YrA is clipped at 0: a noise trace at 0 most of the time must not score inf
+    rng = np.random.default_rng(2)
+    C = np.clip(rng.normal([[-1.0], [-0.5], [0.0]], 1, (3, 4000)), 0, None)
+    pnr = score.trace_pnr(C)
+    assert np.isfinite(pnr).all() and (pnr < score.Checks(8).pnr_min).all(), pnr
+
+
 def test_size_and_pieces():
     A = _footprints(
         [

@@ -68,14 +68,14 @@ def window_projection(block_max: np.ndarray, i0: int, i1: int) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def _disk(radius: int) -> np.ndarray:
+def disk(radius: int) -> np.ndarray:
     """Binary disk structuring element of the given radius (uint8, (2r+1, 2r+1))."""
     y, x = np.ogrid[-radius : radius + 1, -radius : radius + 1]
     return (x * x + y * y <= radius * radius).astype(np.uint8)
 
 
 def disk_kernels(k0: int, k1: int) -> list[np.ndarray]:
-    return [_disk(k) for k in range(k0, k1)]
+    return [disk(k) for k in range(k0, k1)]
 
 
 def local_max_union(fm: np.ndarray, kernels: list[np.ndarray], diff: float) -> np.ndarray:

@@ -15,7 +15,8 @@ import numpy as np
 from scipy import sparse
 
 from minime import preprocess
-from minime.score import MAX_DIST_PX, footprint_centroids, match_units
+from minime.autotune.score import size_above
+from minime.score import MAX_DIST_PX, footprint_centroids, match_units, row_corr
 
 # ---------------------------------------------------------------------------
 # Loading and alignment
@@ -57,20 +58,6 @@ def projection_offset(ref: np.ndarray, mov: np.ndarray) -> tuple[np.ndarray, flo
 # ---------------------------------------------------------------------------
 
 
-def footprint_sizes(A: sparse.csr_matrix, frac: float) -> np.ndarray:
-    """Pixels per footprint above ``frac`` of its own maximum."""
-    d = A.toarray()
-    return (d > frac * d.max(axis=1, keepdims=True)).sum(axis=1)
-
-
-def row_corr(x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    x = x - x.mean(axis=1, keepdims=True)
-    y = y - y.mean(axis=1, keepdims=True)
-    den = np.linalg.norm(x, axis=1) * np.linalg.norm(y, axis=1)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        return np.where(den > 0, (x * y).sum(axis=1) / den, np.nan)
-
-
 def compare(run: dict, mn: dict) -> dict:
     H, W = run["H"], run["W"]
     off, resp = projection_offset(run["max_proj"], mn["max_proj"])
@@ -90,8 +77,8 @@ def compare(run: dict, mn: dict) -> dict:
         "corr": corr,
         "dist": dist,
         "T": T,
-        "size10": (footprint_sizes(run["A"], 0.1), footprint_sizes(mn["A"], 0.1)),
-        "size01": (footprint_sizes(run["A"], 0.01), footprint_sizes(mn["A"], 0.01)),
+        "size10": (size_above(run["A"], 0.1), size_above(mn["A"], 0.1)),
+        "size01": (size_above(run["A"], 0.01), size_above(mn["A"], 0.01)),
     }
 
 

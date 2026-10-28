@@ -14,8 +14,12 @@ import numpy as np
 
 
 def list_segments(raw_dir: Path) -> list[Path]:
-    """``*.avi`` files of ``raw_dir`` sorted by integer stem."""
-    return sorted(Path(raw_dir).glob("*.avi"), key=lambda p: int(p.stem))
+    """``N.avi`` files of ``raw_dir`` sorted by integer stem.
+
+    Other ``.avi`` names are skipped: macOS ``._0.avi`` files, a ``behavior.avi``.
+    """
+    segs = [p for p in Path(raw_dir).glob("*.avi") if p.stem.isdigit()]
+    return sorted(segs, key=lambda p: int(p.stem))
 
 
 # a codec whose raw decode differs from its BGR->gray decode by more than this is read via BGR
@@ -176,7 +180,7 @@ def probe(raw_dir: Path) -> RawInfo:
     height, width = (via_bgr if bgr else first_frame(segments[0], False)).shape
     counts = [frame_count(s) for s in segments[:-1]]
     counts.append(decoded_frame_count(segments[-1], bgr))
-    meta = Path(raw_dir).parent / "meta.json"
+    meta = Path(os.path.abspath(raw_dir)).parent / "meta.json"
     fps = float(json.loads(meta.read_text())["fps"]) if meta.exists() else None
     return RawInfo(height, width, sum(counts), counts, segments, fps, bgr)
 

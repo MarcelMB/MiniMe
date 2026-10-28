@@ -53,8 +53,12 @@ def test_seeds_and_units(client, tiny_run):
 
 
 def test_seeds_of_an_older_run_answer_202_then_200(client, run_copy):
+    import json
+
     shutil.rmtree(run_copy / "seeds")
     shutil.rmtree(run_copy / "init")
+    pj = run_copy / "params.json"  # older runs still carry Minian's sparse_penal
+    pj.write_text(json.dumps({**json.loads(pj.read_text()), "sparse_penal": 0.01}))
     rid = _open(client, run_copy)
     assert client.get(f"/api/runs/{rid}/seeds").status_code == 202
     assert wait_ok(client, f"/api/runs/{rid}/seeds").status_code == 200

@@ -61,14 +61,15 @@ def initA(fc: FactorCorr, seeds: pd.DataFrame, thres_corr: float, wnd: int) -> s
 
 
 def centroids(A: sps.csr_matrix, H: int, W: int) -> np.ndarray:
-    """(K, 2) float64 intensity-weighted (row, col) centre of each footprint."""
+    """(K, 2) float64 intensity-weighted (row, col) centre of each footprint; NaN if empty."""
     A = sps.csr_matrix(A, dtype=np.float64)
     if A.shape[1] != H * W:
         raise ValueError(f"A has {A.shape[1]} columns, expected H * W = {H * W}")
     pix = np.arange(H * W)
     coords = np.stack([pix // W, pix % W], axis=1).astype(np.float64)  # (P, 2)
     mass = np.asarray(A.sum(axis=1)).ravel()
-    return (A @ coords) / mass[:, None]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(mass[:, None] > 0, (A @ coords) / mass[:, None], np.nan)
 
 
 # ---------------------------------------------------------------------------

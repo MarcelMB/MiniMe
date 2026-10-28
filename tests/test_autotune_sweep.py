@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import re
 
 import numpy as np
 import pandas as pd
@@ -101,8 +102,18 @@ def test_failed_settings_are_recorded_and_skipped(tiny_w2_run):
     assert all(t.values["pnr_thres"] == 1e9 for t in failed)
 
 
-def test_all_failed_step_raises(tiny_w2_run):
+def test_all_failed_step_falls_back_to_the_run(tiny_w2_run):
     sess = window2.Window2Session(tiny_w2_run)
+    grids = dataclasses.replace(SMALL, pnr_thres=(1e9,))
+    sw = sweep.Sweep(sess, score.Checks(D), grids)
+    assert sw.run() == sess.base
+    assert sw.final is sw.run_trial and not sw.better_than_run
+    assert re.search("seeds.*no seeds survived", sw.search_error)
+
+
+def test_all_failed_step_raises_when_the_run_failed_too(tiny_w2_run):
+    sess = window2.Window2Session(tiny_w2_run)
+    sess.base = dataclasses.replace(sess.base, pnr_thres=1e9)
     grids = dataclasses.replace(SMALL, pnr_thres=(1e9,))
     with pytest.raises(RuntimeError, match="seeds.*no seeds survived"):
         sweep.Sweep(sess, score.Checks(D), grids).run()

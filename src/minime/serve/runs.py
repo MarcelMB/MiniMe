@@ -32,8 +32,11 @@ def is_run(path: Path) -> bool:
     return all((Path(path) / m).is_file() for m in MARKERS)
 
 
-def find_runs(root: Path, max_depth: int = 3) -> list[Path]:
-    """Run folders at or below ``root`` (never inside a run), newest report first."""
+def find_runs(root: Path, max_depth: int = 4) -> list[Path]:
+    """Run folders at or below ``root`` (never inside a run), newest report first.
+
+    Depth 4 reaches ``root/collection/session/processed/run``.
+    """
     found: list[Path] = []
 
     def walk(d: Path, depth: int) -> None:

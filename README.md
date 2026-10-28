@@ -22,7 +22,7 @@ Released versions: `pip install minime-cnmf` (the import and the command are `mi
 
 ## Run
 
-    .venv/bin/minime run RAW_DIR --workers 6 --name NAME [--params p.json] [--keep-store]
+    .venv/bin/minime run RAW_DIR --workers 6 --name NAME [--params p.json] [--keep-store] [--overwrite]
     .venv/bin/minime score RAW_DIR/../processed/NAME     # synthetic sessions only
 
 **Input:** `RAW_DIR` = a folder of `N.avi` grayscale uint8 segments (Miniscope DAQ layout,
@@ -61,7 +61,7 @@ the rest come from `RUN_DIR/params.json`. Output: `RUN_DIR/reruns/NAME/` with `p
 footprints after initA, init merge and every spatial update and merge) and symlinks
 `factors`, `motion` to the source run, so the tools that read a run work on it.
 Parameters that shaped the factors (`median_ksize`, `tophat_wnd`, `motion_*`,
-`template_frames`, `tile`, `svd_*`, `rank_*`) are refused; `seeds_wnd` / `seeds_stp` only
+`template_frames`, `tile`, `svd_*`, `rank_*`, `noise_freq`) are refused; `seeds_wnd` / `seeds_stp` only
 if their windows fall on the block edges pass 1 stored. Same parameters give the same result
 as the full run (tested).
 

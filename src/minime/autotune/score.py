@@ -6,6 +6,7 @@ Footprint metrics are shared with the ``minime tune`` figures (``tune/figures.py
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import dataclass
 
 import cv2
@@ -62,12 +63,18 @@ def n_parts(A: sps.csr_matrix, H: int, W: int, frac: float = SIZE_FRAC) -> np.nd
 def trace_pnr(C: np.ndarray) -> np.ndarray:
     """(K,) peak-to-noise of traces: (99.9th - 0.1th percentile) / noise std from diffs.
 
+    Diffs between two frames that are both 0 are left out of the noise: ``YrA`` is clipped
+    at 0, and a trace at 0 most of the time would otherwise get noise 0 and score inf.
     A flat trace scores 0; a trace with range but no diff noise scores inf.
     """
     if C.shape[0] == 0:
         return np.zeros(0)
     lo, hi = np.percentile(C, [0.1, 99.9], axis=1)
-    noise = np.median(np.abs(np.diff(C, axis=1)), axis=1) / 0.6745 / np.sqrt(2)
+    d = np.abs(np.diff(C, axis=1)).astype(np.float64)
+    d[(C[:, 1:] == 0) & (C[:, :-1] == 0)] = np.nan
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-nan row: no noise, as flat
+        noise = np.nan_to_num(np.nanmedian(d, axis=1)) / 0.6745 / np.sqrt(2)
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.where(noise > 0, (hi - lo) / noise, np.where(hi > lo, np.inf, 0.0))
 

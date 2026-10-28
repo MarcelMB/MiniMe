@@ -13,9 +13,9 @@ from pathlib import Path
 import numpy as np
 from scipy import sparse
 
+from minime.init import centroids
 from minime.testing import synth
 
-BASELINE_F0 = 20.0  # unbleached baseline; score_run uses setup.F0 (per frame)
 MAX_DIST_PX = 5.0
 SELF_CHECK_PX = 1.5
 
@@ -62,19 +62,9 @@ def summarise(ui: np.ndarray, ti: np.ndarray, n_units: int, n_true: int) -> dict
 
 
 def footprint_centroids(A: sparse.spmatrix, H: int, W: int) -> np.ndarray:
-    """Intensity-weighted (y, x) centroid of each row of a (K, H*W) row-major footprint matrix."""
-    A = sparse.csr_matrix(A)
-    K = A.shape[0]
-    out = np.full((K, 2), np.nan)
-    w = np.abs(A.data).astype(np.float64)
-    rows = np.repeat(np.arange(K), np.diff(A.indptr))
-    tot = np.bincount(rows, weights=w, minlength=K)
-    ys = np.bincount(rows, weights=w * (A.indices // W), minlength=K)
-    xs = np.bincount(rows, weights=w * (A.indices % W), minlength=K)
-    ok = tot > 0
-    out[ok, 0] = ys[ok] / tot[ok]
-    out[ok, 1] = xs[ok] / tot[ok]
-    return out
+    """Intensity-weighted (y, x) centroid of each row of a (K, H*W) row-major footprint matrix;
+    weights are ``|A|``, NaN for an empty row."""
+    return centroids(abs(sparse.csr_matrix(A)), H, W)
 
 
 def motion_fit(est: np.ndarray, true: np.ndarray) -> tuple[np.ndarray, float, int]:
@@ -117,7 +107,8 @@ def _truth_traces(setup: synth.SynthSetup) -> tuple[np.ndarray, np.ndarray]:
     return out, ok
 
 
-def _trace_corr(traces: np.ndarray, truth: np.ndarray) -> np.ndarray:
+def row_corr(traces: np.ndarray, truth: np.ndarray) -> np.ndarray:
+    """Pearson correlation of each row pair; NaN for a flat row."""
     a = traces - traces.mean(axis=1, keepdims=True)
     b = truth - truth.mean(axis=1, keepdims=True)
     den = np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1)
@@ -166,7 +157,7 @@ def score_run(
     n_units, n_true = A.shape[0], len(true_c)
     out = summarise(ui, ti, n_units, n_true)
     truth, ok = _truth_traces(setup)
-    corr = _trace_corr(traces[ui][:, ok], truth[ti][:, ok]) if len(ui) else np.array([np.nan])
+    corr = row_corr(traces[ui][:, ok], truth[ti][:, ok]) if len(ui) else np.array([np.nan])
     out.update(
         n_units=int(n_units),
         n_true=int(n_true),

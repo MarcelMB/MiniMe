@@ -79,6 +79,11 @@ class Params:
     workers: int = 1
     sub_batch: int = 100
 
+    def __post_init__(self) -> None:
+        # motion._prep only knows 2x downsampling, but estimate scales shifts by motion_down
+        if self.motion_down not in (1, 2):
+            raise ValueError(f"motion_down must be 1 or 2, not {self.motion_down!r}")
+
     def asdict(self) -> dict[str, Any]:
         return asdict(self)
 

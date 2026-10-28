@@ -257,6 +257,7 @@ class Sweep:
     run_trial: Trial | None = None
     final: Trial | None = None
     better_than_run: bool = False
+    search_error: str | None = None  # why the search stopped when it fell back to the run
     timer: StageTimer = field(default_factory=StageTimer)
     fc: corr.FactorCorr | None = None
 
@@ -340,11 +341,25 @@ class Sweep:
     # ---- the search ----------------------------------------------------------------
 
     def run(self) -> Params:
-        """Run every step; returns the proposed parameters (``self.final`` is its trial)."""
-        g, base, run = self.grids, self.base, self.session.base
-        self.fc = self.session.factor_corr(base.noise_freq, self.timer)
+        """Run every step; returns the proposed parameters (``self.final`` is its trial).
+
+        When every setting of a step fails (sizes derived from a wrong ``diameter``, say),
+        the run's own parameters are proposed if they worked; otherwise the error is raised.
+        """
+        run = self.session.base
+        self.fc = self.session.factor_corr(self.base.noise_freq, self.timer)
         run_values = {k: getattr(run, k) for k in SEARCHED}
         self.run_trial = self._try("run", run_values, self._full, base=run)
+        try:
+            return self._search(run_values)
+        except RuntimeError as e:
+            if self.run_trial.score is None:
+                raise
+            self.final, self.better_than_run, self.search_error = self.run_trial, False, str(e)
+            return run
+
+    def _search(self, run_values: dict[str, Any]) -> Params:
+        g, base, run = self.grids, self.base, self.session.base
         v = self._explore("seeds", run_values, ("seeds_diff_thres", "pnr_thres"), self._init)
         s_pnr = pipeline.seeds_unmerged(self.session.fac, self._params(v), StageTimer())
 

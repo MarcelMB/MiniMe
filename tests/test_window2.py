@@ -63,7 +63,8 @@ def test_rerun_applies_window2_overrides(tiny_w2_run, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "change", [{"tile": 16}, {"median_ksize": 5}, {"motion_bandpass": (2.0, 8.0)}]
+    "change",
+    [{"tile": 16}, {"median_ksize": 5}, {"motion_bandpass": (2.0, 8.0)}, {"noise_freq": 0.1}],
 )
 def test_rerun_refuses_changed_factor_params(tiny_w2_run, change):
     prm = window2.run_params(tiny_w2_run)

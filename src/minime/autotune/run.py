@@ -143,6 +143,7 @@ def autotune(
         "score": score.summarize(flags),
         "run_score": sw.run_trial.score,  # None when the run's own parameters failed
         "better_than_run": sw.better_than_run,
+        "search_error": sw.search_error,
         "n_trials": len(sw.trials),
         "wall_s": round(time.perf_counter() - t0, 1),
     }

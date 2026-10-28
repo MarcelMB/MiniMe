@@ -279,3 +279,42 @@ def test_run_params_json_roundtrips(tmp_path):
     (tmp_path / "bad.json").write_text(json.dumps({"tile": 32, "tiel": 16}))
     with pytest.raises(ValueError, match="tiel"):
         Params.from_json(tmp_path / "bad.json")
+
+
+def test_block_range():
+    edges = np.array([0, 50, 100, 150])
+    assert pass1._block_range(edges, 0, 150) == (0, 3)
+    assert pass1._block_range(edges, 60, 40) == (1, 2)
+    assert pass1._block_range(edges, 40, 20) == (0, 2)
+    assert pass1._block_range(edges, 100, 0) == (2, 2)  # no frames: no blocks
+
+
+def test_run_pass1_with_an_empty_last_segment_matches_one_worker(tmp_path):
+    import cv2
+
+    from minime.testing import synth
+
+    raw = tmp_path / "raw"
+    synth.write_session(raw, minutes=300 / 30 / 60, fps=30, segment=150, seed=0, side=64)
+    # a recording that stopped right after the DAQ opened the next file
+    cv2.VideoWriter(str(raw / "2.avi"), cv2.VideoWriter_fourcc(*"GREY"), 30, (64, 64), False)
+    info = io.probe(raw)
+    assert info.segment_frames == [150, 150, 0]
+    p = Params(seeds_wnd=100, seeds_stp=50, template_frames=50)
+    tmpl = pass1.build_template(info, p)
+    grid = tiles.tile_grid(64, 64, 32)
+    res = {}
+    for w in (1, 3):
+        store = tiles.TileStore(tmp_path / f"s{w}", grid, pass1.n_parts_for(info, w))
+        res[w] = pass1.run_pass1(info, store, tmpl, p, w)
+    assert res[3].shifts.shape == (300, 2) and res[3].frames == 300
+    assert np.array_equal(res[3].shifts, res[1].shifts)
+    assert np.array_equal(res[3].block_max, res[1].block_max)
+
+
+def test_run_workers_raises_when_a_worker_dies():
+    import os
+    from concurrent.futures.process import BrokenProcessPool
+
+    with pytest.raises(BrokenProcessPool):
+        pass1.run_workers(os._exit, [(1,)])

@@ -26,7 +26,6 @@ FORM = [
             ("seeds_stp", "frames between window centres"),
             ("seeds_max_wnd", "largest local-max disk radius (px), about a cell radius"),
             ("seeds_diff_thres", "min max-min contrast around a local max (uint8 levels)"),
-            ("noise_freq", "low-pass cutoff (fraction of fs) for correlations and PNR"),
             ("pnr_thres", "seed peak-to-noise threshold, or auto (2-GMM)"),
             ("gmm_refine", "extra 2-GMM filter on seed amplitude (true / false)"),
             ("merge_dist", "seeds closer than this (px) may merge ..."),

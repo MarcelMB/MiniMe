@@ -108,6 +108,15 @@ def test_pipeline_refuses_out_dir_containing_raw(tmp_path):
     assert raw.exists()
 
 
+def test_out_dir_of_relative_raw_dir_lies_beside_it(tmp_path, monkeypatch):
+    raw = tmp_path / "sess" / "raw"
+    raw.mkdir(parents=True)
+    monkeypatch.chdir(raw)
+    assert pipeline.out_dir_for(Path("."), "t") == tmp_path / "sess" / "processed" / "t"
+    with pytest.raises(ValueError, match="inside the raw dir"):
+        pipeline._check_out_dir(Path("."), raw / "processed" / "t")
+
+
 def test_stage_timer(tmp_path):
     timer = report.StageTimer()
     with timer("a"):
@@ -140,6 +149,18 @@ def test_cli_run_wires_options(tmp_path, monkeypatch):
     assert seen["params"].tile == 32 and seen["workers"] == 3
     assert seen["run_name"] == "x" and seen["keep_store"] is True
     assert "units_final" in res.output and str(tmp_path / "out") in res.output
+
+
+def test_cli_run_refuses_existing_run_without_overwrite(tmp_path, monkeypatch):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    out = tmp_path / "processed" / "x"
+    out.mkdir(parents=True)
+    (out / "params.json").write_text("{}")
+    calls = []
+    monkeypatch.setattr(pipeline, "run", lambda *a, **kw: calls.append(1))
+    res = CliRunner().invoke(cli.app, ["run", str(raw), "--name", "x"])
+    assert res.exit_code == 1 and "--overwrite" in res.output and not calls
 
 
 @pytest.mark.parametrize("use_gmm", [False, True])
@@ -209,3 +230,16 @@ def test_reset_dir_wipes_only_empty_or_minime_dirs(tmp_path):
     with pytest.raises(ValueError, match="refusing to delete"):  # same guard from run()
         pipeline.run(raw, Params(), run_name="fake", out_root=tmp_path)
     assert (fake / "params.json").exists()
+
+
+def test_a_failed_run_removes_the_tile_store(tiny_session, tmp_path, monkeypatch):
+    from minime import pass2
+
+    def boom(*a, **kw):
+        raise RuntimeError("pass 2 failed")
+
+    monkeypatch.setattr(pass2, "run_pass2", boom)
+    p = Params(tile=32, seeds_wnd=100, seeds_stp=50, template_frames=50)
+    with pytest.raises(RuntimeError, match="pass 2"):
+        pipeline.run(tiny_session["raw_dir"], p, run_name="f", out_root=tmp_path)
+    assert (tmp_path / "f" / "motion").is_dir() and not (tmp_path / "f" / "tiles").exists()

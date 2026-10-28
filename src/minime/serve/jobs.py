@@ -25,6 +25,7 @@ from minime.serve.runs import is_run
 
 FINAL = {"done", "failed", "cancelled", "interrupted"}
 STOPPED = "the server stopped during the run"
+NOT_STARTED = "the server stopped before the run started"
 
 
 @dataclass
@@ -47,7 +48,8 @@ class Job:
 def default_command(job: Job, params_file: Path) -> list[str]:
     cmd = [sys.executable, "-m", "minime", "run", job.raw_dir]
     cmd += ["--params", str(params_file), "--name", job.name]
-    return cmd + (["--keep-store"] if job.keep_store else [])
+    cmd += ["--keep-store"] if job.keep_store else []
+    return cmd + (["--overwrite"] if job.overwrite else [])
 
 
 def _alive(pid: int) -> bool:
@@ -102,6 +104,9 @@ class JobManager:
                     _stop_group(job.pid)  # left over from a server that was killed
                 job.status, job.error = "interrupted", STOPPED
                 job.ended = job.ended or time.time()
+            elif job.status == "queued":  # never start old jobs (with overwrite) unasked
+                job.status, job.error = "cancelled", NOT_STARTED
+                job.ended = time.time()
             self.jobs[job.id] = job
         self._save()
         self._thread = threading.Thread(target=self._worker, daemon=True)

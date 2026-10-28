@@ -18,6 +18,9 @@ def run(
     workers: Annotated[int | None, typer.Option(help="Worker processes (default: params).")] = None,
     name: Annotated[str, typer.Option(help="Run name under ../processed/.")] = "minime",
     keep_store: Annotated[bool, typer.Option(help="Keep the temporary tile store.")] = False,
+    overwrite: Annotated[
+        bool, typer.Option(help="Replace an existing run of this name, its reruns and tune files.")
+    ] = False,
 ) -> None:
     """Run the pipeline on RAW_DIR; outputs go to RAW_DIR/../processed/NAME/."""
     import json
@@ -25,6 +28,12 @@ def run(
     from minime import pipeline
     from minime.params import Params
 
+    out = pipeline.out_dir_for(raw_dir, name)
+    if not overwrite and out.is_dir() and any(out.iterdir()):
+        typer.echo(
+            f"error: {out} already exists; choose another --name or pass --overwrite", err=True
+        )
+        raise typer.Exit(1)
     prm = Params.from_json(params) if params is not None else Params()
     out = pipeline.run(raw_dir, prm, run_name=name, keep_store=keep_store, workers=workers)
     counts = json.loads((out / "report.json").read_text())["counts"]
