@@ -5,7 +5,8 @@ them. Grids are built from the run's values (``relative_grids``), so every grid 
 run's value, and a grid whose best value sits at its edge is extended outward. Steps:
 ``seeds`` (seeds_diff_thres x pnr_thres, scored on the init units), ``merge`` (merge_corr x
 init_merge_corr from the best seeds, cached after pnr_refine), ``inita`` (inita_corr),
-``confirm`` (the best init settings per distinct merge_corr through CNMF), ``sparse``
+``confirm`` (the run's searched values and the best init settings per distinct merge_corr
+through CNMF), ``sparse``
 (sparse_snr on the chosen init), ``loop_merge`` (loop_merge_corr). The init-level scores only
 prune within a step; CNMF decides. Factors and FactorCorr are loaded once.
 """
@@ -24,7 +25,7 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sps
 
-from minime import corr, pipeline
+from minime import corr, pipeline, seeds
 from minime.autotune import score
 from minime.cnmf import run_cnmf
 from minime.params import Params
@@ -41,7 +42,7 @@ SEARCHED = (
     "loop_merge_corr",
 )
 CORR_KEYS = ("merge_corr", "init_merge_corr", "inita_corr", "loop_merge_corr")
-DERIVED = ("seeds_max_wnd", "inita_wnd", "dl_wnd", "merge_dist", "size_thres")
+DERIVED = ("seeds_max_wnd", "inita_wnd", "dl_wnd", "merge_dist", "merge_min_dist", "size_thres")
 STEP_OF = {
     "seeds_diff_thres": "seeds",
     "pnr_thres": "seeds",
@@ -62,6 +63,10 @@ SCALE = (0.5, 0.7, 1.0, 1.4, 2.0)  # thresholds and sparse_snr: run's value x th
 CORR_OFFSETS = (-0.1, -0.05, 0.0, 0.05, 0.1)  # correlations: run's value + these
 CORR_RANGE = (0.5, 0.98)
 PNR_ABSOLUTE = (1.0, 1.5, 2.0, 3.0)  # pnr_thres grid when the run uses "auto"
+# merge_min_dist = MIN_DIST_FRAC x diameter: no two cells sit this close, only a split one. Set
+# from WL25 (Minian pairs >= 0.41 D) and the synthetic sessions (real cells at 0.3-0.38 D by
+# design still gained precision); a default to show and override, not a law
+MIN_DIST_FRAC = 0.4
 
 
 @dataclass(frozen=True)
@@ -76,7 +81,9 @@ class Grids:
     sparse_snr: tuple[float, ...]
     loop_merge_corr: tuple[float, ...]
     n_confirm: int = 5
-    max_extend: int = 2  # extensions per parameter when its best value is at the grid edge
+    # extensions per parameter while its best value sits at the grid edge; a run that starts
+    # far off needs several (V4: sparse_snr 3.74 -> 0.96 used two and was still at the edge)
+    max_extend: int = 4
     integer_diff: bool = True  # seeds_diff_thres in whole steps (uint8 block maxima)
 
     def n_trials(self) -> int:
@@ -86,6 +93,7 @@ class Grids:
             + len(self.seeds_diff_thres) * len(self.pnr_thres)
             + len(self.merge_corr) * len(self.init_merge_corr)
             + len(self.inita_corr)
+            + 1  # the run's searched values on the search base
             + self.n_confirm
             + len(self.sparse_snr)
             + len(self.loop_merge_corr)
@@ -158,7 +166,12 @@ def derived_keys(base: Params, diameter: float, defaults: Params | None = None) 
     return [k for k in DERIVED if _norm(getattr(base, k)) == _norm(getattr(d, k))]
 
 
-def derived_params(base: Params, diameter: float, defaults: Params | None = None) -> Params:
+def derived_params(
+    base: Params,
+    diameter: float,
+    defaults: Params | None = None,
+    min_dist_frac: float = MIN_DIST_FRAC,
+) -> Params:
     """``base`` with the size parameters it left at their defaults set from ``diameter`` (px).
 
     ``size_thres`` has no upper bound: CNMF compares it with the nnz of the *dilated* support
@@ -174,6 +187,7 @@ def derived_params(base: Params, diameter: float, defaults: Params | None = None
         "inita_wnd": d,
         "dl_wnd": d,
         "merge_dist": d,
+        "merge_min_dist": round(min_dist_frac * diameter, 1),
         "size_thres": (lo, None),
     }
     return dataclasses.replace(base, **{k: new[k] for k in keys})
@@ -252,6 +266,10 @@ class Sweep:
     checks: score.Checks
     grids: Grids | None = None  # default: relative_grids of the run
     on_trial: Callable[[Trial], None] | None = None
+    min_dist_frac: float = MIN_DIST_FRAC
+    # a setting with more than cap_factor x the run's seeds after PNR, or x its init units,
+    # fails fast: it is no candidate, and on a 2 h session one such trial ran for 20 min
+    cap_factor: float = 5.0
     base: Params = field(init=False)  # the run's params with the default sizes derived
     trials: list[Trial] = field(default_factory=list)
     run_trial: Trial | None = None
@@ -260,25 +278,50 @@ class Sweep:
     search_error: str | None = None  # why the search stopped when it fell back to the run
     timer: StageTimer = field(default_factory=StageTimer)
     fc: corr.FactorCorr | None = None
+    _pnr: np.ndarray = field(init=False, repr=False)  # per-pixel seed PNR, NaN = not yet read
 
     def __post_init__(self) -> None:
-        self.base = derived_params(self.session.base, self.checks.diameter)
+        self.base = derived_params(
+            self.session.base, self.checks.diameter, min_dist_frac=self.min_dist_frac
+        )
+        self._pnr = np.full(self.session.fac.H * self.session.fac.W_, np.nan)
         if self.grids is None:
             integer = bool(np.issubdtype(self.session.fac.block_max.dtype, np.integer))
             self.grids = relative_grids(self.session.base, integer_diff=integer)
 
     # ---- stages --------------------------------------------------------------------
 
+    def _pnr_of(self, s: pd.DataFrame) -> np.ndarray:
+        """``seeds.seed_pnr`` of ``s`` from the per-pixel cache; reads only unseen pixels.
+
+        The seeds step tries every threshold pair, and the trace read behind the PNR is the
+        step's whole cost (274 s per setting on a 2 h session), while a pixel's PNR does not
+        depend on the thresholds.
+        """
+        pix = seeds.seed_pixels(self.session.fac, s)
+        new = np.isnan(self._pnr[pix])
+        if new.any():
+            self._pnr[pix[new]] = seeds.seed_pnr(self.session.fac, s[new])
+        return self._pnr[pix]
+
     def _params(self, values: dict[str, Any], base: Params | None = None) -> Params:
         return dataclasses.replace(base or self.base, **values)
+
+    def _cap(self, what: str, n: int) -> None:
+        """Raise ``ValueError`` when ``n`` exceeds ``cap_factor`` x the run's own count."""
+        ref = self.run_trial.counts.get(what) if self.run_trial is not None else None
+        if ref and n > self.cap_factor * ref:
+            raise ValueError(f"too many {what}: {n} > {self.cap_factor:g} x the run's {ref}")
 
     def _init(
         self, p: Params, timer: StageTimer, s_pnr: pd.DataFrame | None = None
     ) -> tuple[sps.csr_matrix, np.ndarray]:
         fac = self.session.fac
         if s_pnr is None:
-            s_pnr = pipeline.seeds_unmerged(fac, p, timer)
+            s_pnr = pipeline.seeds_unmerged(fac, p, timer, pnr_of=self._pnr_of)
+            self._cap("seeds_pnr", len(s_pnr))
         s = pipeline.seeds_merged(fac, self.fc, s_pnr, p, timer)
+        self._cap("seeds_merged", len(s))
         return pipeline.init_units(fac, self.fc, s, p, timer)
 
     def _cnmf(
@@ -361,15 +404,21 @@ class Sweep:
     def _search(self, run_values: dict[str, Any]) -> Params:
         g, base, run = self.grids, self.base, self.session.base
         v = self._explore("seeds", run_values, ("seeds_diff_thres", "pnr_thres"), self._init)
-        s_pnr = pipeline.seeds_unmerged(self.session.fac, self._params(v), StageTimer())
+        s_pnr = pipeline.seeds_unmerged(
+            self.session.fac, self._params(v), StageTimer(), pnr_of=self._pnr_of
+        )
 
         def cached(p: Params, t: StageTimer) -> tuple[sps.csr_matrix, np.ndarray]:
             return self._init(p, t, s_pnr)
 
         v = self._explore("merge", v, ("merge_corr", "init_merge_corr"), cached)
         self._explore("inita", v, ("inita_corr",), cached)
+        # the run's own searched values on the search base: the init-level scores cannot be
+        # trusted to keep them among the candidates (WL25: they beat every candidate by 17)
+        self._try("confirm", run_values, self._full)
         for t in confirm_candidates(self._step(*INIT_STEPS), base, g.n_confirm):
-            self._try("confirm", t.values, self._full)
+            if t.values != run_values:
+                self._try("confirm", t.values, self._full)
         v = best(self._step("confirm"), base, "confirm").values
         A, C = self._init(self._params(v), StageTimer())
 

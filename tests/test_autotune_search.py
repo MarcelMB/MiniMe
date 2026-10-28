@@ -5,8 +5,9 @@ import dataclasses
 
 import numpy as np
 import pytest
+import scipy.sparse as sps
 
-from minime import window2
+from minime import seeds, window2
 from minime.autotune import run as at
 from minime.autotune import score, sweep
 from minime.params import Params
@@ -75,7 +76,13 @@ def test_derived_params_keep_tuned_values():
     p = sweep.derived_params(base, 8.0)
     assert (p.merge_dist, p.size_thres) == (3, (10, None))
     assert (p.seeds_max_wnd, p.inita_wnd, p.dl_wnd) == (8, 8, 8)
-    assert sweep.derived_keys(base, 8.0) == ["seeds_max_wnd", "inita_wnd", "dl_wnd"]
+    assert sweep.derived_keys(base, 8.0) == [
+        "seeds_max_wnd",
+        "inita_wnd",
+        "dl_wnd",
+        "merge_min_dist",
+    ]
+    assert p.merge_min_dist == 3.2
 
 
 # --- confirm candidates across merge values -------------------------------------------
@@ -149,6 +156,79 @@ def test_sweep_extends_a_grid_whose_best_is_at_the_edge(tiny_w2_run):
     if best in (0.5, 1.0) and len(vals) == 2:
         pytest.fail("best at the edge but the grid was not extended")
     assert len(vals) <= 3 and len(sw.trials) <= grids.n_trials()
+
+
+def test_confirm_always_includes_the_runs_searched_values(tiny_w2_run):
+    sess = window2.Window2Session(tiny_w2_run)
+    sw = sweep.Sweep(sess, score.Checks(D), SMALL)
+    sw.run()
+    run_values = {k: getattr(sess.base, k) for k in sweep.SEARCHED}
+    confirm = [t.values for t in sw.trials if t.step == "confirm"]
+    assert run_values in confirm and confirm.count(run_values) == 1
+    assert len(confirm) <= SMALL.n_confirm + 1
+
+
+def test_pnr_cache_matches_seed_pnr_and_reads_each_pixel_once(tiny_w2_run, monkeypatch):
+    sess = window2.Window2Session(tiny_w2_run)
+    sw = sweep.Sweep(sess, score.Checks(D), SMALL)
+    fac, p = sess.fac, sess.base
+    s = seeds.seeds_init(
+        fac.block_max, fac.block_edges, fac.T, p.seeds_wnd, p.seeds_stp, p.seeds_max_wnd, 2
+    )
+    direct = seeds.seed_pnr(fac, s)
+    assert np.allclose(sw._pnr_of(s), direct, rtol=1e-5)
+    # a subset (higher threshold) is served from the cache without a trace read
+    sub = s.iloc[::2]
+    monkeypatch.setattr(
+        seeds, "seed_pnr", lambda *a, **k: pytest.fail("trace read on cached pixels")
+    )
+    assert np.allclose(sw._pnr_of(sub), direct[::2], rtol=1e-5)
+
+
+def test_settings_far_beyond_the_runs_seed_count_fail_fast(tiny_w2_run):
+    sess = window2.Window2Session(tiny_w2_run)
+    sw = sweep.Sweep(sess, score.Checks(D), SMALL, cap_factor=0.5)  # everything above half fails
+    sw.run()
+    assert sw.run_trial.score is not None  # the run itself is never capped
+    capped = [t for t in sw.trials if t.error and "too many" in t.error]
+    assert capped and all(t.step == "seeds" for t in capped)
+    assert sw.final is sw.run_trial or sw.final.score is not None
+
+
+def test_estimate_diameter_from_footprints(tiny_w2_run, tmp_path):
+    d = at.estimate_diameter(tiny_w2_run)
+    assert 5.0 <= d <= 15.0  # synthetic cells: Gaussian sigma 3 px
+    (tmp_path / "cnmf").mkdir()
+    A = sps.csr_matrix(np.ones((3, 64 * 64), np.float32))
+    sps.save_npz(tmp_path / "cnmf" / "A.npz", A)
+    with pytest.raises(ValueError, match="too few"):
+        at.estimate_diameter(tmp_path)
+
+
+def test_autotune_without_diameter_uses_the_estimate_and_records_the_thresholds(tiny_w2_run):
+    out = at.autotune(tiny_w2_run, grids=SMALL, name="auto_est", dup_corr=0.7, min_dist_frac=0.3)
+    doc = at.load_doc(out)
+    assert doc["diameter_source"] == "footprints"
+    assert doc["diameter"] == at.estimate_diameter(tiny_w2_run)
+    assert doc["checks"]["dup_corr"] == 0.7 and doc["min_dist_frac"] == 0.3
+    for which in ("run", "proposal"):
+        p = doc["pairs"][which]
+        assert {"n_near", "n_near_above", "n_closer", "far_p99"} <= set(p)
+        assert p["n_near_above"] <= p["n_near"]
+    given = at.load_doc(at.autotune(tiny_w2_run, D, grids=SMALL, name="auto_given"))
+    assert given["diameter_source"] == "given" and given["diameter"] == D
+
+
+def test_pair_stats_counts(tiny_w2_run):
+    sess = window2.Window2Session(tiny_w2_run)
+    A = sps.load_npz(tiny_w2_run / "cnmf" / "A.npz")
+    Y = np.load(tiny_w2_run / "cnmf" / "YrA.npy")
+    st = score.pair_stats(A, Y, sess.fac.H, sess.fac.W_, score.Checks(D), 0.4)
+    assert len(st["nn_dist"]) == A.shape[0] and st["n_near"] == len(st["near_corr"])
+    assert st["n_closer"] == int((st["nn_dist"] < 0.4).sum())
+    assert (
+        score.pair_stats(A[:1], Y[:1], sess.fac.H, sess.fac.W_, score.Checks(D), 0.4)["n_near"] == 0
+    )
 
 
 def test_autotune_doc_records_the_run_trial(tiny_w2_run):

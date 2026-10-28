@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -159,10 +160,12 @@ def seeds_unmerged(
     params: Params,
     timer: StageTimer,
     stages: dict[str, pd.DataFrame] | None = None,
+    pnr_of: Callable[[pd.DataFrame], np.ndarray] | None = None,
 ) -> pd.DataFrame:
     """Seeds after init, PNR and GMM (opt-in), before the merge; ``stages`` collects each table.
 
     ``stages["seeds_pnr"]`` holds every initial seed with its ``pnr`` and ``mask_pnr``.
+    ``pnr_of(seeds)`` replaces ``seeds.seed_pnr`` (a cache when many thresholds are tried).
     """
     p, n = params, timer.counts
     st = {} if stages is None else stages
@@ -179,7 +182,8 @@ def seeds_unmerged(
     n["seeds_init"] = len(s)
     st["seeds_init"] = s
     with timer("pnr_refine"):
-        st["seeds_pnr"] = seeds.pnr_refine(fac, s, thres=p.pnr_thres)
+        pnr = None if pnr_of is None else pnr_of(s)
+        st["seeds_pnr"] = seeds.pnr_refine(fac, s, thres=p.pnr_thres, pnr=pnr)
         s = _filter(st["seeds_pnr"], "mask_pnr")
     n["seeds_pnr"] = len(s)
     if p.gmm_refine:
@@ -253,7 +257,14 @@ def init_units(
     with timer("initC"):
         C = init.initC(fac, A)
     with timer("unit_merge"):
-        A, C, _ = init.unit_merge(A, C, fc.traces_corr, params.init_merge_corr)
+        A, C, _ = init.unit_merge(
+            A,
+            C,
+            fc.traces_corr,
+            params.init_merge_corr,
+            min_dist=params.merge_min_dist,
+            shape=(fac.H, fac.W_),
+        )
     timer.counts["units_init_merge"] = A.shape[0]
     fp["init_merge"] = A
     return A, C

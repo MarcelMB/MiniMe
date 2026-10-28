@@ -157,6 +157,11 @@ def test_cli_autotune(tiny_w2_run, monkeypatch):
     assert res.exit_code == 0, res.output
     assert "sparse_snr" in res.output and "good" in res.output
     assert (tiny_w2_run / "reruns" / "auto_cli" / "autotune.json").exists()
+    res = CliRunner().invoke(
+        cli.app, ["autotune", str(tiny_w2_run), "--name", "auto_cli2", "--dup-corr", "0.7"]
+    )
+    assert res.exit_code == 0, res.output
+    assert "estimated from the run's footprints" in res.output and "dup_corr 0.7" in res.output
 
 
 @pytest.mark.parametrize("d", ["0", "1000"])
@@ -172,7 +177,7 @@ def test_check_diameter_bounds():
             at.check_diameter(d, 64, 64)
 
 
-def test_cli_cnmf_rejects_the_reserved_auto_name(tiny_w2_run):
-    res = CliRunner().invoke(cli.app, ["cnmf", str(tiny_w2_run), "--name", "auto"])
+def test_cli_cnmf_rejects_the_reserved_auto_name(run_copy):
+    res = CliRunner().invoke(cli.app, ["cnmf", str(run_copy), "--name", "auto"])
     assert res.exit_code == 1 and "reserved" in res.output
-    assert not (tiny_w2_run / "reruns" / "auto").exists()
+    assert not (run_copy / "reruns" / "auto").exists()

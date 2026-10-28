@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sps
 from scipy.linalg import LinAlgError, cho_factor, cho_solve
+from scipy.spatial.distance import cdist
 
 from minime.corr import FactorCorr, merge_labels
 from minime.factors import Factors
@@ -125,17 +126,28 @@ def unit_merge(
     fc_traces: Callable[[np.ndarray], np.ndarray],
     thres_corr: float,
     extra: list[np.ndarray] | None = None,
+    min_dist: float = 0.0,
+    shape: tuple[int, int] | None = None,
 ) -> tuple[sps.csr_matrix, np.ndarray, list[np.ndarray]]:
     """Replace each transitive group of overlapping, correlated units by its mean.
 
     Two units are adjacent when their footprints share a pixel and
-    ``fc_traces(C)[i, j] > thres_corr``. ``A``, ``C`` and every ``extra`` (K, ...) array
-    are averaged over each connected component; output dtypes follow the inputs.
+    ``fc_traces(C)[i, j] > thres_corr``, or when their centroids (needs ``shape`` = (H, W))
+    are closer than ``min_dist`` px whatever their traces do. ``A``, ``C`` and every ``extra``
+    (K, ...) array are averaged over each connected component; output dtypes follow the inputs.
     """
     A = sps.csr_matrix(A)
     overlap = (A @ A.T).toarray() > 0
     np.fill_diagonal(overlap, False)
     adj = overlap & (np.asarray(fc_traces(C)) > thres_corr)
+    if min_dist > 0:
+        if shape is None:
+            raise ValueError("min_dist needs shape=(H, W)")
+        cent = centroids(A, *shape)
+        with np.errstate(invalid="ignore"):
+            close = cdist(cent, cent) < min_dist  # NaN centroids never compare close
+        np.fill_diagonal(close, False)
+        adj |= close
     labels = merge_labels(sps.csr_matrix(adj))
     M = _group_mean_matrix(labels)
     A2 = sps.csr_matrix(M @ A, dtype=A.dtype)

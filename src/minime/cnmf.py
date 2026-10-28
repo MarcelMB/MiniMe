@@ -398,7 +398,15 @@ def run_cnmf(
         _check_finite(f"background (iteration {it})", b=b, f=fb)
         YrA = compute_trace(fac, A, b, C_sp, fb)
         _check_finite(f"traces (iteration {it})", YrA=YrA)
-        A, YrA, (C_sp,) = init.unit_merge(A, YrA, fc_traces, params.loop_merge_corr, [C_sp])
+        A, YrA, (C_sp,) = init.unit_merge(
+            A,
+            YrA,
+            fc_traces,
+            params.loop_merge_corr,
+            [C_sp],
+            min_dist=params.merge_min_dist,
+            shape=(fac.H, fac.W_),
+        )
         C = YrA
         counts[f"units_after_merge_{it}"] = A.shape[0]
         if record is not None:

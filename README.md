@@ -82,17 +82,27 @@ the first 300 frames for `median_ksize`, `tophat_wnd`, `motion_bandpass` (these 
 
 ### Auto-tune
 
-`minime autotune RUN_DIR --diameter D` (or "Propose parameters" on `minime tune`) sweeps the
-window-2 parameters stage by stage (~5 min on a 30-min session), scores each setting with
+`minime autotune RUN_DIR [--diameter D]` (or "Propose parameters" on `minime tune`) sweeps the
+window-2 parameters stage by stage (~2 min on a 30-min session), scores each setting with
 label-free unit checks (trace PNR, one piece, cell size from D, no duplicates; score = good -
 flagged) and writes the proposal to `RUN_DIR/reruns/auto/` with `sweep.csv` (the map),
-`unit_flags.csv` and `autotune.json`. D is the cell diameter in px of the factor frame.
+`unit_flags.csv` and `autotune.json`. D is the cell diameter in px of the factor frame;
+without `--diameter` it is estimated from the run's footprints (shown, and prefilled on the
+page where drag-to-measure overrides it). The two thresholds behind the checks are options
+with visible defaults, `--dup-corr 0.6` (a unit with a neighbour within D whose trace
+correlates above this is a duplicate, i.e. a split cell) and `--min-dist-frac 0.4` (units
+closer than this x D always merge); the page shows them against the data: the correlation of
+unit pairs within D (far pairs as the null) and the nearest-neighbour distances, for the run
+and the proposal, so a user can see whether they fit the recording. Settings that yield more
+than 5x the run's seeds or init units fail fast.
 The grids are built around the run's own values (thresholds x 0.5 ... 2, correlations
 +-0.1, `pnr_thres` also "auto") and extended outward while the best value sits at an edge,
 so any run's values are inside its grids. The run's own parameters are the first setting
 tried; the proposal is never worse than them (the page and the CLI say when the search found
 nothing better). Size parameters (`seeds_max_wnd`, `inita_wnd`, `dl_wnd`, `merge_dist`,
-`size_thres`) are derived from D only where the run still uses the built-in default. The
+`merge_min_dist` = 0.4 D, `size_thres`) are derived from D only where the run still uses the
+built-in default (`merge_min_dist` merges units whose centroids are closer than that whatever
+their traces do: no two cells sit that close, only a split one; 0 = off in a plain run). The
 init-level scores only prune within a step: the best init settings of every distinct
 `merge_corr` go through CNMF before the choice. `bench/autotune_synth.py` checks the search
 on synthetic sessions with ground truth (proposal vs. a default and a detuned start).

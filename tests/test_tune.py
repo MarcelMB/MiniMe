@@ -256,13 +256,25 @@ def test_server_autotune_roundtrip(tune_server, monkeypatch):
     with pytest.raises(urllib.error.HTTPError) as e:
         _post(base + "/api/autotune", {"diameter": "abc"})
     assert e.value.code == 400
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _post(base + "/api/autotune", {"diameter": "7", "dup_corr": "x"})
+    assert e.value.code == 400
     monkeypatch.setattr(at, "DEFAULT_GRIDS", SMALL_GRIDS)
-    assert _post(base + "/api/autotune", {"diameter": "7"})["name"] == "auto"
+    assert (
+        _post(base + "/api/autotune", {"diameter": "", "dup_corr": "", "min_dist_frac": ""})["name"]
+        == "auto"
+    )
     st = _wait(base, timeout=300)
     assert st["state"] == "done", st
-    assert app.checks() is not None and app.checks().diameter == 7
+    assert app.checks() is not None
+    assert app.checks().diameter == at.estimate_diameter(app.run_dir)  # blank = estimated
     page_html = _get(base + "/?run=auto")[2].decode()
     assert "Proposal" in page_html and "sweep_sparse_snr.png" in page_html
+    assert "thresholds.png" in page_html and "Thresholds against the data" in page_html
+    assert 'name="dup_corr"' in page_html and 'name="min_dist_frac"' in page_html
+    assert "(footprints)" in page_html  # the diameter was estimated
+    status, ctype, png = _get(base + "/fig/auto/thresholds.png")
+    assert status == 200 and ctype == "image/png"
     assert "good / flagged" in page_html
     status, ctype, png = _get(base + "/fig/auto/sweep_sparse_snr.png")
     assert status == 200 and png[:4] == b"\x89PNG"

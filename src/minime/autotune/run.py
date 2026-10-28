@@ -21,6 +21,7 @@ import scipy.sparse as sps
 from minime.autotune import score
 from minime.autotune.sweep import (
     DERIVED,
+    MIN_DIST_FRAC,
     SEARCHED,
     Grids,
     Sweep,
@@ -35,6 +36,8 @@ AUTO = "auto"
 DEFAULT_GRIDS: Grids | None = None  # None: ``relative_grids`` of the run
 DOC = "autotune.json"
 COUNT_COLS = ("seeds_init", "seeds_pnr", "seeds_merged", "units_init_merge", "units_final")
+MIN_UNITS_FOR_ESTIMATE = 10
+DUP_CORR = score.Checks(1.0).dup_corr  # the default, for the CLI and the page
 SCORE_COLS = ("good", "flagged", "score", *score.REASONS)
 
 
@@ -98,6 +101,23 @@ def n_trials(session: Window2Session, grids: Grids | None = None) -> int:
     return grids_of(session, grids).n_trials()
 
 
+def estimate_diameter(run_dir: Path) -> float:
+    """Cell diameter (px) from the run's final footprints: the equivalent diameter of the
+    median footprint size above 10 % of peak (the size the checks measure).
+
+    Footprint size follows the run's ``sparse_snr``, so this is a default to show and
+    override, not a measurement. Raises ``ValueError`` with fewer than
+    ``MIN_UNITS_FOR_ESTIMATE`` units.
+    """
+    A = sps.load_npz(Path(run_dir) / "cnmf" / "A.npz")
+    if A.shape[0] < MIN_UNITS_FOR_ESTIMATE:
+        raise ValueError(
+            f"only {A.shape[0]} units in {run_dir}: too few to estimate the cell diameter, "
+            "pass --diameter"
+        )
+    return round(2 * math.sqrt(float(np.median(score.size_above(A))) / math.pi), 1)
+
+
 def check_not_reserved(name: str) -> None:
     """Raise ``ValueError`` for the name auto-tune writes its proposal to."""
     if name == AUTO:
@@ -109,20 +129,29 @@ def check_not_reserved(name: str) -> None:
 # ----------------------------------------------------------------------------------------
 def autotune(
     run_dir: Path,
-    diameter: float,
+    diameter: float | None = None,
     *,
     checks: score.Checks | None = None,
     grids: Grids | None = None,
     name: str = AUTO,
     session: Window2Session | None = None,
     on_trial: Callable[[Trial], None] | None = None,
+    dup_corr: float = DUP_CORR,
+    min_dist_frac: float = MIN_DIST_FRAC,
 ) -> Path:
-    """Sweep window 2 of ``run_dir`` and write the proposal to ``run_dir/reruns/name``."""
+    """Sweep window 2 of ``run_dir`` and write the proposal to ``run_dir/reruns/name``.
+
+    ``diameter`` None: ``estimate_diameter`` of the run. ``dup_corr`` and ``min_dist_frac``
+    are the two thresholds the checks and the derived merge distance rest on.
+    """
     t0 = time.perf_counter()
     session = session or Window2Session(run_dir)
+    source = "given" if diameter is not None else "footprints"
+    if diameter is None:
+        diameter = estimate_diameter(run_dir)
     check_diameter(diameter, session.fac.H, session.fac.W_)
-    checks = checks or score.Checks(diameter)
-    sw = Sweep(session, checks, grids_of(session, grids), on_trial)
+    checks = checks or score.Checks(diameter, dup_corr=dup_corr)
+    sw = Sweep(session, checks, grids_of(session, grids), on_trial, min_dist_frac=min_dist_frac)
     params = sw.run()
     grids = sw.grids  # extended where a best value sat at an edge
     out = session.run(params, name)
@@ -131,8 +160,23 @@ def autotune(
     YrA = np.load(out / "cnmf" / "YrA.npy")
     flags = score.unit_flags(A, YrA, session.fac.H, session.fac.W_, checks)
     flags.to_csv(out / "unit_flags.csv", index=False)
+    A0 = sps.load_npz(Path(run_dir) / "cnmf" / "A.npz")
+    Y0 = np.load(Path(run_dir) / "cnmf" / "YrA.npy")
+    pairs = {
+        which: {
+            k: v
+            for k, v in score.pair_stats(
+                a, y, session.fac.H, session.fac.W_, checks, min_dist_frac
+            ).items()
+            if not isinstance(v, np.ndarray)
+        }
+        for which, a, y in (("run", A0, Y0), ("proposal", A, YrA))
+    }
     doc = {
         "diameter": diameter,
+        "diameter_source": source,
+        "min_dist_frac": min_dist_frac,
+        "pairs": pairs,  # what dup_corr and min_dist_frac act on, run and proposal
         "checks": asdict(checks),
         "grids": {k: _json_value(v) for k, v in asdict(grids).items()},
         "derived": {k: _json_value(getattr(params, k)) for k in DERIVED},

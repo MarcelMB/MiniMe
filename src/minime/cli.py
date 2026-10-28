@@ -69,14 +69,29 @@ def cnmf(
 @app.command()
 def autotune(
     run_dir: Annotated[Path, typer.Argument(help="A finished run (holds factors/).")],
-    diameter: Annotated[float, typer.Option(help="Cell diameter in px (factor frame).")],
+    diameter: Annotated[
+        float | None,
+        typer.Option(
+            help="Cell diameter in px (factor frame); default: from the run's footprints."
+        ),
+    ] = None,
     name: Annotated[str, typer.Option(help="Output name under RUN_DIR/reruns/.")] = "auto",
+    dup_corr: Annotated[
+        float | None,
+        typer.Option(help="Trace corr above which a neighbour within D is a duplicate."),
+    ] = None,
+    min_dist_frac: Annotated[
+        float | None, typer.Option(help="Units closer than this x D always merge.")
+    ] = None,
 ) -> None:
     """Propose window-2 parameters for RUN_DIR (sweep, then a rerun in RUN_DIR/reruns/NAME/)."""
     import json
 
     from minime.autotune import run as at
-    from minime.autotune.sweep import Trial
+    from minime.autotune.sweep import MIN_DIST_FRAC, Trial
+
+    dup_corr = at.DUP_CORR if dup_corr is None else dup_corr
+    min_dist_frac = MIN_DIST_FRAC if min_dist_frac is None else min_dist_frac
 
     def show(t: Trial) -> None:
         res = (
@@ -85,12 +100,23 @@ def autotune(
         typer.echo(f"{t.step:<10} {res}  ({t.seconds:.1f} s)")
 
     try:
-        out = at.autotune(run_dir, diameter, name=name, on_trial=show)
+        if diameter is None:
+            diameter = at.estimate_diameter(run_dir)
+            typer.echo(f"diameter {diameter} px, estimated from the run's footprints")
+        out = at.autotune(
+            run_dir,
+            diameter,
+            name=name,
+            on_trial=show,
+            dup_corr=dup_corr,
+            min_dist_frac=min_dist_frac,
+        )
     except (ValueError, RuntimeError) as e:
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(1) from None
     doc = json.loads((out / at.DOC).read_text())
     typer.echo(str(out))
+    typer.echo(f"dup_corr {dup_corr}  min_dist_frac {min_dist_frac}  diameter {diameter}")
     for k, v in doc["proposed"].items():
         edge = "  [at edge]" if k in doc["at_edge"] else ""
         typer.echo(f"{k:<17} {doc['run_values'][k]!s:>8} -> {v!s:<8}{edge}")

@@ -51,6 +51,7 @@ FORM = [
             ("size_thres", "min, max pixels kept after a spatial update (blank = none)"),
             ("n_iter", "spatial + temporal iterations"),
             ("loop_merge_corr", "merge after each iteration above this trace corr"),
+            ("merge_min_dist", "units closer than this (px) always merge; 0 = off"),
             (
                 "background_clip",
                 "background of clip(Y - AC, 0) as Minian (true / false, ~2x slower)",
@@ -115,16 +116,34 @@ def _field(key: str, hint: str, value: Any, base: Any) -> str:
 
 
 def _propose_form(app: TuneApp) -> str:
-    ch = app.checks()
-    d = "" if ch is None else fmt_value(ch.diameter)
+    ch, doc = app.checks(), at.load_doc(app.reruns_dir / at.AUTO)
+    try:
+        est = fmt_value(at.estimate_diameter(app.run_dir))
+    except (ValueError, FileNotFoundError):
+        est = ""
+    d = est if ch is None else fmt_value(ch.diameter)
+    d_hint = (
+        f"estimated from the run's footprints: {est}; drag below to measure instead"
+        if est
+        else "drag below to measure"
+    )
+    dup = fmt_value(at.DUP_CORR if ch is None else ch.dup_corr)
+    frac = fmt_value((doc or {}).get("min_dist_frac", sweep.MIN_DIST_FRAC))
     return (
         '<form id="atform"><h2>Auto-tune</h2>'
         '<label><b>cell diameter (px)</b><input type="text" name="diameter" '
-        f'value="{_e(d)}" placeholder="e.g. 8"><span class="hint">in the factor frame; '
-        "sets dl_wnd, merge_dist, seeds_max_wnd, inita_wnd, size_thres</span></label>"
+        f'value="{_e(d)}" placeholder="e.g. 8"><span class="hint">{_e(d_hint)}; sets dl_wnd, '
+        "merge_dist, seeds_max_wnd, inita_wnd, size_thres where the run uses the defaults"
+        "</span></label>"
         '<div id="measure"><img id="mpimg" src="/maxproj.png" draggable="false">'
         '<svg id="mpline"><line x1="0" y1="0" x2="0" y2="0"/></svg></div>'
         '<div class="note">drag across one cell to measure its diameter</div>'
+        f'<label><b>dup_corr</b><input type="text" name="dup_corr" value="{_e(dup)}">'
+        '<span class="hint">a unit with a neighbour within D whose trace correlates above '
+        "this is a duplicate (split cell); see the thresholds figure</span></label>"
+        f'<label><b>min_dist_frac</b><input type="text" name="min_dist_frac" value="{_e(frac)}">'
+        '<span class="hint">units closer than this x D always merge; real cells rarely sit '
+        "closer than 0.4 D</span></label>"
         '<button type="submit">Propose parameters (~5 min)</button></form>'
     )
 
@@ -206,6 +225,26 @@ def _proposal(app: TuneApp) -> str:
             f"<td class='l'>{edge}</td></tr>"
         )
     kept = set(doc.get("kept", []))
+    pairs = doc.get("pairs")
+    thresholds = ""
+    if pairs is not None:
+        r, p = pairs["run"], pairs["proposal"]
+        far = (
+            ""
+            if r["far_p99"] is None
+            else f"; far pairs (&gt; 2 D) 99th pct corr {r['far_p99']:.2f}"
+        )
+        thresholds = (
+            "<h3>Thresholds against the data</h3>"
+            f"<div class='note'>pairs within D: run {r['n_near']} ({r['n_near_above']} above "
+            f"dup_corr {doc['checks']['dup_corr']}), proposal {p['n_near']} ({p['n_near_above']} "
+            f"above){_e(far)}. Units with a neighbour closer than {doc['min_dist_frac']} D: run "
+            f"{r['n_closer']}, proposal {p['n_closer']}. A split cell shows as a bump of highly "
+            "correlated near pairs and of very short neighbour distances; real neighbours sit "
+            "near D with low correlation.</div>"
+            f"{_img(app, at.AUTO, 'thresholds.png')}"
+        )
+    source = doc.get("diameter_source", "given")
     derived = (
         ", ".join(f"{k} {fmt_value(v)}" for k, v in doc["derived"].items() if k not in kept)
         or "none"
@@ -214,8 +253,9 @@ def _proposal(app: TuneApp) -> str:
     return (
         f"<h2>Proposal ({at.AUTO})</h2>{_run_note(doc)}<div class='note'>{s['good']} good / "
         f"{s['flagged']} flagged ({_e(reasons) or 'none'}) &middot; diameter "
-        f"{_e(fmt_value(doc['diameter']))} px &middot; derived: {_e(derived)}{kept_text} "
-        f"&middot; {doc['n_trials']} settings in {doc['wall_s']} s</div>"
+        f"{_e(fmt_value(doc['diameter']))} px ({_e(source)}) &middot; derived: {_e(derived)}"
+        f"{kept_text} &middot; {doc['n_trials']} settings in {doc['wall_s']} s</div>"
+        f"{thresholds}"
         "<div class='note'>Curves: best good (blue) and flagged (red) count at each value; "
         "dashed = proposed. To override: view auto (its values fill the form), edit, Rerun; "
         "the new run opens compared with auto.</div>"

@@ -84,6 +84,45 @@ def sweep_curves(sweep_csv: Path, doc: dict[str, Any], out_dir: Path) -> list[st
 
 
 # ---------------------------------------------------------------------------
+# The two thresholds against the data
+# ---------------------------------------------------------------------------
+
+
+def threshold_figure(
+    run: dict[str, Any], prop: dict[str, Any], dup_corr: float, min_dist_frac: float, path: Path
+) -> None:
+    """Left: trace correlation of unit pairs within D, run (outline) and proposal (filled),
+    with far pairs (> 2 D) as the null; the line is ``dup_corr``. Right: nearest-neighbour
+    distance per unit in units of D; the line is ``min_dist_frac``. ``run`` and ``prop`` are
+    ``score.pair_stats`` dicts."""
+    fig = Figure(figsize=(5.8, 1.9), dpi=DPI, facecolor="white", layout="constrained")
+    ax1, ax2 = fig.subplots(1, 2)
+    bins = np.linspace(-0.4, 1.0, 29)
+    if len(run["far_corr"]):
+        ax1.hist(run["far_corr"], bins, density=True, color=MUTED, alpha=0.25, label="far pairs")
+    if len(prop["near_corr"]):
+        ax1.hist(prop["near_corr"], bins, density=True, color=GOOD, alpha=0.6, label="proposal")
+    if len(run["near_corr"]):
+        ax1.hist(run["near_corr"], bins, density=True, histtype="step", color=INK, label="run")
+    ax1.axvline(dup_corr, color=CHOSEN, lw=1, ls="--")
+    ax1.set_xlabel("trace corr, pairs within D", fontsize=7, color=INK)
+    ax1.legend(fontsize=6, frameon=False)
+    bins = np.linspace(0, 2.0, 41)
+    if len(prop["nn_dist"]):
+        ax2.hist(np.minimum(prop["nn_dist"], 2), bins, color=GOOD, alpha=0.6)
+    if len(run["nn_dist"]):
+        ax2.hist(np.minimum(run["nn_dist"], 2), bins, histtype="step", color=INK)
+    ax2.axvline(min_dist_frac, color=CHOSEN, lw=1, ls="--")
+    ax2.axvline(1.0, color=MUTED, lw=0.8, ls=":")
+    ax2.set_xlabel("nearest neighbour / D", fontsize=7, color=INK)
+    for ax in (ax1, ax2):
+        _style(ax)
+        ax.set_yticks([])
+        ax.tick_params(labelsize=6)
+    fig.savefig(path, dpi=DPI)
+
+
+# ---------------------------------------------------------------------------
 # Unit thumbnails
 # ---------------------------------------------------------------------------
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 import warnings
 from dataclasses import dataclass
+from typing import Any
 
 import cv2
 import numpy as np
@@ -146,7 +147,9 @@ class Checks:
     piece_frac: float = 0.9
     size_lo: float = 0.3  # x cell area
     size_hi: float = 3.0
-    dup_corr: float = 0.8
+    # a split cell's halves correlate ~0.65, neighbouring cells ~0.4 (WL25, synthetic, V4);
+    # a per-run mixture fit was unstable at 10-90 near pairs, so this stays a visible default
+    dup_corr: float = 0.6
 
     def __post_init__(self) -> None:
         if not (isinstance(self.diameter, int | float) and self.diameter > 0):
@@ -185,6 +188,48 @@ def unit_flags(
     df["duplicate"] = duplicates(cent, traces, pnr, checks.diameter, checks.dup_corr)
     df["good"] = ~df[list(REASONS)].any(axis=1)
     return df
+
+
+def pair_stats(
+    A: sps.csr_matrix, traces: np.ndarray, H: int, W: int, checks: Checks, min_dist_frac: float
+) -> dict[str, Any]:
+    """What the two thresholds act on: trace correlations of unit pairs closer than D
+    (``near_corr``), of pairs farther than 2 D as the null (``far_corr``), and each unit's
+    nearest-neighbour distance in units of D (``nn_dist``); plus the counts on the far side
+    of ``checks.dup_corr`` and ``min_dist_frac``.
+    """
+    A = sps.csr_matrix(A)
+    D = checks.diameter
+    with np.errstate(invalid="ignore", divide="ignore"):
+        cent = centroids(A, H, W) if A.shape[0] else np.zeros((0, 2))
+    ok = np.flatnonzero(np.isfinite(cent).all(axis=1))
+    cent, X = cent[ok], np.asarray(traces, np.float32)[ok]
+    X = X - X.mean(axis=1, keepdims=True)
+    nrm = np.linalg.norm(X, axis=1, keepdims=True)
+    Z = np.divide(X, nrm, out=np.zeros_like(X), where=nrm > 0)
+    K = len(ok)
+    if K < 2:
+        empty = np.zeros(0)
+        return {
+            "near_corr": empty, "far_corr": empty, "nn_dist": empty, "n_near": 0,
+            "n_near_above": 0, "n_closer": 0, "far_p99": None,
+        }  # fmt: skip
+    i, j = np.triu_indices(K, 1)
+    dist = np.hypot(*(cent[i] - cent[j]).T)
+    corr = _pair_corr(Z, i, j)
+    nn = np.full(K, np.inf)
+    np.minimum.at(nn, i, dist)
+    np.minimum.at(nn, j, dist)
+    near, far = corr[dist < D], corr[dist > 2 * D]
+    return {
+        "near_corr": near,
+        "far_corr": far,
+        "nn_dist": nn / D,
+        "n_near": int(len(near)),
+        "n_near_above": int((near >= checks.dup_corr).sum()),
+        "n_closer": int((nn < min_dist_frac * D).sum()),
+        "far_p99": float(np.percentile(far, 99)) if len(far) else None,
+    }
 
 
 def summarize(flags: pd.DataFrame) -> dict[str, int]:

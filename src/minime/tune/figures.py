@@ -35,6 +35,7 @@ from minime.autotune.score import (
     SIZE_FRAC,  # noqa: F401 - kept importable from here
     Checks,
     n_parts,
+    pair_stats,
     size_above,
     summarize,
     trace_pnr,
@@ -603,6 +604,23 @@ def summary(run: RunData, mn: MinianOverlay | None, checks: Checks | None = None
     return out
 
 
+def fig_thresholds(run: RunData, doc: dict[str, Any], path: Path) -> None:
+    """``dup_corr`` and ``min_dist_frac`` against the pair statistics of the source run
+    (``RUN_DIR/cnmf``) and of this proposal."""
+    from minime.autotune.run import checks_of
+    from minime.autotune.sweep import MIN_DIST_FRAC
+    from minime.tune import autofig
+
+    checks, frac = checks_of(doc), doc.get("min_dist_frac", MIN_DIST_FRAC)
+    src = run.dir.parent.parent / "cnmf"
+    A0, Y0 = sps.load_npz(src / "A.npz"), np.load(src / "YrA.npy")
+    stats = (
+        pair_stats(A0, Y0, run.H, run.W, checks, frac),
+        pair_stats(run.A, run.YrA, run.H, run.W, checks, frac),
+    )
+    autofig.threshold_figure(*stats, checks.dup_corr, frac, path)
+
+
 def make_run_figures(
     run: RunData, mn: MinianOverlay | None, checks: Checks | None = None
 ) -> dict[str, Any]:
@@ -624,6 +642,7 @@ def make_run_figures(
     sweep_csv, doc = run.dir / "sweep.csv", load_doc(run.dir)
     if sweep_csv.exists() and doc is not None:
         autofig.sweep_curves(sweep_csv, doc, out)
+        fig_thresholds(run, doc, out / "thresholds.png")
     s = summary(run, mn, checks)
     (run.dir / "summary.json").write_text(json.dumps(s, indent=1))
     return s

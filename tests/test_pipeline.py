@@ -177,7 +177,7 @@ def test_seeds_stage_runs_gmm_refine_only_when_enabled(monkeypatch, use_gmm):
         return s.assign(mask_gmm=[True, False, True])
 
     monkeypatch.setattr(seeds, "seeds_init", lambda *a: df)
-    monkeypatch.setattr(seeds, "pnr_refine", lambda f, s, thres: s.assign(mask_pnr=True))
+    monkeypatch.setattr(seeds, "pnr_refine", lambda f, s, thres, pnr=None: s.assign(mask_pnr=True))
     monkeypatch.setattr(seeds, "gmm_refine", fake_gmm)
     monkeypatch.setattr(corr, "seeds_merge", lambda fc, s, mp, d, c: s.assign(mask_mrg=True))
     fac = SimpleNamespace(block_max=None, block_edges=None, T=10, max_proj=None)

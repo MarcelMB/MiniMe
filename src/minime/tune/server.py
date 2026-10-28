@@ -29,6 +29,7 @@ from typing import Any
 
 from minime import pipeline, window2
 from minime.autotune import run as at
+from minime.autotune import sweep
 from minime.autotune.score import Checks
 from minime.autotune.sweep import Trial
 from minime.params import Params
@@ -102,6 +103,26 @@ def changed(p: Params, base: Params) -> dict[str, tuple[Any, Any]]:
 # ---------------------------------------------------------------------------
 # Application state
 # ---------------------------------------------------------------------------
+
+
+def _autotune_args(form: dict[str, str]) -> tuple[float | None, float, float]:
+    """``(diameter, dup_corr, min_dist_frac)`` from the form; blank = default, a blank
+    diameter is estimated from the run."""
+    out: list[float | None] = []
+    for key, default in (
+        ("diameter", None),
+        ("dup_corr", at.DUP_CORR),
+        ("min_dist_frac", sweep.MIN_DIST_FRAC),
+    ):
+        text = form.get(key, "").strip()
+        if not text:
+            out.append(default)
+            continue
+        try:
+            out.append(float(text))
+        except ValueError:
+            raise ValueError(f"{key}: expected a number") from None
+    return out[0], out[1], out[2]  # type: ignore[return-value]
 
 
 class Busy(RuntimeError):
@@ -215,7 +236,9 @@ class TuneApp:
         doc = at.load_doc(self.reruns_dir / at.AUTO)
         return at.checks_of(doc) if doc is not None else None
 
-    def _autotune(self, name: str, diameter: float) -> None:
+    def _autotune(
+        self, name: str, diameter: float | None, dup_corr: float, min_dist_frac: float
+    ) -> None:
         n = at.n_trials(self.session)
         done: list[Trial] = []
 
@@ -223,7 +246,15 @@ class TuneApp:
             done.append(t)
             self._set(stage=f"{t.step}: setting {len(done)} of ~{n}")
 
-        at.autotune(self.run_dir, diameter, name=name, session=self.session, on_trial=progress)
+        at.autotune(
+            self.run_dir,
+            diameter,
+            name=name,
+            session=self.session,
+            on_trial=progress,
+            dup_corr=dup_corr,
+            min_dist_frac=min_dist_frac,
+        )
         self._figures(name)
         self._rescore()
 
@@ -259,10 +290,18 @@ class TuneApp:
         self._start(self._rerun, name, params)
         return name
 
-    def start_autotune(self, diameter: float) -> str:
+    def start_autotune(
+        self,
+        diameter: float | None,
+        dup_corr: float = at.DUP_CORR,
+        min_dist_frac: float = sweep.MIN_DIST_FRAC,
+    ) -> str:
         fac = self.session.fac
-        at.check_diameter(diameter, fac.H, fac.W_)  # ValueError -> HTTP 400 before the worker
-        self._start(self._autotune, at.AUTO, diameter)
+        # validate before the worker (ValueError -> HTTP 400); a blank diameter stays None so
+        # the driver estimates it and records the source
+        d = at.estimate_diameter(self.run_dir) if diameter is None else diameter
+        at.check_diameter(d, fac.H, fac.W_)
+        self._start(self._autotune, at.AUTO, diameter, dup_corr, min_dist_frac)
         return at.AUTO
 
     def save_params(self, name: str, file: str) -> Path:
@@ -367,11 +406,7 @@ class Handler(BaseHTTPRequestHandler):
                 prm = form_to_params(form, app.params_of(form.pop("from", None)))
                 self._json({"path": str(app.make_preview(prm))})
             elif self.path == "/api/autotune":
-                try:
-                    d = float(form.get("diameter", ""))
-                except ValueError:
-                    raise ValueError("diameter: expected a number of px") from None
-                self._json({"name": app.start_autotune(d)})
+                self._json({"name": app.start_autotune(*_autotune_args(form))})
             else:
                 self._not_found()
         except Busy as e:

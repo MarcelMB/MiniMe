@@ -62,6 +62,9 @@ class Params:
     inita_wnd: int = 10
     init_merge_corr: float = 0.8
     loop_merge_corr: float = 0.9
+    # units whose centroids are closer than this (px) merge whatever their traces do: two cells
+    # cannot sit that close, only a split one can. 0 = off; auto-tune sets 0.4 x cell diameter
+    merge_min_dist: float = 0.0
     # CNMF
     dl_wnd: int = 10
     # sparseness penalty of the spatial update as a per-pixel signal-to-noise threshold: a

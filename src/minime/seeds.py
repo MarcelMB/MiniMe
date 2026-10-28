@@ -222,19 +222,35 @@ def seed_pixels(f: Factors, seeds: pd.DataFrame) -> np.ndarray:
     return seeds["height"].to_numpy(np.int64) * f.W_ + seeds["width"].to_numpy(np.int64)
 
 
-def pnr_refine(
-    f: Factors,
-    seeds: pd.DataFrame,
-    thres: float | str = "auto",
-    q: tuple[float, float] = (0.1, 99.9),
-) -> pd.DataFrame:
-    """Add ``pnr`` and ``mask_pnr``; ``thres="auto"`` keeps the upper component of a 2-GMM."""
+def seed_pnr(f: Factors, seeds: pd.DataFrame, q: tuple[float, float] = (0.1, 99.9)) -> np.ndarray:
+    """(n,) peak-to-noise of each seed's denoised trace: ``ptp_q`` over ``6.18 sigma``.
+
+    A pixel's value depends on the pixel only, so callers that try several seed thresholds
+    can compute it once per pixel and pass it to ``pnr_refine``.
+    """
     pixels = seed_pixels(f, seeds)
     sigma = f.sigma_flat()[pixels].astype(np.float64)
     bad = sigma <= 0
     if bad.any():
         sigma[bad] = np.median(f.sigma_flat())
-    pnr = seed_ptp(f, pixels, q) / (6.18 * sigma)
+    return seed_ptp(f, pixels, q) / (6.18 * sigma)
+
+
+def pnr_refine(
+    f: Factors,
+    seeds: pd.DataFrame,
+    thres: float | str = "auto",
+    q: tuple[float, float] = (0.1, 99.9),
+    pnr: np.ndarray | None = None,
+) -> pd.DataFrame:
+    """Add ``pnr`` and ``mask_pnr``; ``thres="auto"`` keeps the upper component of a 2-GMM.
+
+    ``pnr`` (n,) skips the trace read when the caller already has ``seed_pnr`` of ``seeds``.
+    """
+    if pnr is None:
+        pnr = seed_pnr(f, seeds, q)
+    elif len(pnr) != len(seeds):
+        raise ValueError(f"{len(pnr)} pnr values for {len(seeds)} seeds")
     if isinstance(thres, str):
         if thres != "auto":
             raise ValueError(f"unknown pnr threshold {thres!r}")

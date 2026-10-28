@@ -37,7 +37,13 @@ GROUPS: dict[str, list[str]] = {
         "merge_dist",
         "merge_corr",
     ],
-    "Initialization": ["inita_corr", "inita_wnd", "init_merge_corr", "loop_merge_corr"],
+    "Initialization": [
+        "inita_corr",
+        "inita_wnd",
+        "init_merge_corr",
+        "loop_merge_corr",
+        "merge_min_dist",
+    ],
     "CNMF": ["dl_wnd", "sparse_snr", "size_thres", "n_iter", "background_clip"],
     "Execution": ["workers", "sub_batch"],
 }
@@ -71,6 +77,7 @@ HELP: dict[str, str] = {
     "inita_wnd": "Window in px around a seed for its initial footprint.",
     "init_merge_corr": "Initial units whose traces correlate above this merge.",
     "loop_merge_corr": "Units whose traces correlate above this merge during CNMF.",
+    "merge_min_dist": "Units closer than this (px) merge whatever their traces do; 0 = off.",
     "dl_wnd": "Dilation window in px that bounds where a footprint may grow.",
     "sparse_snr": "Per-pixel signal-to-noise a pixel needs to stay in a footprint.",
     "size_thres": "Smallest and largest footprint size in px (empty = no limit).",
