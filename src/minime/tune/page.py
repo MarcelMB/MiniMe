@@ -129,6 +129,8 @@ def _propose_form(app: TuneApp) -> str:
     )
     dup = fmt_value(at.DUP_CORR if ch is None else ch.dup_corr)
     frac = fmt_value((doc or {}).get("min_dist_frac", sweep.MIN_DIST_FRAC))
+    nf = (doc or {}).get("tune_frames", sweep.TUNE_FRAMES)
+    T = app.session.fac.T
     return (
         '<form id="atform"><h2>Auto-tune</h2>'
         '<label><b>cell diameter (px)</b><input type="text" name="diameter" '
@@ -144,6 +146,9 @@ def _propose_form(app: TuneApp) -> str:
         f'<label><b>min_dist_frac</b><input type="text" name="min_dist_frac" value="{_e(frac)}">'
         '<span class="hint">units closer than this x D always merge; real cells rarely sit '
         "closer than 0.4 D</span></label>"
+        f'<label><b>tune_frames</b><input type="text" name="tune_frames" value="{nf}">'
+        f'<span class="hint">explore on a middle segment of this many frames, decide on the '
+        f"whole session ({T} frames); 0 = explore on all</span></label>"
         '<button type="submit">Propose parameters (~5 min)</button></form>'
     )
 
@@ -208,6 +213,16 @@ def _run_note(doc: dict[str, Any]) -> str:
     )
 
 
+def _segment_text(doc: dict[str, Any]) -> str:
+    seg = doc.get("segment")
+    if seg is None:
+        return ""
+    return (
+        f" &middot; explored on frames {seg[0]}&ndash;{seg[1]} ({seg[1] - seg[0]} of "
+        f"{doc['frames']}), decided on all"
+    )
+
+
 def _proposal(app: TuneApp) -> str:
     doc = at.load_doc(app.reruns_dir / at.AUTO)
     if doc is None:
@@ -254,7 +269,8 @@ def _proposal(app: TuneApp) -> str:
         f"<h2>Proposal ({at.AUTO})</h2>{_run_note(doc)}<div class='note'>{s['good']} good / "
         f"{s['flagged']} flagged ({_e(reasons) or 'none'}) &middot; diameter "
         f"{_e(fmt_value(doc['diameter']))} px ({_e(source)}) &middot; derived: {_e(derived)}"
-        f"{kept_text} &middot; {doc['n_trials']} settings in {doc['wall_s']} s</div>"
+        f"{kept_text} &middot; {doc['n_trials']} settings in {doc['wall_s']} s"
+        f"{_segment_text(doc)}</div>"
         f"{thresholds}"
         "<div class='note'>Curves: best good (blue) and flagged (red) count at each value; "
         "dashed = proposed. To override: view auto (its values fill the form), edit, Rerun; "

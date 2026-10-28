@@ -180,7 +180,9 @@ def test_seeds_stage_runs_gmm_refine_only_when_enabled(monkeypatch, use_gmm):
     monkeypatch.setattr(seeds, "pnr_refine", lambda f, s, thres, pnr=None: s.assign(mask_pnr=True))
     monkeypatch.setattr(seeds, "gmm_refine", fake_gmm)
     monkeypatch.setattr(corr, "seeds_merge", lambda fc, s, mp, d, c: s.assign(mask_mrg=True))
-    fac = SimpleNamespace(block_max=None, block_edges=None, T=10, max_proj=None)
+    fac = SimpleNamespace(
+        block_max=None, block_edges=None, T=10, max_proj=None, t0=0, session_T=None
+    )
     assert Params().gmm_refine is False
     timer = report.StageTimer()
     prm = Params(gmm_refine=use_gmm)

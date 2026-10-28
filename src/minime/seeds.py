@@ -154,11 +154,23 @@ def seeds_init(
     stp_size: int,
     max_wnd: int,
     diff_thres: int,
+    t0: int = 0,
+    session_T: int | None = None,
 ) -> pd.DataFrame:
-    """Over-complete seeds (``height``, ``width``, ``seeds`` count) from stored block maxima."""
+    """Over-complete seeds (``height``, ``width``, ``seeds`` count) from stored block maxima.
+
+    On a time subset (frames ``t0`` to ``t0 + T`` of a ``session_T``-frame session) the windows
+    are the session's windows inside the subset.
+    """
     if block_max.dtype == np.float64:  # cv2 morphology has no float64 path
         block_max = block_max.astype(np.float32)
-    windows = rolling_windows(T, wnd_size, stp_size)
+    windows = [
+        Window(w.start - t0, w.stop - t0)
+        for w in rolling_windows(session_T or T, wnd_size, stp_size)
+        if t0 <= w.start and w.stop <= t0 + T
+    ]
+    if not windows:
+        raise ValueError(f"no {wnd_size}-frame seed window fits in {T} frames")
     ranges = window_block_ranges(block_edges, windows)
     count = count_local_maxima(block_max, ranges, disk_kernels(2, max_wnd), diff_thres)
     arr = seeds_from_count(count)

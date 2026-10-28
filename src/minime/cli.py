@@ -83,15 +83,23 @@ def autotune(
     min_dist_frac: Annotated[
         float | None, typer.Option(help="Units closer than this x D always merge.")
     ] = None,
+    tune_frames: Annotated[
+        int | None,
+        typer.Option(
+            help="Explore on a middle segment of this many frames, decide on the whole "
+            "session (0 = explore on the whole session)."
+        ),
+    ] = None,
 ) -> None:
     """Propose window-2 parameters for RUN_DIR (sweep, then a rerun in RUN_DIR/reruns/NAME/)."""
     import json
 
     from minime.autotune import run as at
-    from minime.autotune.sweep import MIN_DIST_FRAC, Trial
+    from minime.autotune.sweep import MIN_DIST_FRAC, TUNE_FRAMES, Trial
 
     dup_corr = at.DUP_CORR if dup_corr is None else dup_corr
     min_dist_frac = MIN_DIST_FRAC if min_dist_frac is None else min_dist_frac
+    tune_frames = TUNE_FRAMES if tune_frames is None else tune_frames
 
     def show(t: Trial) -> None:
         res = (
@@ -110,6 +118,7 @@ def autotune(
             on_trial=show,
             dup_corr=dup_corr,
             min_dist_frac=min_dist_frac,
+            tune_frames=tune_frames,
         )
     except (ValueError, RuntimeError) as e:
         typer.echo(f"error: {e}", err=True)
@@ -117,6 +126,12 @@ def autotune(
     doc = json.loads((out / at.DOC).read_text())
     typer.echo(str(out))
     typer.echo(f"dup_corr {dup_corr}  min_dist_frac {min_dist_frac}  diameter {diameter}")
+    seg = doc["segment"]
+    typer.echo(
+        f"explored on frames {seg[0]}-{seg[1]} of {doc['frames']}, decided on all"
+        if seg
+        else f"explored on all {doc['frames']} frames"
+    )
     for k, v in doc["proposed"].items():
         edge = "  [at edge]" if k in doc["at_edge"] else ""
         typer.echo(f"{k:<17} {doc['run_values'][k]!s:>8} -> {v!s:<8}{edge}")

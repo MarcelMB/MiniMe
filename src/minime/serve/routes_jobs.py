@@ -9,10 +9,14 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from minime import io
+from minime.autotune.sweep import DERIVED, derived_params
+from minime.params import Params
+from minime.serve import preview
+from minime.serve.arrays import array_response
 from minime.serve.jobs import FINAL, Job, JobManager
 from minime.serve.runs import fps_from_files
 
@@ -41,15 +45,44 @@ class JobBody(BaseModel):
     overwrite: bool = False
 
 
-@router.get("/raw/info")
-def raw_info(path: str) -> dict[str, Any]:
+class PreviewBody(BaseModel):
+    raw_dir: str
+    t: int
+    params: dict[str, Any] = {}
+
+
+def _info(request: Request, path: str) -> tuple[Path, io.RawInfo]:
+    """``io.probe`` of ``path``, cached per app: it decodes the whole last segment."""
     raw = Path(path).expanduser()
     if not raw.is_dir() or not any(raw.glob("*.avi")):
         raise HTTPException(404, f"no .avi files in {raw}")
+    state = request.app.state
+    key = str(raw.resolve())
+    with state.raw_infos_lock:
+        info = state.raw_infos.get(key)
+    if info is None:
+        try:
+            info = io.probe(raw)
+        except OSError as e:
+            raise HTTPException(400, f"cannot read the videos in {raw}: {e}") from None
+        with state.raw_infos_lock:
+            state.raw_infos[key] = info
+    return raw, info
+
+
+def _preview_args(request: Request, body: PreviewBody) -> tuple[io.RawInfo, Params]:
+    _, info = _info(request, body.raw_dir)
+    if not 0 <= body.t < info.frames:
+        raise HTTPException(400, f"frame {body.t} out of range 0..{info.frames - 1}")
     try:
-        info = io.probe(raw)
-    except OSError as e:
-        raise HTTPException(400, f"cannot read the videos in {raw}: {e}") from None
+        return info, Params.from_dict(body.params)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+
+
+@router.get("/raw/info")
+def raw_info(request: Request, path: str) -> dict[str, Any]:
+    raw, info = _info(request, path)
     return {
         "path": str(raw.resolve()),
         "segments": len(info.segments),
@@ -59,6 +92,34 @@ def raw_info(path: str) -> dict[str, Any]:
         "fps": fps_from_files(raw),
         "bytes": int(sum(p.stat().st_size for p in info.segments)),
     }
+
+
+@router.post("/raw/preview", response_model=None)
+def raw_preview(request: Request, body: PreviewBody) -> Response:
+    """Frame ``t`` through the pass-1 steps, (4, H, W) uint8 (``preview.PANELS``)."""
+    info, p = _preview_args(request, body)
+    return array_response(preview.frame_panels(info, body.t, p))
+
+
+@router.post("/raw/motion")
+def raw_motion(request: Request, body: PreviewBody) -> dict[str, Any]:
+    """Shifts of a short clip around ``t``; the template comes from the clip."""
+    info, p = _preview_args(request, body)
+    try:
+        return preview.motion_check(info, body.t, p)
+    except OSError as e:
+        raise HTTPException(400, str(e)) from None
+
+
+@router.get("/params/derived")
+def params_derived(diameter: float) -> dict[str, Any]:
+    """The size parameters for a cell ``diameter`` in px (``tophat_wnd`` and the ones
+    auto-tune derives); the launcher fills them in from the diameter read off a frame."""
+    try:
+        p = derived_params(Params(), diameter)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    return {"tophat_wnd": max(1, round(diameter)), **{k: getattr(p, k) for k in DERIVED}}
 
 
 @router.get("/jobs")

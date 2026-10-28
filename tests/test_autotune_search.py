@@ -162,10 +162,19 @@ def test_confirm_always_includes_the_runs_searched_values(tiny_w2_run):
     sess = window2.Window2Session(tiny_w2_run)
     sw = sweep.Sweep(sess, score.Checks(D), SMALL)
     sw.run()
-    run_values = {k: getattr(sess.base, k) for k in sweep.SEARCHED}
+    init_keys = [k for k in sweep.SEARCHED if sweep.STEP_OF[k] in sweep.INIT_STEPS]
+    run_init = {k: getattr(sess.base, k) for k in init_keys}
+    cnmf = [t.values for t in sw.trials if t.step in ("confirm", "sparse", "loop_merge")]
+    assert any({k: v[k] for k in init_keys} == run_init for v in cnmf)
     confirm = [t.values for t in sw.trials if t.step == "confirm"]
-    assert run_values in confirm and confirm.count(run_values) == 1
     assert len(confirm) <= SMALL.n_confirm + 1
+    # confirmed at the tuned sparse_snr and loop_merge_corr, not the run's
+    tail = sweep.best(sw._step("sparse", "loop_merge"), sw.base, "loop_merge").values
+    for v in confirm:
+        assert (v["sparse_snr"], v["loop_merge_corr"]) == (
+            tail["sparse_snr"],
+            tail["loop_merge_corr"],
+        )
 
 
 def test_pnr_cache_matches_seed_pnr_and_reads_each_pixel_once(tiny_w2_run, monkeypatch):

@@ -145,6 +145,10 @@ a { color: var(--accent); }
   border-radius: 999px; min-height: 32px; padding: 0 12px; cursor: pointer; }
 .chip[aria-pressed="true"] { background: var(--text); color: var(--ground); border-color: var(--text); }
 
+.thumb { font: inherit; font-size: 12px; background: none; border: 2px solid transparent; border-radius: 16px;
+  padding: 2px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.thumb[aria-pressed="true"] { border-color: var(--accent); }
+
 .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
 .field input[type="text"], .field input[type="number"] {
   font: inherit; color: var(--text); background: var(--card-solid); border: 1px solid var(--track);

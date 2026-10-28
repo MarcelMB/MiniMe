@@ -23,6 +23,7 @@ from minime.autotune.sweep import (
     DERIVED,
     MIN_DIST_FRAC,
     SEARCHED,
+    TUNE_FRAMES,
     Grids,
     Sweep,
     Trial,
@@ -138,11 +139,14 @@ def autotune(
     on_trial: Callable[[Trial], None] | None = None,
     dup_corr: float = DUP_CORR,
     min_dist_frac: float = MIN_DIST_FRAC,
+    tune_frames: int = TUNE_FRAMES,
 ) -> Path:
     """Sweep window 2 of ``run_dir`` and write the proposal to ``run_dir/reruns/name``.
 
     ``diameter`` None: ``estimate_diameter`` of the run. ``dup_corr`` and ``min_dist_frac``
-    are the two thresholds the checks and the derived merge distance rest on.
+    are the two thresholds the checks and the derived merge distance rest on. The search
+    explores on a middle segment of ``tune_frames`` frames (0 = the whole session) and decides
+    on the whole session.
     """
     t0 = time.perf_counter()
     session = session or Window2Session(run_dir)
@@ -151,7 +155,14 @@ def autotune(
         diameter = estimate_diameter(run_dir)
     check_diameter(diameter, session.fac.H, session.fac.W_)
     checks = checks or score.Checks(diameter, dup_corr=dup_corr)
-    sw = Sweep(session, checks, grids_of(session, grids), on_trial, min_dist_frac=min_dist_frac)
+    sw = Sweep(
+        session,
+        checks,
+        grids_of(session, grids),
+        on_trial,
+        min_dist_frac=min_dist_frac,
+        tune_frames=tune_frames,
+    )
     params = sw.run()
     grids = sw.grids  # extended where a best value sat at an edge
     out = session.run(params, name)
@@ -176,6 +187,9 @@ def autotune(
         "diameter": diameter,
         "diameter_source": source,
         "min_dist_frac": min_dist_frac,
+        "tune_frames": tune_frames,
+        "segment": None if sw.segment is None else list(sw.segment),  # frames explored on
+        "frames": session.fac.T,
         "pairs": pairs,  # what dup_corr and min_dist_frac act on, run and proposal
         "checks": asdict(checks),
         "grids": {k: _json_value(v) for k, v in asdict(grids).items()},

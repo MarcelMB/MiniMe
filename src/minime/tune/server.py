@@ -105,14 +105,15 @@ def changed(p: Params, base: Params) -> dict[str, tuple[Any, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _autotune_args(form: dict[str, str]) -> tuple[float | None, float, float]:
-    """``(diameter, dup_corr, min_dist_frac)`` from the form; blank = default, a blank
-    diameter is estimated from the run."""
+def _autotune_args(form: dict[str, str]) -> tuple[float | None, float, float, int]:
+    """``(diameter, dup_corr, min_dist_frac, tune_frames)`` from the form; blank = default,
+    a blank diameter is estimated from the run."""
     out: list[float | None] = []
     for key, default in (
         ("diameter", None),
         ("dup_corr", at.DUP_CORR),
         ("min_dist_frac", sweep.MIN_DIST_FRAC),
+        ("tune_frames", sweep.TUNE_FRAMES),
     ):
         text = form.get(key, "").strip()
         if not text:
@@ -122,7 +123,10 @@ def _autotune_args(form: dict[str, str]) -> tuple[float | None, float, float]:
             out.append(float(text))
         except ValueError:
             raise ValueError(f"{key}: expected a number") from None
-    return out[0], out[1], out[2]  # type: ignore[return-value]
+    n = out[3]
+    if n != int(n) or n < 0:
+        raise ValueError(f"tune_frames: expected a whole number >= 0, got {n:g}")
+    return out[0], out[1], out[2], int(n)  # type: ignore[return-value]
 
 
 class Busy(RuntimeError):
@@ -237,7 +241,12 @@ class TuneApp:
         return at.checks_of(doc) if doc is not None else None
 
     def _autotune(
-        self, name: str, diameter: float | None, dup_corr: float, min_dist_frac: float
+        self,
+        name: str,
+        diameter: float | None,
+        dup_corr: float,
+        min_dist_frac: float,
+        tune_frames: int,
     ) -> None:
         n = at.n_trials(self.session)
         done: list[Trial] = []
@@ -254,6 +263,7 @@ class TuneApp:
             on_trial=progress,
             dup_corr=dup_corr,
             min_dist_frac=min_dist_frac,
+            tune_frames=tune_frames,
         )
         self._figures(name)
         self._rescore()
@@ -295,13 +305,14 @@ class TuneApp:
         diameter: float | None,
         dup_corr: float = at.DUP_CORR,
         min_dist_frac: float = sweep.MIN_DIST_FRAC,
+        tune_frames: int = sweep.TUNE_FRAMES,
     ) -> str:
         fac = self.session.fac
         # validate before the worker (ValueError -> HTTP 400); a blank diameter stays None so
         # the driver estimates it and records the source
         d = at.estimate_diameter(self.run_dir) if diameter is None else diameter
         at.check_diameter(d, fac.H, fac.W_)
-        self._start(self._autotune, at.AUTO, diameter, dup_corr, min_dist_frac)
+        self._start(self._autotune, at.AUTO, diameter, dup_corr, min_dist_frac, tune_frames)
         return at.AUTO
 
     def save_params(self, name: str, file: str) -> Path:

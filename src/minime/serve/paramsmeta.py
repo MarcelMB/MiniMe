@@ -48,7 +48,8 @@ GROUPS: dict[str, list[str]] = {
     "Execution": ["workers", "sub_batch"],
 }
 
-COMMON = ["workers", "tophat_wnd", "merge_dist", "pnr_thres", "sparse_snr"]
+# tophat_wnd is set on the launcher's preview, not here
+COMMON = ["workers", "merge_dist", "pnr_thres", "sparse_snr"]
 
 HELP: dict[str, str] = {
     "median_ksize": "Median filter size in px before motion correction (<= 1 skips it).",

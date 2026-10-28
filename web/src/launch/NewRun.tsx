@@ -14,6 +14,7 @@ import {
   overwriteAfterError,
 } from "./params";
 import { ParamsForm } from "./ParamsForm";
+import { Preview } from "./Preview";
 
 export function NewRun() {
   const defaults = useResource("params", () =>
@@ -116,8 +117,19 @@ export function NewRun() {
             onClose={() => setPicking(false)}
           />
         )}
-        <section className="card span4" aria-label="2. Output">
-          <span className="label">2 · Name of the run</span>
+        {info.data && defaults.data && (
+          <Preview
+            raw={raw}
+            info={info.data}
+            values={merged}
+            onChange={(n, v) => {
+              setValues((x) => ({ ...x, [n]: v }));
+              setErrors((x) => ({ ...x, [n]: "" }));
+            }}
+          />
+        )}
+        <section className="card span4" aria-label="3. Output">
+          <span className="label">3 · Name of the run</span>
           <label className="field">
             Run name
             <input
@@ -136,8 +148,8 @@ export function NewRun() {
             onChange={setKeep}
           />
         </section>
-        <section className="card span4" aria-label="3. Parameters">
-          <span className="label">3 · Parameters</span>
+        <section className="card span4" aria-label="4. Parameters">
+          <span className="label">4 · Parameters</span>
           <Loading res={defaults} what="parameters">
             {(d) => (
               <ParamsForm

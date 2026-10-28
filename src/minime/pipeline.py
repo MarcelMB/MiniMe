@@ -178,6 +178,8 @@ def seeds_unmerged(
             p.seeds_stp,
             p.seeds_max_wnd,
             p.seeds_diff_thres,
+            fac.t0,
+            fac.session_T,
         )
     n["seeds_init"] = len(s)
     st["seeds_init"] = s
