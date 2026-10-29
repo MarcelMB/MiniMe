@@ -119,7 +119,17 @@ def _win_image(pid: int) -> str | None:
     from ctypes import wintypes
 
     k32 = ctypes.WinDLL("kernel32")
+    # 64-bit handles overflow ctypes' default int arguments, so declare the types
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     k32.OpenProcess.restype = wintypes.HANDLE
+    k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    k32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
     h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
     if not h:
         return None

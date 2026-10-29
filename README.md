@@ -20,7 +20,8 @@ Supported: Python 3.11 and newer, on Linux and macOS (Windows support is in prog
 Older Python versions stay supported as long as numpy, numba and opencv ship wheels for
 them, so lab PCs with an IT-managed Python keep working; that is longer than
 [SPEC 0](https://scientific-python.org/specs/spec-0000/) asks for. Dependency minimums
-follow SPEC 0: any core dependency release from the last two years works.
+follow SPEC 0: any core dependency release from the last two years works. Intel Macs need
+Python 3.11-3.13: numba stopped building for them after 0.62.1, so MiniMe pins that there.
 
 Development:
 

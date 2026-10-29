@@ -108,7 +108,14 @@ def _peak_working_set() -> int | None:
     c = Counters(cb=ctypes.sizeof(Counters))
     k32 = ctypes.WinDLL("kernel32")
     k32.GetCurrentProcess.restype = wintypes.HANDLE
-    ok = ctypes.WinDLL("psapi").GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(c), c.cb)
+    psapi = ctypes.WinDLL("psapi")
+    # 64-bit handles overflow ctypes' default int arguments, so declare the types
+    psapi.GetProcessMemoryInfo.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(Counters),
+        wintypes.DWORD,
+    ]
+    ok = psapi.GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(c), c.cb)
     return int(c.PeakWorkingSetSize) if ok else None
 
 

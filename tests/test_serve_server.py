@@ -9,10 +9,11 @@ from minime.serve.server import start_url
 
 
 def test_start_url_carries_token_and_folder():
-    u = urlparse(start_url(8123, "abc", Path("/Volumes/Extreme SSD/x")))
+    folder = Path("/Volumes/Extreme SSD/x")
+    u = urlparse(start_url(8123, "abc", folder))
     assert (u.hostname, u.port) == ("127.0.0.1", 8123)
     q = parse_qs(u.query)
-    assert q["token"] == ["abc"] and q["root"] == ["/Volumes/Extreme SSD/x"]
+    assert q["token"] == ["abc"] and q["root"] == [str(folder)]
     assert "root" not in parse_qs(urlparse(start_url(1, "t", None)).query)
 
 
