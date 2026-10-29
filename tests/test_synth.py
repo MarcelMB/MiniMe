@@ -5,6 +5,7 @@ import sys
 
 import numpy as np
 import pytest
+from scipy import sparse
 
 from minime.testing import synth
 from minime.testing import synth_effects as fx
@@ -159,11 +160,16 @@ def test_bleach_curve_endpoints():
     assert b[0] == 1.0 and 0.5 < b[-1] < 0.51
 
 
-def test_vessel_mask_dark_curves():
-    m = fx.vessel_mask(np.random.default_rng(0), (80, 80), 2)
-    assert m.shape == (80, 80) and m.dtype == np.float32
-    assert m.max() <= 1.0 and 0.25 < m.min() < 0.75
-    assert 0.02 < (m < 0.9).mean() < 0.4
+def test_vessel_mask_wide_dark_trunks_and_faint_branches():
+    m = fx.vessel_mask(np.random.default_rng(0), (300, 300), 2)
+    assert m.shape == (300, 300) and m.dtype == np.float32
+    assert m.max() <= 1.0 and 0.3 < m.min() < 0.8
+    assert 0.02 < (m < 0.9).mean() < 0.3
+    # the darkest point sits on a trunk several px wide, not on a 2 px line
+    y, x = np.unravel_index(int(m.argmin()), m.shape)
+    assert (m[max(0, y - 3) : y + 4, max(0, x - 3) : x + 4] < 0.95).mean() > 0.5
+    faint = fx.vessel_mask(np.random.default_rng(0), (300, 300), 2, density=0.02)
+    assert faint.min() > m.min()
     ones = np.ones((8, 8), np.float32)
     assert np.array_equal(fx.vessel_mask(np.random.default_rng(0), (8, 8), 0), ones)
 
@@ -212,6 +218,7 @@ ALL_ON = synth.SynthOptions(
     rise_tau=2.0,
     hemo=20.0,
     edge_band=3,
+    out_of_focus=2,
 )
 
 
@@ -220,7 +227,9 @@ def test_options_round_trip_and_scenarios():
     assert synth.SynthOptions.from_dict(d) == ALL_ON
     assert synth.SynthOptions.from_dict(None) == synth.SynthOptions()
     assert synth.SCENARIOS["clean"] == synth.SynthOptions()
-    assert set(synth.SCENARIOS) >= {"realistic", "overlap", "late_active", "vessels"}
+    assert set(synth.SCENARIOS) >= {"realistic", "overlap", "late_active", "vessels", "hard"}
+    assert synth.SCENARIOS["hard"].out_of_focus > 0
+    assert synth.SCENARIOS["grin_v4"].aperture > 0
 
 
 def test_truth_matches_generator_with_every_effect():
@@ -249,6 +258,10 @@ def test_truth_matches_generator_with_every_effect():
         dict(bursts=True, rise_tau=2.0),
         dict(hemo=20.0),
         dict(edge_band=3),
+        dict(out_of_focus=3),
+        dict(spike_rate=0.003, rate_cv=2.0),
+        dict(amp_scale=0.5, cell_f0=10.0, decay_tau=24.0),
+        dict(aperture=1.0, shot_noise=0.4, background=1.5),
     ],
 )
 def test_single_effect_keeps_cells_and_motion(opts):
@@ -337,7 +350,7 @@ def test_write_session_stores_options(tmp_path):
     o = synth.SynthOptions(vessels=1, dropped=2)
     meta = synth.write_session(tmp_path / "raw", 0.05, segment=30, seed=0, side=32, options=o)
     assert meta["options"] == o.to_dict()
-    saved = json.loads((tmp_path / "meta.json").read_text())
+    saved = json.loads((tmp_path / "meta.json").read_text(encoding="utf-8"))
     assert synth.SynthOptions.from_dict(saved["options"]) == o
     plain = synth.write_session(tmp_path / "raw2", 0.05, segment=30, side=32)
     assert synth.SynthOptions.from_dict(plain["options"]) == synth.SynthOptions()
@@ -375,3 +388,59 @@ def test_generator_peak_memory_stays_near_three_chunk_arrays():
     _, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     assert peak < 3.3 * chunk_bytes, peak / chunk_bytes
+
+
+def test_out_of_focus_cells_are_wide_dim_and_not_in_the_cell_truth():
+    h = w = 64
+    o = synth.SynthOptions(out_of_focus=3)
+    base, on = synth.synth_setup(h, w, 200, seed=0), synth.synth_setup(h, w, 200, seed=0, options=o)
+    assert on.oof_ys.size == 3 and on.oof_signal.shape == (3, 200)
+    assert (on.oof_sigma > 2 * synth.CELL_SIGMA).all()
+    assert on.oof_signal.max() < synth.CELL_AMP * synth.OOF_AMP[1] * 1.5
+    _, clean_b, cells_b = next(synth.truth_chunks(base, h, w, chunk=200))
+    _, clean_o, cells_o = next(synth.truth_chunks(on, h, w, chunk=200))
+    assert np.array_equal(cells_b, cells_o)  # CNMF's target is unchanged
+    assert clean_o.astype(int).sum() > clean_b.astype(int).sum()  # but the movie is brighter
+
+
+def test_truth_npz_holds_the_scoring_arrays_and_footprints(tmp_path):
+    o = synth.SynthOptions(overlap=2, late_active=1, vessels=1, out_of_focus=2)
+    synth.write_session(tmp_path / "raw", 0.05, segment=30, seed=0, side=48, options=o)
+    s = synth.synth_setup(48, 48, 90, 0, o)
+    with np.load(tmp_path / "truth.npz") as z:
+        assert np.array_equal(z["centroids"], synth.true_centroids(s))
+        assert np.array_equal(z["cat_late"], s.late) and z["cat_late"].sum() == 1
+        assert z["cat_overlap"].sum() >= 3 and z["oof_centroids"].shape == (2, 2)
+        A = sparse.csr_matrix((z["A_data"], z["A_indices"], z["A_indptr"]), shape=z["A_shape"])
+    assert A.shape == (s.ys.size, 48 * 48) and np.isclose(A.max(), 1.0)
+    inside = synth.detectable(s, 48, 48)
+    peak = np.asarray(A[inside].argmax(axis=1)).ravel()
+    c = np.rint(synth.true_centroids(s)[inside]).astype(int)
+    assert np.array_equal(peak, c[:, 0] * 48 + c[:, 1])
+
+
+def test_grin_aperture_matches_the_v4_radial_profile():
+    t, rim = fx.grin_aperture((600, 600), 1.0)
+    yy, xx = np.mgrid[0:600, 0:600]
+    r = np.hypot(yy - 299.5, xx - 299.5) / 300
+    centre = t[r < 0.2].mean()
+    rel = [t[(r >= a) & (r < b)].mean() / centre for a, b in [(0.4, 0.6), (0.9, 1.0), (1.2, 1.42)]]
+    assert np.allclose(rel, [0.79, 0.28, 0.03], atol=0.06)  # real V4: 0.79, 0.28, 0.03
+    assert rim[300, 300] < 0.01 and rim[0, 0] == 1.0
+
+
+def test_spike_rate_and_spread_make_most_cells_quiet():
+    base = synth.synth_setup(128, 128, 2000, seed=0)
+    o = synth.SynthOptions(spike_rate=0.002, rate_cv=3.0)
+    on = synth.synth_setup(128, 128, 2000, seed=0, options=o)
+    per_cell = (on.spikes > 0).sum(axis=1)
+    assert per_cell.sum() < (base.spikes > 0).sum() / 2
+    assert np.median(per_cell) < per_cell.mean() / 2  # a few busy cells, most quiet
+
+
+def test_shot_noise_grows_with_brightness():
+    o = synth.SynthOptions(aperture=1.0, shot_noise=0.5, noise_sd=1.0)
+    movie = synth.synth_movie(96, 96, 60, seed=0, options=o).astype(float)
+    sd = np.diff(movie, axis=0).std(axis=0) / np.sqrt(2)
+    mean = movie.mean(axis=0)
+    assert sd[mean > np.quantile(mean, 0.9)].mean() > 1.5 * sd[mean < np.quantile(mean, 0.1)].mean()

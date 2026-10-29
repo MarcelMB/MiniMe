@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import re
 
 import numpy as np
 import pandas as pd
@@ -101,8 +102,18 @@ def test_failed_settings_are_recorded_and_skipped(tiny_w2_run):
     assert all(t.values["pnr_thres"] == 1e9 for t in failed)
 
 
-def test_all_failed_step_raises(tiny_w2_run):
+def test_all_failed_step_falls_back_to_the_run(tiny_w2_run):
     sess = window2.Window2Session(tiny_w2_run)
+    grids = dataclasses.replace(SMALL, pnr_thres=(1e9,))
+    sw = sweep.Sweep(sess, score.Checks(D), grids)
+    assert sw.run() == sess.base
+    assert sw.final is sw.run_trial and not sw.better_than_run
+    assert re.search("seeds.*no seeds survived", sw.search_error)
+
+
+def test_all_failed_step_raises_when_the_run_failed_too(tiny_w2_run):
+    sess = window2.Window2Session(tiny_w2_run)
+    sess.base = dataclasses.replace(sess.base, pnr_thres=1e9)
     grids = dataclasses.replace(SMALL, pnr_thres=(1e9,))
     with pytest.raises(RuntimeError, match="seeds.*no seeds survived"):
         sweep.Sweep(sess, score.Checks(D), grids).run()
@@ -111,7 +122,7 @@ def test_all_failed_step_raises(tiny_w2_run):
 def test_autotune_writes_a_rerun_whose_score_matches(tiny_w2_run):
     out = at.autotune(tiny_w2_run, D, grids=SMALL, name="auto_t")
     assert out == tiny_w2_run / "reruns" / "auto_t"
-    doc = json.loads((out / "autotune.json").read_text())
+    doc = json.loads((out / "autotune.json").read_text(encoding="utf-8"))
     assert doc["diameter"] == D and set(doc["proposed"]) == set(sweep.SEARCHED)
     assert doc["derived"]["dl_wnd"] == 5 and "dl_wnd" in doc["kept"]
     assert set(doc["at_edge"]) <= set(sweep.SEARCHED)
@@ -146,6 +157,11 @@ def test_cli_autotune(tiny_w2_run, monkeypatch):
     assert res.exit_code == 0, res.output
     assert "sparse_snr" in res.output and "good" in res.output
     assert (tiny_w2_run / "reruns" / "auto_cli" / "autotune.json").exists()
+    res = CliRunner().invoke(
+        cli.app, ["autotune", str(tiny_w2_run), "--name", "auto_cli2", "--dup-corr", "0.7"]
+    )
+    assert res.exit_code == 0, res.output
+    assert "estimated from the run's footprints" in res.output and "dup_corr 0.7" in res.output
 
 
 @pytest.mark.parametrize("d", ["0", "1000"])
@@ -161,7 +177,7 @@ def test_check_diameter_bounds():
             at.check_diameter(d, 64, 64)
 
 
-def test_cli_cnmf_rejects_the_reserved_auto_name(tiny_w2_run):
-    res = CliRunner().invoke(cli.app, ["cnmf", str(tiny_w2_run), "--name", "auto"])
+def test_cli_cnmf_rejects_the_reserved_auto_name(run_copy):
+    res = CliRunner().invoke(cli.app, ["cnmf", str(run_copy), "--name", "auto"])
     assert res.exit_code == 1 and "reserved" in res.output
-    assert not (tiny_w2_run / "reruns" / "auto").exists()
+    assert not (run_copy / "reruns" / "auto").exists()

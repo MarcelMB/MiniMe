@@ -44,7 +44,7 @@ def test_wrong_host_is_rejected(cache_dir, tmp_path):
 def test_static_page_and_missing_build(cache_dir, tmp_path):
     static = tmp_path / "static"
     static.mkdir()
-    (static / "index.html").write_text("<html>minime</html>")
+    (static / "index.html").write_text("<html>minime</html>", encoding="utf-8")
     c = TestClient(create_app("tok", cache_root=cache_dir, static_dir=static))
     assert "minime" in c.get("/").text
     c2 = TestClient(create_app("tok", cache_root=cache_dir, static_dir=tmp_path / "none"))
@@ -80,9 +80,9 @@ def test_summary_image_and_frames(client, tiny_run):
 
 
 def test_unplugged_raw_and_user_fps(client, run_copy):
-    pj = json.loads((run_copy / "params.json").read_text())
+    pj = json.loads((run_copy / "params.json").read_text(encoding="utf-8"))
     pj["raw_dir"] = str(run_copy / "unplugged")
-    (run_copy / "params.json").write_text(json.dumps(pj))
+    (run_copy / "params.json").write_text(json.dumps(pj), encoding="utf-8")
     rid = _open(client, run_copy)
     r = client.get(f"/api/runs/{rid}/frame/0?source=raw")
     assert r.status_code == 404 and "raw videos not found" in r.json()["detail"]

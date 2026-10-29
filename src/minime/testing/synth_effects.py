@@ -110,16 +110,33 @@ def smooth_field(rng: Generator, shape: tuple[int, int], sigma: float) -> np.nda
     return f.astype(np.float32)
 
 
-def vessel_mask(rng: Generator, shape: tuple[int, int], n: int, opacity: float = 0.7) -> np.ndarray:
-    """Multiplicative transmission of ``n`` dark tortuous vessels (ones when ``n == 0``).
+def vessel_mask(
+    rng: Generator, shape: tuple[int, int], n: int, density: float = 0.05
+) -> np.ndarray:
+    """Multiplicative transmission of ``n`` branching vessel trees (ones when ``n == 0``).
 
-    Each vessel starts on a random edge heading inwards, walks in 2 px steps with heading
-    noise (sd 0.15 rad) until it leaves the canvas, is 2 to 4 px wide and has a Beer-Lambert
-    profile ``1 - opacity (1 - exp(-chord / width))`` blurred with sigma 1 px.
+    Each tree enters from a random edge with a trunk 2-4.5 % of the canvas side wide (13-28 px
+    at 600 px, at least 3) and crosses the canvas in gentle bends (radius >= ~150 px),
+    tapering; every 80-200 px it gives off a branch at 30-70 degrees, 40-70 % as wide, that
+    runs 60-250 px and tapers faster (two levels deep). Transmission is Beer-Lambert
+    ``exp(-density * chord)`` (wide vessels dark, thin ones faint), blurred like an
+    out-of-focus surface vessel (sigma 0.4 % of the side, at least 1 px).
     """
     ch, cw = shape
-    mask = np.ones(shape, np.float32)
-    yy, xx = np.mgrid[0:ch, 0:cw].astype(np.float32)
+    if n <= 0:
+        return np.ones(shape, np.float32)
+    side = max(ch, cw)
+    chord = np.zeros(shape, np.float32)
+
+    def disc(y: float, x: float, r: float) -> None:
+        y0, y1 = max(0, int(y - r) - 1), min(ch, int(y + r) + 2)
+        x0, x1 = max(0, int(x - r) - 1), min(cw, int(x + r) + 2)
+        if y0 >= y1 or x0 >= x1:
+            return
+        yy, xx = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+        c = 2 * np.sqrt(np.maximum(r * r - (yy - y) ** 2 - (xx - x) ** 2, 0))
+        np.maximum(chord[y0:y1, x0:x1], c, out=chord[y0:y1, x0:x1])
+
     for _ in range(n):
         edge = int(rng.integers(4))
         u = rng.uniform(0.1, 0.9)
@@ -129,21 +146,41 @@ def vessel_mask(rng: Generator, shape: tuple[int, int], n: int, opacity: float =
             2: (u * ch, 0.0, 0.0),  # left edge, heading right
             3: (u * ch, cw - 1.0, np.pi),
         }[edge]
-        theta += rng.uniform(-0.5, 0.5)
-        width = rng.uniform(2.0, 4.0)
-        r = width / 2
-        chord = np.zeros(shape, np.float32)
-        for _ in range(2 * (ch + cw)):
-            if not (0 <= y < ch and 0 <= x < cw):
-                break
-            d2 = (yy - y) ** 2 + (xx - x) ** 2
-            np.maximum(chord, 2 * np.sqrt(np.maximum(r * r - d2, 0)), out=chord)
-            theta += rng.normal(0, 0.15)
-            y += 2 * np.sin(theta)
-            x += 2 * np.cos(theta)
-        m = 1 - opacity * (1 - np.exp(-chord / width))
-        mask *= cv2.GaussianBlur(m, (0, 0), 1.0)
-    return mask
+        width = max(3.0, rng.uniform(0.02, 0.045) * side)
+        # (y, x, heading, width, length budget px, depth)
+        stack = [(y, x, theta + rng.uniform(-0.4, 0.4), width, 4.0 * side, 0)]
+        while stack:
+            y, x, theta, width, budget, depth = stack.pop()
+            taper = 0.999 if depth == 0 else 0.994
+            kappa, next_branch = 0.0, rng.uniform(80, 200)
+            while budget > 0 and width >= 2.0:
+                if not (-width <= y < ch + width and -width <= x < cw + width):
+                    break
+                disc(y, x, width / 2)
+                kappa = float(np.clip(kappa + rng.normal(0, 0.0008), -0.006, 0.006))
+                theta += 2 * kappa
+                y += 2 * np.sin(theta)
+                x += 2 * np.cos(theta)
+                width *= taper
+                budget -= 2
+                next_branch -= 2
+                if next_branch <= 0 and depth < 2:
+                    turn = rng.choice([-1.0, 1.0])
+                    child = (
+                        y,
+                        x,
+                        theta + turn * rng.uniform(0.5, 1.2),
+                        width * rng.uniform(0.4, 0.7),
+                        rng.uniform(60, 250),
+                        depth + 1,
+                    )
+                    stack.append(child)
+                    theta -= turn * rng.uniform(0.05, 0.2)
+                    width *= rng.uniform(0.88, 0.97)
+                    next_branch = rng.uniform(80, 200)
+    trans = np.exp(-density * chord).astype(np.float32)
+    blurred = cv2.GaussianBlur(trans, (0, 0), max(1.0, 0.004 * side), borderType=cv2.BORDER_REFLECT)
+    return np.minimum(blurred, 1.0)
 
 
 def warp_field(rng: Generator, shape: tuple[int, int], sigma: float) -> np.ndarray:
@@ -195,3 +232,22 @@ def frame_map(rng: Generator, T: int, dropped: int, duplicated: int) -> np.ndarr
     for t in np.sort(dups):
         fm[t] = fm[t - 1]
     return fm
+
+
+def grin_aperture(shape: tuple[int, int], radius: float) -> tuple[np.ndarray, np.ndarray]:
+    """GRIN lens optics on the sensor: ``(transmission, rim_blur)``, both (h, w) float32.
+
+    With ``R = radius`` x half the frame side and ``r`` the distance from the centre, the
+    transmission is a broad Gaussian falloff ``exp(-(r/R)^2 / 1.0)`` cut by a soft lens edge
+    (logistic at 1.05 R, 0.08 R wide) over a 2 % floor: the radial profile of a UCLA V4
+    recording through a GRIN lens (1, 0.79, 0.42, 0.17, 0.03 at r/R = 0.1, 0.5, 0.85, 1.05,
+    1.3). ``rim_blur`` = ``(r/R)^4`` clipped to 1 is the weight of a blurred frame (the lens
+    aberrates toward its rim).
+    """
+    h, w = shape
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    big_r = radius * min(h, w) / 2
+    rr = np.hypot(yy - (h - 1) / 2, xx - (w - 1) / 2) / big_r
+    edge = 1 / (1 + np.exp((rr - 1.05) / 0.08))
+    trans = (np.exp(-(rr**2)) * edge * 0.98 + 0.02).astype(np.float32)
+    return trans, np.clip(rr**4, 0, 1).astype(np.float32)

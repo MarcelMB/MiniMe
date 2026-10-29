@@ -29,6 +29,7 @@ from typing import Any
 
 from minime import pipeline, window2
 from minime.autotune import run as at
+from minime.autotune import sweep
 from minime.autotune.score import Checks
 from minime.autotune.sweep import Trial
 from minime.params import Params
@@ -104,6 +105,30 @@ def changed(p: Params, base: Params) -> dict[str, tuple[Any, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _autotune_args(form: dict[str, str]) -> tuple[float | None, float, float, int]:
+    """``(diameter, dup_corr, min_dist_frac, tune_frames)`` from the form; blank = default,
+    a blank diameter is estimated from the run."""
+    out: list[float | None] = []
+    for key, default in (
+        ("diameter", None),
+        ("dup_corr", at.DUP_CORR),
+        ("min_dist_frac", sweep.MIN_DIST_FRAC),
+        ("tune_frames", sweep.TUNE_FRAMES),
+    ):
+        text = form.get(key, "").strip()
+        if not text:
+            out.append(default)
+            continue
+        try:
+            out.append(float(text))
+        except ValueError:
+            raise ValueError(f"{key}: expected a number") from None
+    n = out[3]
+    if n != int(n) or n < 0:
+        raise ValueError(f"tune_frames: expected a whole number >= 0, got {n:g}")
+    return out[0], out[1], out[2], int(n)  # type: ignore[return-value]
+
+
 class Busy(RuntimeError):
     pass
 
@@ -136,9 +161,11 @@ class TuneApp:
         for d in sorted(dirs, key=lambda d: (d / "params.json").stat().st_mtime):
             row: dict[str, Any] = {"name": d.name}
             if (d / "summary.json").exists():
-                row |= json.loads((d / "summary.json").read_text())
+                row |= json.loads((d / "summary.json").read_text(encoding="utf-8"))
             elif (d / "error.txt").exists():
-                row["error"] = (d / "error.txt").read_text().strip().splitlines()[-1]
+                row["error"] = (
+                    (d / "error.txt").read_text(encoding="utf-8").strip().splitlines()[-1]
+                )
             else:
                 row["pending"] = True
             try:
@@ -215,7 +242,14 @@ class TuneApp:
         doc = at.load_doc(self.reruns_dir / at.AUTO)
         return at.checks_of(doc) if doc is not None else None
 
-    def _autotune(self, name: str, diameter: float) -> None:
+    def _autotune(
+        self,
+        name: str,
+        diameter: float | None,
+        dup_corr: float,
+        min_dist_frac: float,
+        tune_frames: int,
+    ) -> None:
         n = at.n_trials(self.session)
         done: list[Trial] = []
 
@@ -223,7 +257,16 @@ class TuneApp:
             done.append(t)
             self._set(stage=f"{t.step}: setting {len(done)} of ~{n}")
 
-        at.autotune(self.run_dir, diameter, name=name, session=self.session, on_trial=progress)
+        at.autotune(
+            self.run_dir,
+            diameter,
+            name=name,
+            session=self.session,
+            on_trial=progress,
+            dup_corr=dup_corr,
+            min_dist_frac=min_dist_frac,
+            tune_frames=tune_frames,
+        )
         self._figures(name)
         self._rescore()
 
@@ -243,7 +286,7 @@ class TuneApp:
             self._rerun(name, self.session.base)
         for d in sorted(self.reruns_dir.glob("*")):
             s = d / "summary.json"
-            text = s.read_text() if s.exists() else ""
+            text = s.read_text(encoding="utf-8") if s.exists() else ""
             stale = s.exists() and (
                 (self.minian_npz and "minian_matched" not in text)
                 or (self.checks() is not None and '"good"' not in text)
@@ -259,10 +302,19 @@ class TuneApp:
         self._start(self._rerun, name, params)
         return name
 
-    def start_autotune(self, diameter: float) -> str:
+    def start_autotune(
+        self,
+        diameter: float | None,
+        dup_corr: float = at.DUP_CORR,
+        min_dist_frac: float = sweep.MIN_DIST_FRAC,
+        tune_frames: int = sweep.TUNE_FRAMES,
+    ) -> str:
         fac = self.session.fac
-        at.check_diameter(diameter, fac.H, fac.W_)  # ValueError -> HTTP 400 before the worker
-        self._start(self._autotune, at.AUTO, diameter)
+        # validate before the worker (ValueError -> HTTP 400); a blank diameter stays None so
+        # the driver estimates it and records the source
+        d = at.estimate_diameter(self.run_dir) if diameter is None else diameter
+        at.check_diameter(d, fac.H, fac.W_)
+        self._start(self._autotune, at.AUTO, diameter, dup_corr, min_dist_frac, tune_frames)
         return at.AUTO
 
     def save_params(self, name: str, file: str) -> Path:
@@ -367,11 +419,7 @@ class Handler(BaseHTTPRequestHandler):
                 prm = form_to_params(form, app.params_of(form.pop("from", None)))
                 self._json({"path": str(app.make_preview(prm))})
             elif self.path == "/api/autotune":
-                try:
-                    d = float(form.get("diameter", ""))
-                except ValueError:
-                    raise ValueError("diameter: expected a number of px") from None
-                self._json({"name": app.start_autotune(d)})
+                self._json({"name": app.start_autotune(*_autotune_args(form))})
             else:
                 self._not_found()
         except Busy as e:

@@ -32,7 +32,7 @@ class RunCache:
 
     def load_json(self, name: str, default: Any = None) -> Any:
         p = self.dir / name
-        return json.loads(p.read_text()) if p.exists() else default
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else default
 
     def _tmp(self, name: str, suffix: str = "") -> Path:
         """A tmp name of its own per process and thread, so concurrent writes never collide."""
@@ -40,7 +40,7 @@ class RunCache:
 
     def save_json(self, name: str, doc: Any) -> None:
         tmp = self._tmp(name)
-        tmp.write_text(json.dumps(doc))
+        tmp.write_text(json.dumps(doc), encoding="utf-8")
         tmp.replace(self.dir / name)
 
     def load_npy(self, name: str) -> np.ndarray:

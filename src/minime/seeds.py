@@ -17,9 +17,9 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 import pandas as pd
-from sklearn.mixture import GaussianMixture
 
 from minime.factors import Factors
+from minime.gmm import fit_gmm_1d
 
 # ---------------------------------------------------------------------------
 # Windows and blocks
@@ -68,14 +68,14 @@ def window_projection(block_max: np.ndarray, i0: int, i1: int) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def _disk(radius: int) -> np.ndarray:
+def disk(radius: int) -> np.ndarray:
     """Binary disk structuring element of the given radius (uint8, (2r+1, 2r+1))."""
     y, x = np.ogrid[-radius : radius + 1, -radius : radius + 1]
     return (x * x + y * y <= radius * radius).astype(np.uint8)
 
 
 def disk_kernels(k0: int, k1: int) -> list[np.ndarray]:
-    return [_disk(k) for k in range(k0, k1)]
+    return [disk(k) for k in range(k0, k1)]
 
 
 def local_max_union(fm: np.ndarray, kernels: list[np.ndarray], diff: float) -> np.ndarray:
@@ -154,11 +154,23 @@ def seeds_init(
     stp_size: int,
     max_wnd: int,
     diff_thres: int,
+    t0: int = 0,
+    session_T: int | None = None,
 ) -> pd.DataFrame:
-    """Over-complete seeds (``height``, ``width``, ``seeds`` count) from stored block maxima."""
+    """Over-complete seeds (``height``, ``width``, ``seeds`` count) from stored block maxima.
+
+    On a time subset (frames ``t0`` to ``t0 + T`` of a ``session_T``-frame session) the windows
+    are the session's windows inside the subset.
+    """
     if block_max.dtype == np.float64:  # cv2 morphology has no float64 path
         block_max = block_max.astype(np.float32)
-    windows = rolling_windows(T, wnd_size, stp_size)
+    windows = [
+        Window(w.start - t0, w.stop - t0)
+        for w in rolling_windows(session_T or T, wnd_size, stp_size)
+        if t0 <= w.start and w.stop <= t0 + T
+    ]
+    if not windows:
+        raise ValueError(f"no {wnd_size}-frame seed window fits in {T} frames")
     ranges = window_block_ranges(block_edges, windows)
     count = count_local_maxima(block_max, ranges, disk_kernels(2, max_wnd), diff_thres)
     arr = seeds_from_count(count)
@@ -222,25 +234,41 @@ def seed_pixels(f: Factors, seeds: pd.DataFrame) -> np.ndarray:
     return seeds["height"].to_numpy(np.int64) * f.W_ + seeds["width"].to_numpy(np.int64)
 
 
-def pnr_refine(
-    f: Factors,
-    seeds: pd.DataFrame,
-    thres: float | str = "auto",
-    q: tuple[float, float] = (0.1, 99.9),
-) -> pd.DataFrame:
-    """Add ``pnr`` and ``mask_pnr``; ``thres="auto"`` keeps the upper component of a 2-GMM."""
+def seed_pnr(f: Factors, seeds: pd.DataFrame, q: tuple[float, float] = (0.1, 99.9)) -> np.ndarray:
+    """(n,) peak-to-noise of each seed's denoised trace: ``ptp_q`` over ``6.18 sigma``.
+
+    A pixel's value depends on the pixel only, so callers that try several seed thresholds
+    can compute it once per pixel and pass it to ``pnr_refine``.
+    """
     pixels = seed_pixels(f, seeds)
     sigma = f.sigma_flat()[pixels].astype(np.float64)
     bad = sigma <= 0
     if bad.any():
         sigma[bad] = np.median(f.sigma_flat())
-    pnr = seed_ptp(f, pixels, q) / (6.18 * sigma)
+    return seed_ptp(f, pixels, q) / (6.18 * sigma)
+
+
+def pnr_refine(
+    f: Factors,
+    seeds: pd.DataFrame,
+    thres: float | str = "auto",
+    q: tuple[float, float] = (0.1, 99.9),
+    pnr: np.ndarray | None = None,
+) -> pd.DataFrame:
+    """Add ``pnr`` and ``mask_pnr``; ``thres="auto"`` keeps the upper component of a 2-GMM.
+
+    ``pnr`` (n,) skips the trace read when the caller already has ``seed_pnr`` of ``seeds``.
+    """
+    if pnr is None:
+        pnr = seed_pnr(f, seeds, q)
+    elif len(pnr) != len(seeds):
+        raise ValueError(f"{len(pnr)} pnr values for {len(seeds)} seeds")
     if isinstance(thres, str):
         if thres != "auto":
             raise ValueError(f"unknown pnr threshold {thres!r}")
-        dat = np.log(np.maximum(pnr, np.finfo(np.float64).tiny))[:, None]
-        gmm = GaussianMixture(n_components=2, random_state=0).fit(dat)
-        mask = gmm.predict(dat) == np.argmax(gmm.means_.ravel())
+        dat = np.log(np.maximum(pnr, np.finfo(np.float64).tiny))
+        gmm = fit_gmm_1d(dat, 2)
+        mask = gmm.predict(dat) == np.argmax(gmm.means)
     else:
         mask = pnr > thres
     if not mask.any():
@@ -267,12 +295,11 @@ def gmm_refine(
     which is the documented intent and independent of component labelling.
     """
     ptp = seed_ptp(f, seed_pixels(f, seeds), q)
-    dat = ptp.reshape(-1, 1)
-    gmm = GaussianMixture(n_components=n_components, random_state=0).fit(dat)
-    idg = np.argsort(gmm.means_.ravel())[-valid_components:]
-    valid = np.isin(gmm.predict(dat), idg)
+    gmm = fit_gmm_1d(ptp, n_components)
+    idg = np.argsort(gmm.means)[-valid_components:]
+    valid = np.isin(gmm.predict(ptp), idg)
     if mean_mask:
-        valid &= ptp > np.sort(gmm.means_.ravel())[0]
+        valid &= ptp > gmm.means.min()
     if not valid.any():
         raise ValueError("no seeds survived gmm_refine")
     out = seeds.copy()

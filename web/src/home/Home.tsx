@@ -4,7 +4,7 @@ import { Loading } from "../controls";
 import { fmtDuration, fmtInt } from "../format";
 import { pollResource, useResource, type Resource } from "../poll";
 import { href } from "../router";
-import type { Job, RunListing } from "../types";
+import type { Job, Place, RunListing } from "../types";
 import { FolderPicker } from "./FolderPicker";
 
 const ROOT_KEY = "minime-root";
@@ -17,6 +17,11 @@ function initialRoot(): string {
   } catch {
     return "";
   }
+}
+
+/** Folders MiniMe wrote to (demo download, sessions with runs), newest first. */
+export function useFolders(): Resource<{ folders: Place[] }> {
+  return useResource("folders", () => getJSON<{ folders: Place[] }>("/folders"));
 }
 
 export function useJobs(): Resource<{ jobs: Job[] }> {
@@ -39,8 +44,16 @@ export function useJobs(): Resource<{ jobs: Job[] }> {
 export function Home() {
   const [root, setRoot] = useState(initialRoot);
   const [picking, setPicking] = useState(false);
-  const runs = useResource(`runs:${root}`, () =>
-    getJSON<{ root: string; runs: RunListing[] }>(`/runs${root ? `?root=${encodeURIComponent(root)}` : ""}`),
+  const folders = useFolders();
+  const known = folders.data?.folders ?? [];
+  // nothing chosen yet: the newest folder MiniMe wrote to, else home (once the list is in,
+  // so the home folder is not searched first)
+  const shownRoot = root || known[0]?.path || "";
+  const ready = root !== "" || folders.data !== undefined || folders.error !== undefined;
+  const runs = useResource(ready ? `runs:${shownRoot}` : null, () =>
+    getJSON<{ root: string; runs: RunListing[] }>(
+      `/runs${shownRoot ? `?root=${encodeURIComponent(shownRoot)}` : ""}`,
+    ),
   );
   const jobs = useJobs();
   const choose = (p: string) => {
@@ -59,7 +72,7 @@ export function Home() {
         <div>
           <span className="label">Runs in</span>
           <h1 className="mono" style={{ fontSize: 18 }}>
-            {runs.data?.root ?? (root || "home folder")}
+            {runs.data?.root ?? (shownRoot || "home folder")}
           </h1>
         </div>
         <span className="spacer" />
@@ -70,10 +83,28 @@ export function Home() {
           New run
         </a>
       </div>
+      {known.length > 0 && (
+        <div className="row" aria-label="Known folders" style={{ flexWrap: "wrap" }}>
+          <span className="label">Recent folders</span>
+          {known.map((f) => (
+            <button
+              key={f.path}
+              className="chip mono"
+              type="button"
+              aria-pressed={f.path === (runs.data?.root ?? shownRoot)}
+              title={f.path}
+              onClick={() => choose(f.path)}
+            >
+              {f.kind !== "demo" ? "" : f.dataset === "grin" ? "synthetic demo · " : "demo · "}
+              {f.path.split("/").filter(Boolean).slice(-2).join("/")}
+            </button>
+          ))}
+        </div>
+      )}
       {picking && (
         <div className="bento">
           <FolderPicker
-            start={runs.data?.root ?? root}
+            start={runs.data?.root ?? shownRoot}
             pickLabel="Show runs here"
             onPick={choose}
             onClose={() => setPicking(false)}
@@ -111,10 +142,10 @@ export function Home() {
                     href={href({ name: "run", id: r.id, page: "overview" })}
                     style={{ textDecoration: "none", color: "inherit" }}
                   >
-                    <span className="label">{r.name}</span>
-                    <span className="big">{r.units ?? "–"}</span>
+                    <h2 className="run-name">{r.name}</h2>
                     <span className="muted">
-                      units · {fmtInt(r.T)} frames{r.fps ? ` · ${fmtDuration(r.T / r.fps)}` : ""}
+                      <strong className="units">{r.units ?? "–"}</strong> units · {fmtInt(r.T)} frames
+                      {r.fps ? ` · ${fmtDuration(r.T / r.fps)}` : ""}
                     </span>
                     <span className="muted mono" style={{ fontSize: 12, overflowWrap: "anywhere" }}>
                       {r.path}

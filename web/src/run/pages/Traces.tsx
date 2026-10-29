@@ -6,7 +6,7 @@ import { Loading, Segmented, Slider, Toggle } from "../../controls";
 import { fmtClock, fmtDuration, fmtInt } from "../../format";
 import { useResource } from "../../poll";
 import type { Zooms } from "../../types";
-import { useRun } from "../RunContext";
+import { rerunQuery, useRun } from "../RunContext";
 import { FULL_RES_MAX, clampRange, lowpassState, overviewColumns, traceMode } from "../traceMode";
 
 type Kind = "C" | "YrA";
@@ -32,7 +32,7 @@ function UnitTrace(p: {
   setRange: (r: Range | null) => void;
   zoomed: boolean;
 }) {
-  const { summary: s, t } = useRun();
+  const { summary: s, t, rerun } = useRun();
   const [win, setWin] = useState<Win | null>(null);
   const [err, setErr] = useState("");
   const [note, setNote] = useState("");
@@ -49,7 +49,7 @@ function UnitTrace(p: {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     setErr("");
-    const q = `start=${a}&stop=${b}&kind=${p.kind}${p.lowpassHz ? `&lowpass_hz=${p.lowpassHz}` : ""}`;
+    const q = `start=${a}&stop=${b}&kind=${p.kind}${p.lowpassHz ? `&lowpass_hz=${p.lowpassHz}` : ""}${rerunQuery(rerun, false)}`;
     getArray(`/runs/${id}/traces/${p.unit}?${q}`).then(
       (arr) => {
         if (cancelled) return;
@@ -149,14 +149,15 @@ function FpsField() {
 }
 
 export function Traces() {
-  const { summary: s, sel, setSel, setT } = useRun();
+  const { summary: s, sel, setSel, setT, rerun } = useRun();
   const [kind, setKind] = useState<Kind>("C");
   const [lpOn, setLpOn] = useState(false);
   const [hz, setHz] = useState(5);
   const [range, setRange] = useState<Range | null>(null);
-  const zooms = useResource(`zooms:${s.id}`, () => getJSON<Zooms>(`/runs/${s.id}/zooms`));
-  const overview = useResource(`ov:${s.id}:${kind}`, () =>
-    getArray(`/runs/${s.id}/traces/overview?kind=${kind}&bins=2000`),
+  const rq = rerun ?? "";
+  const zooms = useResource(`zooms:${s.id}:${rq}`, () => getJSON<Zooms>(`/runs/${s.id}/zooms${rerunQuery(rerun)}`));
+  const overview = useResource(`ov:${s.id}:${rq}:${kind}`, () =>
+    getArray(`/runs/${s.id}/traces/overview?kind=${kind}&bins=2000${rerunQuery(rerun, false)}`),
   );
   const [extra, setExtra] = useState<number[]>([]);
   const lp = lowpassState(s.fps, lpOn, hz);

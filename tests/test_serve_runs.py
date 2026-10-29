@@ -4,13 +4,13 @@ import time
 
 import pytest
 
+from minime.io import fps_from_files
 from minime.serve.cache import Background, RunCache
 from minime.serve.runs import (
     Registry,
     RunView,
     changed_params,
     find_runs,
-    fps_from_files,
     is_run,
     run_id,
 )
@@ -40,9 +40,9 @@ def test_run_view_summary(tiny_run, cache_dir):
 
 
 def test_run_view_reports_missing_parts(run_copy, cache_dir):
-    pj = json.loads((run_copy / "params.json").read_text())
+    pj = json.loads((run_copy / "params.json").read_text(encoding="utf-8"))
     pj["raw_dir"] = str(run_copy / "gone")
-    (run_copy / "params.json").write_text(json.dumps(pj))
+    (run_copy / "params.json").write_text(json.dumps(pj), encoding="utf-8")
     for d in ("tiles", "seeds", "init"):
         shutil.rmtree(run_copy / d)
     rv = RunView(run_copy, cache_dir)
@@ -59,13 +59,20 @@ def test_run_view_reports_missing_parts(run_copy, cache_dir):
         rv.set_fps(0)
 
 
+def test_run_view_prefers_the_fps_given_at_launch(run_copy, cache_dir):
+    pj = json.loads((run_copy / "params.json").read_text(encoding="utf-8"))
+    pj["fps"] = 19.5
+    (run_copy / "params.json").write_text(json.dumps(pj), encoding="utf-8")
+    assert RunView(run_copy, cache_dir).fps == 19.5
+
+
 def test_fps_from_miniscope_metadata(tmp_path):
     raw = tmp_path / "My_V4_Miniscope"
     raw.mkdir()
     assert fps_from_files(raw) is None
-    (raw / "metaData.json").write_text(json.dumps({"frameRate": "20FPS"}))
+    (raw / "metaData.json").write_text(json.dumps({"frameRate": "20FPS"}), encoding="utf-8")
     assert fps_from_files(raw) == 20.0
-    (tmp_path / "meta.json").write_text(json.dumps({"fps": 30}))
+    (tmp_path / "meta.json").write_text(json.dumps({"fps": 30}), encoding="utf-8")
     assert fps_from_files(raw) == 30.0
 
 
@@ -129,14 +136,14 @@ def test_registry_open_is_thread_safe(run_copy, cache_dir):
     with ThreadPoolExecutor(8) as ex:
         views = list(ex.map(lambda _: reg.open(run_copy), range(8)))
     assert len({id(v) for v in views}) == 1
-    assert views[0].id in json.loads((cache_dir / "runs.json").read_text())
+    assert views[0].id in json.loads((cache_dir / "runs.json").read_text(encoding="utf-8"))
 
 
 def _rewrite_report(run):
     p = run / "report.json"
-    doc = json.loads(p.read_text())
+    doc = json.loads(p.read_text(encoding="utf-8"))
     doc["rewritten"] = True
-    p.write_text(json.dumps(doc))
+    p.write_text(json.dumps(doc), encoding="utf-8")
 
 
 def test_rewritten_run_clears_its_cache_but_keeps_fps(run_copy, cache_dir):
@@ -164,9 +171,15 @@ def test_find_runs_skips_library(tmp_path, tiny_run):
     lib = tmp_path / "Library" / "x"
     lib.mkdir(parents=True)
     for m in ("params.json", "report.json"):
-        (lib / m).write_text("{}")
+        (lib / m).write_text("{}", encoding="utf-8")
     shutil.copytree(tiny_run, tmp_path / "data" / "t")
     assert find_runs(tmp_path) == [tmp_path / "data" / "t"]
+
+
+def test_find_runs_reaches_collection_session_processed_run(tmp_path, tiny_run):
+    run = tmp_path / "coll" / "sess" / "processed" / "r"
+    shutil.copytree(tiny_run, run)
+    assert find_runs(tmp_path) == [run]
 
 
 def test_only_the_two_most_recent_runs_keep_their_heavy_data(run_copy, cache_dir):

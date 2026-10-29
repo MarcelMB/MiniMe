@@ -35,6 +35,7 @@ from minime.autotune.score import (
     SIZE_FRAC,  # noqa: F401 - kept importable from here
     Checks,
     n_parts,
+    pair_stats,
     size_above,
     summarize,
     trace_pnr,
@@ -81,16 +82,12 @@ class RunData:
 
 
 def _fps(run_dir: Path) -> float | None:
-    raw = window2.raw_dir(run_dir)
-    meta = raw.parent / "meta.json" if raw is not None else None
-    if meta is None or not meta.exists():
-        return None
-    return float(json.loads(meta.read_text()).get("fps") or 0) or None
+    return window2.run_fps(run_dir)
 
 
 def load_run(d: Path) -> RunData:
     d = Path(d)
-    meta = json.loads((d / "factors" / "meta.json").read_text())
+    meta = json.loads((d / "factors" / "meta.json").read_text(encoding="utf-8"))
     st = d / "stages"
     return RunData(
         name=d.name,
@@ -100,7 +97,7 @@ def load_run(d: Path) -> RunData:
         T=int(meta["T"]),
         max_proj=np.load(d / "factors" / "max_proj.npy").astype(np.float32),
         params=Params.from_json(d / "params.json"),
-        report=json.loads((d / "report.json").read_text()),
+        report=json.loads((d / "report.json").read_text(encoding="utf-8")),
         seeds={p.stem: pd.read_csv(p) for p in sorted(st.glob("seeds_*.csv"))},
         stages=window2.footprint_stages(d),
         A=sps.load_npz(d / "cnmf" / "A.npz").tocsr(),
@@ -603,6 +600,23 @@ def summary(run: RunData, mn: MinianOverlay | None, checks: Checks | None = None
     return out
 
 
+def fig_thresholds(run: RunData, doc: dict[str, Any], path: Path) -> None:
+    """``dup_corr`` and ``min_dist_frac`` against the pair statistics of the source run
+    (``RUN_DIR/cnmf``) and of this proposal."""
+    from minime.autotune.run import checks_of
+    from minime.autotune.sweep import MIN_DIST_FRAC
+    from minime.tune import autofig
+
+    checks, frac = checks_of(doc), doc.get("min_dist_frac", MIN_DIST_FRAC)
+    src = run.dir.parent.parent / "cnmf"
+    A0, Y0 = sps.load_npz(src / "A.npz"), np.load(src / "YrA.npy")
+    stats = (
+        pair_stats(A0, Y0, run.H, run.W, checks, frac),
+        pair_stats(run.A, run.YrA, run.H, run.W, checks, frac),
+    )
+    autofig.threshold_figure(*stats, checks.dup_corr, frac, path)
+
+
 def make_run_figures(
     run: RunData, mn: MinianOverlay | None, checks: Checks | None = None
 ) -> dict[str, Any]:
@@ -624,11 +638,14 @@ def make_run_figures(
     sweep_csv, doc = run.dir / "sweep.csv", load_doc(run.dir)
     if sweep_csv.exists() and doc is not None:
         autofig.sweep_curves(sweep_csv, doc, out)
+        fig_thresholds(run, doc, out / "thresholds.png")
     s = summary(run, mn, checks)
-    (run.dir / "summary.json").write_text(json.dumps(s, indent=1))
+    (run.dir / "summary.json").write_text(json.dumps(s, indent=1), encoding="utf-8")
     return s
 
 
 def write_summary(run: RunData, mn: MinianOverlay | None, checks: Checks | None) -> None:
     """Rewrite ``summary.json`` only (after new checks), without drawing figures."""
-    (run.dir / "summary.json").write_text(json.dumps(summary(run, mn, checks), indent=1))
+    (run.dir / "summary.json").write_text(
+        json.dumps(summary(run, mn, checks), indent=1), encoding="utf-8"
+    )

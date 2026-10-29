@@ -54,9 +54,15 @@ class FactorCorr:
         T = f.T
         nr = int(noise_freq * T)
         f_lp = 2.0 * (nr - 1) / T  # passband share of white-noise energy
-        self.Vlp: list[np.ndarray] = [lowpass(tf.V.T, noise_freq).T for tf in f.tiles]
+        # Vlp is kept as float32 (half the memory: ~5 GB float64 on a 3 h session); the
+        # Gram matrices are formed in float64
+        self.Vlp: list[np.ndarray] = []
+        self.Gaa: list[np.ndarray] = []
+        for tf in f.tiles:
+            v = lowpass(tf.V.T, noise_freq).T
+            self.Gaa.append(v.T @ v)
+            self.Vlp.append(v.astype(np.float32))
         self.Wd: list[np.ndarray] = [tf.W.astype(np.float64) for tf in f.tiles]
-        self.Gaa: list[np.ndarray] = [v.T @ v for v in self.Vlp]
         self._G: dict[tuple[int, int], np.ndarray] = {}
         self._disks: dict[int, np.ndarray] = {}
         norm2 = np.empty(f.P, dtype=np.float64)
@@ -72,7 +78,7 @@ class FactorCorr:
             return self.Gaa[a]
         key = (a, b)
         if key not in self._G:
-            self._G[key] = self.Vlp[a].T @ self.Vlp[b]
+            self._G[key] = self.Vlp[a].T.astype(np.float64) @ self.Vlp[b].astype(np.float64)
         return self._G[key]
 
     def pairs(self, src: np.ndarray, dst: np.ndarray) -> np.ndarray:

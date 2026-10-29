@@ -13,6 +13,7 @@ RUN_METADATA_KEYS = frozenset(
     {
         "raw_dir",
         "raw_hash",
+        "fps",
         "minime_version",
         "caanfast_version",
         "cafast_version",
@@ -62,6 +63,9 @@ class Params:
     inita_wnd: int = 10
     init_merge_corr: float = 0.8
     loop_merge_corr: float = 0.9
+    # units whose centroids are closer than this (px) merge whatever their traces do: two cells
+    # cannot sit that close, only a split one can. 0 = off; auto-tune sets 0.4 x cell diameter
+    merge_min_dist: float = 0.0
     # CNMF
     dl_wnd: int = 10
     # sparseness penalty of the spatial update as a per-pixel signal-to-noise threshold: a
@@ -79,6 +83,11 @@ class Params:
     workers: int = 1
     sub_batch: int = 100
 
+    def __post_init__(self) -> None:
+        # motion._prep only knows 2x downsampling, but estimate scales shifts by motion_down
+        if self.motion_down not in (1, 2):
+            raise ValueError(f"motion_down must be 1 or 2, not {self.motion_down!r}")
+
     def asdict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -95,7 +104,7 @@ class Params:
         }
 
     def to_json(self, path: str | Path) -> None:
-        Path(path).write_text(json.dumps(self.asdict(), indent=1))
+        Path(path).write_text(json.dumps(self.asdict(), indent=1), encoding="utf-8")
 
     @classmethod
     def from_json(cls, path: str | Path, base: Params | None = None) -> Params:
@@ -104,7 +113,8 @@ class Params:
         Keys the file leaves out come from ``base`` (default: the built-in defaults).
         Run metadata (``RUN_METADATA_KEYS``) is ignored; any other unknown key raises.
         """
-        return cls.from_dict(json.loads(Path(path).read_text()), base, source=str(path))
+        text = Path(path).read_text(encoding="utf-8-sig")  # a BOM from Windows Notepad is fine
+        return cls.from_dict(json.loads(text), base, source=str(path))
 
     @classmethod
     def from_dict(

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import shutil
 import threading
 from functools import cached_property
@@ -14,10 +13,11 @@ from typing import Any
 import numpy as np
 import scipy.sparse as sps
 
-from minime import io, motion
+from minime import io, motion, pipeline
 from minime.factors import Factors
 from minime.params import Params
 from minime.serve.cache import RunCache, cache_root
+from minime.window2 import RERUNS
 
 MARKERS = ("params.json", "report.json")
 SKIP_DIRS = {"Library"}  # macOS ~/Library: huge, and never holds runs
@@ -32,8 +32,11 @@ def is_run(path: Path) -> bool:
     return all((Path(path) / m).is_file() for m in MARKERS)
 
 
-def find_runs(root: Path, max_depth: int = 3) -> list[Path]:
-    """Run folders at or below ``root`` (never inside a run), newest report first."""
+def find_runs(root: Path, max_depth: int = 4) -> list[Path]:
+    """Run folders at or below ``root`` (never inside a run), newest report first.
+
+    Depth 4 reaches ``root/collection/session/processed/run``.
+    """
     found: list[Path] = []
 
     def walk(d: Path, depth: int) -> None:
@@ -60,28 +63,6 @@ def find_runs(root: Path, max_depth: int = 3) -> list[Path]:
 def report_stamp(path: Path) -> list[int]:
     st = (Path(path) / "report.json").stat()
     return [st.st_mtime_ns, st.st_size]
-
-
-def _leading_number(v: Any) -> float | None:
-    m = re.match(r"\s*([0-9]+(?:\.[0-9]+)?)", str(v))
-    return float(m.group(1)) if m else None
-
-
-def fps_from_files(raw_dir: Path) -> float | None:
-    """``fps`` of ``raw_dir/../meta.json``, else ``frameRate`` of a Miniscope metadata file."""
-    try:
-        meta = Path(raw_dir).parent / "meta.json"
-        if meta.is_file():
-            return float(json.loads(meta.read_text())["fps"])
-        for name in ("metaData.json", "neural_metaData.json"):
-            p = Path(raw_dir) / name
-            if p.is_file():
-                v = _leading_number(json.loads(p.read_text()).get("frameRate"))
-                if v:
-                    return v
-    except (OSError, ValueError, KeyError):
-        return None
-    return None
 
 
 def _norm(v: Any) -> Any:
@@ -112,9 +93,13 @@ class RunView:
         self._sidecar: motion.MotionSidecar | None = None
         self._A: sps.csr_matrix | None = None
         self._invalidate_stale_cache()
-        self.params: dict[str, Any] = json.loads((self.path / "params.json").read_text())
-        self.report: dict[str, Any] = json.loads((self.path / "report.json").read_text())
-        m = json.loads((self.path / "factors" / "meta.json").read_text())
+        self.params: dict[str, Any] = json.loads(
+            (self.path / "params.json").read_text(encoding="utf-8")
+        )
+        self.report: dict[str, Any] = json.loads(
+            (self.path / "report.json").read_text(encoding="utf-8")
+        )
+        m = json.loads((self.path / "factors" / "meta.json").read_text(encoding="utf-8"))
         self.H, self.W, self.T = int(m["H"]), int(m["W"]), int(m["T"])
         self.ranks: list[int] = [int(r) for r in m["ranks"]]
         self.tile: int = int(m["tile"])
@@ -164,18 +149,33 @@ class RunView:
         return (self.path / "init" / "A.npz").is_file()
 
     @property
+    def has_stages(self) -> bool:
+        """A window-2 rerun: seeds and footprints of every step in ``stages/``."""
+        return (self.path / "stages" / "index.json").is_file()
+
+    def rerun_dir(self, name: str) -> Path:
+        """``reruns/name`` of this run; ``KeyError`` unless it holds a finished rerun."""
+        pipeline.check_run_name(name)
+        d = self.path / RERUNS / name
+        if not is_run(d):
+            raise KeyError(name)
+        return d
+
+    @property
     def fps(self) -> float | None:
+        """Frame rate given when the run started, else from the raw folder's files, else
+        the one set in the viewer."""
+        if self.params.get("fps"):
+            return float(self.params["fps"])
         if self.raw_dir is not None:
-            f = fps_from_files(self.raw_dir)
+            f = io.fps_from_files(self.raw_dir)
             if f:
                 return f
         user = self.cache.load_json("fps.json")
         return float(user["fps"]) if user else None
 
     def set_fps(self, fps: float) -> None:
-        if not 0 < float(fps) <= 1000:
-            raise ValueError(f"frame rate must be in (0, 1000] Hz, got {fps}")
-        self.cache.save_json("fps.json", {"fps": float(fps)})
+        self.cache.save_json("fps.json", {"fps": io.check_fps(fps)})
 
     # The heavy parts load once (also under concurrent requests) and ``release`` drops them.
 
@@ -282,7 +282,7 @@ class Registry:
 
     def _known(self) -> dict[str, str]:
         p = self.root / "runs.json"
-        return json.loads(p.read_text()) if p.exists() else {}
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
 
     def open(self, path: Path, touch: bool = True) -> RunView:
         """The view of ``path``; ``touch=False`` (listings) leaves the recent runs alone."""
@@ -295,7 +295,7 @@ class Registry:
                     known[rid] = str(self._runs[rid].path)
                     self.root.mkdir(parents=True, exist_ok=True)
                     tmp = self.root / "runs.json.tmp"
-                    tmp.write_text(json.dumps(known))
+                    tmp.write_text(json.dumps(known), encoding="utf-8")
                     tmp.replace(self.root / "runs.json")
             if touch:
                 self._touch(rid)

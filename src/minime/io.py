@@ -5,17 +5,81 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
 
+NAMING_RULE = (
+    "each video's file name must start with a number (0.avi, 1.avi, ... or 0_session.avi); "
+    "the videos are read in the order of that number, so 2.avi comes before 10.avi, and "
+    ".avi files whose name does not start with a number are ignored"
+)
+
+
+def _leading_int(path: Path) -> int | None:
+    m = re.match(r"[0-9]+", path.name)
+    return int(m.group()) if m else None
+
 
 def list_segments(raw_dir: Path) -> list[Path]:
-    """``*.avi`` files of ``raw_dir`` sorted by integer stem."""
-    return sorted(Path(raw_dir).glob("*.avi"), key=lambda p: int(p.stem))
+    """``.avi`` files of ``raw_dir`` whose name starts with a number, sorted by that number.
+
+    Other ``.avi`` names are skipped (``skipped_videos``): a ``behavior.avi``, macOS
+    ``._0.avi`` files. Two files with the same number (``1.avi``, ``01_b.avi``) raise
+    ``ValueError``: their order would be a guess.
+    """
+    segs = [p for p in Path(raw_dir).glob("*.avi") if _leading_int(p) is not None]
+    segs.sort(key=_leading_int)
+    for a, b in zip(segs, segs[1:], strict=False):
+        if _leading_int(a) == _leading_int(b):
+            raise ValueError(
+                f"{a.name} and {b.name} in {raw_dir} both start with {_leading_int(a)}; "
+                f"rename one: {NAMING_RULE}"
+            )
+    return segs
+
+
+def skipped_videos(raw_dir: Path) -> list[str]:
+    """Names of the ``.avi`` files ``list_segments`` ignores (hidden ``.`` files left out)."""
+    return sorted(
+        p.name
+        for p in Path(raw_dir).glob("*.avi")
+        if _leading_int(p) is None and not p.name.startswith(".")
+    )
+
+
+def _leading_number(v: Any) -> float | None:
+    m = re.match(r"\s*([0-9]+(?:\.[0-9]+)?)", str(v))
+    return float(m.group(1)) if m else None
+
+
+def fps_from_files(raw_dir: Path) -> float | None:
+    """``fps`` of ``raw_dir/../meta.json``, else ``frameRate`` of a Miniscope metadata file."""
+    try:
+        meta = Path(os.path.abspath(raw_dir)).parent / "meta.json"
+        if meta.is_file():
+            return float(json.loads(meta.read_text(encoding="utf-8"))["fps"])
+        for name in ("metaData.json", "neural_metaData.json"):
+            p = Path(raw_dir) / name
+            if p.is_file():
+                v = _leading_number(json.loads(p.read_text(encoding="utf-8")).get("frameRate"))
+                if v:
+                    return v
+    except (OSError, ValueError, KeyError):
+        return None
+    return None
+
+
+def check_fps(fps: float) -> float:
+    """``fps`` as float; ``ValueError`` outside (0, 1000] Hz."""
+    if not 0 < float(fps) <= 1000:
+        raise ValueError(f"frame rate must be in (0, 1000] Hz, got {fps}")
+    return float(fps)
 
 
 # a codec whose raw decode differs from its BGR->gray decode by more than this is read via BGR
@@ -155,7 +219,7 @@ class RawInfo:
 
 
 def probe(raw_dir: Path) -> RawInfo:
-    """Frame size, per-segment frame counts and fps (from ``raw_dir.parent/meta.json``).
+    """Frame size, per-segment frame counts and fps (``fps_from_files``).
 
     Counts come from the container header, except for the last segment, which is decoded
     in full: a recording that stops abruptly leaves a truncated last file whose header
@@ -167,7 +231,7 @@ def probe(raw_dir: Path) -> RawInfo:
     """
     segments = list_segments(raw_dir)
     if not segments:
-        raise FileNotFoundError(f"no *.avi segments in {raw_dir}")
+        raise FileNotFoundError(f"no videos in {raw_dir}: {NAMING_RULE}")
     via_bgr = first_frame(segments[0], True)
     try:
         bgr = needs_bgr(first_frame(segments[0], False), via_bgr)
@@ -176,9 +240,7 @@ def probe(raw_dir: Path) -> RawInfo:
     height, width = (via_bgr if bgr else first_frame(segments[0], False)).shape
     counts = [frame_count(s) for s in segments[:-1]]
     counts.append(decoded_frame_count(segments[-1], bgr))
-    meta = Path(raw_dir).parent / "meta.json"
-    fps = float(json.loads(meta.read_text())["fps"]) if meta.exists() else None
-    return RawInfo(height, width, sum(counts), counts, segments, fps, bgr)
+    return RawInfo(height, width, sum(counts), counts, segments, fps_from_files(raw_dir), bgr)
 
 
 def hash_files(paths: list[Path], sample_mb: int = 1, n_samples: int = 16) -> str:

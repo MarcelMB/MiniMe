@@ -6,6 +6,7 @@ import { Motion } from "./pages/Motion";
 import { Overview } from "./pages/Overview";
 import { Seeds } from "./pages/Seeds";
 import { Traces } from "./pages/Traces";
+import { Tune } from "./pages/Tune";
 import { Units } from "./pages/Units";
 
 export const PAGE_LABELS: Record<Page, string> = {
@@ -16,6 +17,7 @@ export const PAGE_LABELS: Record<Page, string> = {
   seeds: "Seeds",
   units: "Units",
   traces: "Traces",
+  tune: "Tune",
 };
 
 /** Stage pages by route; each page task adds its entry. Unregistered pages are hidden. */
@@ -27,4 +29,5 @@ export const PAGE_VIEWS: Partial<Record<Page, () => JSX.Element>> = {
   seeds: Seeds,
   units: Units,
   traces: Traces,
+  tune: Tune,
 };

@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 import scipy.sparse as sps
 
 from minime import compress, corr, init, tiles
@@ -83,6 +84,22 @@ def test_unit_merge_transitive_chain_means_all_three():
     assert np.allclose(A2.toarray(), [[1 / 3, 2 / 3, 2 / 3, 1 / 3, 0], [0, 0, 0, 0, 1]])
     assert np.allclose(C2[0], C[:3].mean(0)) and np.allclose(C2[1], C[3])
     assert np.allclose(extra[0][0], E[:3].mean(0)) and np.allclose(extra[0][1], E[3])
+
+
+def test_unit_merge_min_dist_merges_close_units_whatever_their_traces():
+    # u0 and u1: centroids 2 px apart, uncorrelated traces; u2: 6 px away, correlated with u0
+    H = W = 10
+    img = np.zeros((3, H, W), np.float32)
+    img[0, 5, 2] = img[1, 5, 4] = img[2, 5, 8] = 1.0
+    A = sps.csr_matrix(img.reshape(3, -1))
+    C = np.array([[1, 2, 3, 4, 5], [5, 1, 4, 2, 3], [1, 2, 3, 4, 5]], np.float32)
+    corr = lambda X: np.corrcoef(X)  # noqa: E731
+    A_off, _, _ = init.unit_merge(A, C, corr, thres_corr=0.9)  # no shared pixel: nothing merges
+    assert A_off.shape[0] == 3
+    A_on, C_on, _ = init.unit_merge(A, C, corr, thres_corr=0.9, min_dist=3.0, shape=(H, W))
+    assert A_on.shape[0] == 2 and np.allclose(C_on[0], C[:2].mean(0))
+    with pytest.raises(ValueError, match="shape"):
+        init.unit_merge(A, C, corr, thres_corr=0.9, min_dist=3.0)
 
 
 def _exact_factors(H: int, W: int, Y: np.ndarray) -> fm.Factors:

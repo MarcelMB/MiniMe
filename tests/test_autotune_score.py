@@ -43,6 +43,14 @@ def test_pnr_flags_noise_and_flat_traces():
     assert score.trace_pnr(np.zeros((1, 100)))[0] == 0.0  # flat: 0, not inf
 
 
+def test_pnr_of_clipped_noise_is_finite_and_low():
+    # YrA is clipped at 0: a noise trace at 0 most of the time must not score inf
+    rng = np.random.default_rng(2)
+    C = np.clip(rng.normal([[-1.0], [-0.5], [0.0]], 1, (3, 4000)), 0, None)
+    pnr = score.trace_pnr(C)
+    assert np.isfinite(pnr).all() and (pnr < score.Checks(8).pnr_min).all(), pnr
+
+
 def test_size_and_pieces():
     A = _footprints(
         [
@@ -80,6 +88,7 @@ def test_empty_and_degenerate_units():
     assert score.summarize(empty) == {
         "good": 0,
         "flagged": 0,
+        "lost": 0,
         "score": 0,
         "low_pnr": 0,
         "in_pieces": 0,
@@ -104,9 +113,23 @@ def test_summarize_counts_reasons():
     assert score.summarize(f) == {
         "good": 1,
         "flagged": 2,
+        "lost": 0,
         "score": -1,
         "low_pnr": 2,
         "in_pieces": 1,
         "bad_size": 0,
         "duplicate": 0,
     }
+    assert score.summarize(f, lost=3)["score"] == -4  # good - flagged - lost
+
+
+def test_lost_units_counts_the_runs_good_units_without_a_unit_nearby():
+    ref = np.array([[10.0, 10.0], [30.0, 30.0], [50.0, 50.0]])
+    f = pd.DataFrame(
+        {"y": [11.0, 30.0, np.nan], "x": [10.0, 34.0, 0.0], "good": [True, False, True]}
+    )
+    assert score.lost_units(ref, f, radius=3.0) == 2  # kept by a flagged unit too; NaN ignored
+    assert score.lost_units(ref, f, radius=5.0) == 1
+    assert score.lost_units(np.zeros((0, 2)), f, 3.0) == 0
+    assert score.lost_units(ref, f.iloc[:0], 3.0) == 3
+    assert score.good_centroids(f).tolist() == [[11.0, 10.0]]

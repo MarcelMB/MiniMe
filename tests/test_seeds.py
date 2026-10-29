@@ -5,6 +5,7 @@ import pytest
 from minime import compress, tiles
 from minime import factors as fm
 from minime import seeds as sd
+from minime.gmm import fit_gmm_1d
 from minime.pass1 import seed_block_edges
 from minime.testing import synth
 
@@ -84,8 +85,6 @@ def test_label_medians_match_np_median():
 
 
 def test_gmm_mean_mask_uses_lowest_component_mean():
-    from sklearn.mixture import GaussianMixture
-
     _, f = _session()
     setup = synth.synth_setup(64, 64, 600, 0)
     cents = np.rint(synth.true_centroids(setup)).astype(int)
@@ -96,7 +95,7 @@ def test_gmm_mean_mask_uses_lowest_component_mean():
         {"height": np.r_[cents[:, 0], noise[:, 0]], "width": np.r_[cents[:, 1], noise[:, 1]]}
     )
     ptp = sd.ptp_q(f.traces(sd.seed_pixels(f, seeds)), (0.1, 99.9))
-    low_mean = GaussianMixture(n_components=2, random_state=0).fit(ptp[:, None]).means_.min()
+    low_mean = fit_gmm_1d(ptp, 2).means.min()
     on = sd.gmm_refine(f, seeds, mean_mask=True)["mask_gmm"].to_numpy()
     off = sd.gmm_refine(f, seeds, mean_mask=False)["mask_gmm"].to_numpy()
     assert on.any()

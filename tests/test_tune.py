@@ -98,7 +98,7 @@ def test_run_figures_and_summary(tiny_rerun, self_minian):
         assert (tiny_rerun / "figures" / n).read_bytes()[:4] == b"\x89PNG"
     assert summ["units_final"] == run.A.shape[0]
     assert summ["minian_matched"] >= 0.8 * run.A.shape[0]
-    assert json.loads((tiny_rerun / "summary.json").read_text()) == summ
+    assert json.loads((tiny_rerun / "summary.json").read_text(encoding="utf-8")) == summ
     table = figures.unit_table(run, None)
     assert len(table) == run.A.shape[0]
     assert {"size_px", "size10", "parts", "pnr"} <= set(table.columns)
@@ -256,17 +256,37 @@ def test_server_autotune_roundtrip(tune_server, monkeypatch):
     with pytest.raises(urllib.error.HTTPError) as e:
         _post(base + "/api/autotune", {"diameter": "abc"})
     assert e.value.code == 400
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _post(base + "/api/autotune", {"diameter": "7", "dup_corr": "x"})
+    assert e.value.code == 400
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _post(base + "/api/autotune", {"diameter": "7", "tune_frames": "2.5"})
+    assert e.value.code == 400
     monkeypatch.setattr(at, "DEFAULT_GRIDS", SMALL_GRIDS)
-    assert _post(base + "/api/autotune", {"diameter": "7"})["name"] == "auto"
+    assert (
+        _post(
+            base + "/api/autotune",
+            {"diameter": "", "dup_corr": "", "min_dist_frac": "", "tune_frames": "200"},
+        )["name"]
+        == "auto"
+    )
     st = _wait(base, timeout=300)
     assert st["state"] == "done", st
-    assert app.checks() is not None and app.checks().diameter == 7
+    assert app.checks() is not None
+    assert app.checks().diameter == at.estimate_diameter(app.run_dir)  # blank = estimated
     page_html = _get(base + "/?run=auto")[2].decode()
     assert "Proposal" in page_html and "sweep_sparse_snr.png" in page_html
+    assert "thresholds.png" in page_html and "Thresholds against the data" in page_html
+    assert 'name="dup_corr"' in page_html and 'name="min_dist_frac"' in page_html
+    assert 'name="tune_frames" value="200"' in page_html  # the last auto-tune's value
+    assert re.search(r"explored on frames \d+&ndash;\d+ \(\d+ of 300\)", page_html)
+    assert "(footprints)" in page_html  # the diameter was estimated
+    status, ctype, png = _get(base + "/fig/auto/thresholds.png")
+    assert status == 200 and ctype == "image/png"
     assert "good / flagged" in page_html
     status, ctype, png = _get(base + "/fig/auto/sweep_sparse_snr.png")
     assert status == 200 and png[:4] == b"\x89PNG"
-    summ = json.loads((app.reruns_dir / "base" / "summary.json").read_text())
+    summ = json.loads((app.reruns_dir / "base" / "summary.json").read_text(encoding="utf-8"))
     assert "good" in summ and "flagged" in summ  # every run rescored with the new checks
     table = re.search(r"<table><thead>.*?</table>", page_html, re.S)[0]  # the runs table
     n_head = len(re.findall(r"<th[ >]", table))
@@ -331,7 +351,7 @@ def test_proposal_marks_only_numerically_different_values(tmp_path):
     }
     d = tmp_path / at.AUTO
     d.mkdir()
-    (d / at.DOC).write_text(json.dumps(doc))
+    (d / at.DOC).write_text(json.dumps(doc), encoding="utf-8")
     html = page._proposal(app)
     row = lambda k: re.search(rf"<tr><td class='l'><b>{k}</b>.*?</tr>", html, re.S)[0]  # noqa: E731
     assert 'class="changed"' not in row("merge_corr")
@@ -343,7 +363,7 @@ def test_proposal_marks_only_numerically_different_values(tmp_path):
         derived={"dl_wnd": 7, "merge_dist": 7},
         kept=["merge_dist"],
     )
-    (d / at.DOC).write_text(json.dumps(doc))
+    (d / at.DOC).write_text(json.dumps(doc), encoding="utf-8")
     html = page._proposal(app)
     assert "nothing better than the run" in html and "2 good / 1 flagged" in html
     assert "derived: dl_wnd 7" in html and "kept from the run: merge_dist" in html

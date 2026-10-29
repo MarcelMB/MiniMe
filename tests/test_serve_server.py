@@ -9,10 +9,11 @@ from minime.serve.server import start_url
 
 
 def test_start_url_carries_token_and_folder():
-    u = urlparse(start_url(8123, "abc", Path("/Volumes/Extreme SSD/x")))
+    folder = Path("/Volumes/Extreme SSD/x")
+    u = urlparse(start_url(8123, "abc", folder))
     assert (u.hostname, u.port) == ("127.0.0.1", 8123)
     q = parse_qs(u.query)
-    assert q["token"] == ["abc"] and q["root"] == ["/Volumes/Extreme SSD/x"]
+    assert q["token"] == ["abc"] and q["root"] == [str(folder)]
     assert "root" not in parse_qs(urlparse(start_url(1, "t", None)).query)
 
 
@@ -41,7 +42,8 @@ def test_serve_forever_runs_uvicorn_quietly_on_loopback(monkeypatch, tmp_path):
     monkeypatch.setattr(signal, "signal", lambda sig, h: handlers.update({sig: h}))
     serve_forever(None, port=8123, open_browser=False, token="t")
     assert seen["host"] == "127.0.0.1" and seen["port"] == 8123  # loopback only
-    assert signal.SIGHUP in handlers
+    if hasattr(signal, "SIGHUP"):  # Windows has none
+        assert signal.SIGHUP in handlers
 
 
 def test_a_second_server_on_the_same_cache_exits_with_status_1(monkeypatch, tmp_path, capsys):

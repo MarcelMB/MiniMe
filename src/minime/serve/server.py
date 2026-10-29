@@ -46,8 +46,10 @@ def serve_forever(
     print(f"MiniMe is running at {url}\nPress Ctrl+C to stop.", flush=True)
     if open_browser:
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()
-    # closing the terminal (SIGHUP) stops like Ctrl+C, so the running job is stopped too
-    signal.signal(signal.SIGHUP, lambda *_: os.kill(os.getpid(), signal.SIGTERM))
+    # closing the terminal (SIGHUP) stops like Ctrl+C, so the running job is stopped too;
+    # Windows has no SIGHUP (closing the console window ends the server and its job)
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, lambda *_: os.kill(os.getpid(), signal.SIGTERM))
     uvicorn.run(
         app,
         host="127.0.0.1",

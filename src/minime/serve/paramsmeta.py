@@ -7,6 +7,7 @@ from dataclasses import fields
 from typing import Any
 
 from minime.params import Params
+from minime.window2 import WINDOW2_PARAMS
 
 GROUPS: dict[str, list[str]] = {
     "Preprocessing + motion": [
@@ -37,12 +38,19 @@ GROUPS: dict[str, list[str]] = {
         "merge_dist",
         "merge_corr",
     ],
-    "Initialization": ["inita_corr", "inita_wnd", "init_merge_corr", "loop_merge_corr"],
+    "Initialization": [
+        "inita_corr",
+        "inita_wnd",
+        "init_merge_corr",
+        "loop_merge_corr",
+        "merge_min_dist",
+    ],
     "CNMF": ["dl_wnd", "sparse_snr", "size_thres", "n_iter", "background_clip"],
     "Execution": ["workers", "sub_batch"],
 }
 
-COMMON = ["workers", "tophat_wnd", "merge_dist", "pnr_thres", "sparse_snr"]
+# tophat_wnd is set on the launcher's preview, not here
+COMMON = ["workers", "merge_dist", "pnr_thres", "sparse_snr"]
 
 HELP: dict[str, str] = {
     "median_ksize": "Median filter size in px before motion correction (<= 1 skips it).",
@@ -71,13 +79,14 @@ HELP: dict[str, str] = {
     "inita_wnd": "Window in px around a seed for its initial footprint.",
     "init_merge_corr": "Initial units whose traces correlate above this merge.",
     "loop_merge_corr": "Units whose traces correlate above this merge during CNMF.",
+    "merge_min_dist": "Units closer than this (px) merge whatever their traces do; 0 = off.",
     "dl_wnd": "Dilation window in px that bounds where a footprint may grow.",
     "sparse_snr": "Per-pixel signal-to-noise a pixel needs to stay in a footprint.",
     "size_thres": "Smallest and largest footprint size in px (empty = no limit).",
     "n_iter": "CNMF iterations (spatial + temporal update).",
     "background_clip": "Background of the clipped residual as Minian (about 2x slower).",
     "workers": "Worker processes; about the number of CPU cores minus one or two.",
-    "sub_batch": "Units per batch in the temporal update.",
+    "sub_batch": "Frames per pass-1 sub-batch.",
 }
 
 
@@ -92,6 +101,7 @@ def defaults() -> list[dict[str, Any]]:
             "default": json.loads(json.dumps(d[name])),
             "help": HELP[name],
             "common": name in COMMON,
+            "window2": name in WINDOW2_PARAMS,  # free in a rerun on the saved factors
         }
         for group, names in GROUPS.items()
         for name in names

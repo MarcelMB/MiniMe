@@ -39,6 +39,17 @@ function Field({
   onChangeRef.current = onChange;
   // a field that disappears must not keep blocking Start
   useEffect(() => () => onChangeRef.current(undefined, ""), []);
+  // a value set from outside (the preview's sliders, the cell diameter) replaces the text
+  useEffect(() => {
+    try {
+      if (JSON.stringify(parseValue(m.type, raw)) === JSON.stringify(value)) return;
+    } catch {
+      /* the typed text is invalid: the outside value wins */
+    }
+    setRaw(toRaw(m, value));
+    setErr("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
   const aria = {
     "aria-invalid": !!err,
     "aria-describedby": err ? `${id}-help ${id}-err` : `${id}-help`,

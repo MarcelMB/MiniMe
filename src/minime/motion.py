@@ -182,13 +182,13 @@ def save_sidecar(path: str | os.PathLike, sc: MotionSidecar) -> None:
         np.savez(f, shifts=shifts, template=template, quality=quality)
     os.replace(tmp_npz, path / ARRAY_FILE)
     tmp_json = path / (META_FILE + ".tmp")
-    tmp_json.write_text(json.dumps(meta, indent=1, default=str))
+    tmp_json.write_text(json.dumps(meta, indent=1, default=str), encoding="utf-8")
     os.replace(tmp_json, path / META_FILE)
 
 
 def load_sidecar(path: str | os.PathLike) -> MotionSidecar:
     path = Path(path)
-    meta = json.loads((path / META_FILE).read_text())
+    meta = json.loads((path / META_FILE).read_text(encoding="utf-8"))
     if int(meta.get("format_version", -1)) > FORMAT_VERSION:
         raise ValueError(
             f"sidecar format {meta.get('format_version')} newer than supported {FORMAT_VERSION}"

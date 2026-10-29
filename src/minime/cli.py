@@ -11,23 +11,74 @@ def main() -> None:
     """Factor-first CNMF pipeline for one-photon miniscope data."""
 
 
+def _input_summary(
+    segments: list[Path], skipped: list[str], fps: float | None, fps_found: float | None
+) -> list[str]:
+    """What ``run`` will read: the video order, the ignored files and the frame rate."""
+    names = [p.name for p in segments]
+    shown = names if len(names) <= 6 else [*names[:3], "...", *names[-2:]]
+    lines = [f"{len(names)} video(s), read in this order: {', '.join(shown)}"]
+    if skipped:
+        lines.append(f"ignored (name does not start with a number): {', '.join(skipped)}")
+    if fps is not None:
+        lines.append(f"frame rate: {fps:g} fps (--fps)")
+    elif fps_found is not None:
+        lines.append(f"frame rate: {fps_found:g} fps (from the metadata file)")
+    else:
+        lines.append("frame rate: unknown (no meta.json / metaData.json; pass --fps to set it)")
+    return lines
+
+
 @app.command()
 def run(
-    raw_dir: Annotated[Path, typer.Argument(help="Folder of N.avi segments (read-only).")],
+    raw_dir: Annotated[
+        Path,
+        typer.Argument(
+            help="Folder of .avi videos (read-only). Each name must start with a number "
+            "(0.avi, 1.avi, ... or 0_session.avi); they are read in the order of that number."
+        ),
+    ],
     params: Annotated[Path | None, typer.Option(help="Params JSON (default: built-in).")] = None,
     workers: Annotated[int | None, typer.Option(help="Worker processes (default: params).")] = None,
     name: Annotated[str, typer.Option(help="Run name under ../processed/.")] = "minime",
     keep_store: Annotated[bool, typer.Option(help="Keep the temporary tile store.")] = False,
+    overwrite: Annotated[
+        bool, typer.Option(help="Replace an existing run of this name, its reruns and tune files.")
+    ] = False,
+    fps: Annotated[
+        float | None,
+        typer.Option(
+            help="Frame rate of the recording in Hz (default: from ../meta.json or the "
+            "Miniscope metaData.json). Only for display: time axes, durations."
+        ),
+    ] = None,
 ) -> None:
     """Run the pipeline on RAW_DIR; outputs go to RAW_DIR/../processed/NAME/."""
     import json
 
-    from minime import pipeline
+    from minime import io, pipeline
     from minime.params import Params
 
+    out = pipeline.out_dir_for(raw_dir, name)
+    if not overwrite and out.is_dir() and any(out.iterdir()):
+        typer.echo(
+            f"error: {out} already exists; choose another --name or pass --overwrite", err=True
+        )
+        raise typer.Exit(1)
+    try:
+        segments = io.list_segments(raw_dir)
+        fps = io.check_fps(fps) if fps is not None else None
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from None
+    if not segments:
+        raise typer.BadParameter(f"no videos in {raw_dir}: {io.NAMING_RULE}")
+    for line in _input_summary(
+        segments, io.skipped_videos(raw_dir), fps, io.fps_from_files(raw_dir)
+    ):
+        typer.echo(line)
     prm = Params.from_json(params) if params is not None else Params()
-    out = pipeline.run(raw_dir, prm, run_name=name, keep_store=keep_store, workers=workers)
-    counts = json.loads((out / "report.json").read_text())["counts"]
+    out = pipeline.run(raw_dir, prm, run_name=name, keep_store=keep_store, workers=workers, fps=fps)
+    counts = json.loads((out / "report.json").read_text(encoding="utf-8"))["counts"]
     typer.echo(str(out))
     typer.echo(json.dumps(counts, indent=1))
 
@@ -52,7 +103,7 @@ def cnmf(
     except ValueError as e:
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(1) from None
-    counts = json.loads((out / "report.json").read_text())["counts"]
+    counts = json.loads((out / "report.json").read_text(encoding="utf-8"))["counts"]
     typer.echo(str(out))
     typer.echo(json.dumps(counts, indent=1))
 
@@ -60,33 +111,90 @@ def cnmf(
 @app.command()
 def autotune(
     run_dir: Annotated[Path, typer.Argument(help="A finished run (holds factors/).")],
-    diameter: Annotated[float, typer.Option(help="Cell diameter in px (factor frame).")],
+    diameter: Annotated[
+        float | None,
+        typer.Option(
+            help="Cell diameter in px (factor frame); default: from the run's footprints."
+        ),
+    ] = None,
     name: Annotated[str, typer.Option(help="Output name under RUN_DIR/reruns/.")] = "auto",
+    dup_corr: Annotated[
+        float | None,
+        typer.Option(help="Trace corr above which a neighbour within D is a duplicate."),
+    ] = None,
+    min_dist_frac: Annotated[
+        float | None, typer.Option(help="Units closer than this x D always merge.")
+    ] = None,
+    tune_frames: Annotated[
+        int | None,
+        typer.Option(
+            help="Explore on a middle segment of this many frames, decide on the whole "
+            "session (0 = explore on the whole session)."
+        ),
+    ] = None,
+    progress: Annotated[Path | None, typer.Option(hidden=True)] = None,
 ) -> None:
     """Propose window-2 parameters for RUN_DIR (sweep, then a rerun in RUN_DIR/reruns/NAME/)."""
     import json
 
     from minime.autotune import run as at
-    from minime.autotune.sweep import Trial
+    from minime.autotune.sweep import MIN_DIST_FRAC, TUNE_FRAMES, Trial
+
+    log = at.StepLog(progress) if progress is not None else None
+
+    dup_corr = at.DUP_CORR if dup_corr is None else dup_corr
+    min_dist_frac = MIN_DIST_FRAC if min_dist_frac is None else min_dist_frac
+    tune_frames = TUNE_FRAMES if tune_frames is None else tune_frames
 
     def show(t: Trial) -> None:
+        if log is not None:
+            log.trial(t)
+        sc = t.score
         res = (
-            t.error if t.score is None else f"good {t.score['good']}  flagged {t.score['flagged']}"
+            t.error
+            if sc is None
+            else f"good {sc['good']}  flagged {sc['flagged']}  lost {sc['lost']}"
         )
         typer.echo(f"{t.step:<10} {res}  ({t.seconds:.1f} s)")
 
     try:
-        out = at.autotune(run_dir, diameter, name=name, on_trial=show)
+        if diameter is None:
+            diameter = at.estimate_diameter(run_dir)
+            typer.echo(f"diameter {diameter} px, estimated from the run's footprints")
+        out = at.autotune(
+            run_dir,
+            diameter,
+            name=name,
+            on_trial=show,
+            dup_corr=dup_corr,
+            min_dist_frac=min_dist_frac,
+            tune_frames=tune_frames,
+            on_stage=None if log is None else log.stage,
+        )
     except (ValueError, RuntimeError) as e:
+        if log is not None:
+            log.close(error=True)
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(1) from None
-    doc = json.loads((out / at.DOC).read_text())
+    if log is not None:
+        log.close()
+    doc = json.loads((out / at.DOC).read_text(encoding="utf-8"))
     typer.echo(str(out))
+    typer.echo(f"dup_corr {dup_corr}  min_dist_frac {min_dist_frac}  diameter {diameter}")
+    seg = doc["segment"]
+    typer.echo(
+        f"explored on frames {seg[0]}-{seg[1]} of {doc['frames']}, decided on all"
+        if seg
+        else f"explored on all {doc['frames']} frames"
+    )
     for k, v in doc["proposed"].items():
         edge = "  [at edge]" if k in doc["at_edge"] else ""
         typer.echo(f"{k:<17} {doc['run_values'][k]!s:>8} -> {v!s:<8}{edge}")
     s = doc["score"]
-    typer.echo(f"good {s['good']}  flagged {s['flagged']}  ({doc['wall_s']} s)")
+    typer.echo(
+        f"good {s['good']}  flagged {s['flagged']}  lost {s['lost']} of the run's good  "
+        f"({doc['wall_s']} s)"
+    )
     if doc["run_score"] is not None and not doc["better_than_run"]:
         rs = doc["run_score"]
         typer.echo(
@@ -145,6 +253,34 @@ def synth(
 
 
 @app.command()
+def demo(
+    folder: Annotated[Path, typer.Argument(help="Where to put the demo (raw/ is made inside).")],
+    dataset: Annotated[
+        str,
+        typer.Option(
+            help="v4: real V4 CA1 recording (24 N.avi, ~8.5 GB); grin: synthetic V4 through a "
+            "GRIN lens with ground truth (36 N.avi, ~13 GB, plus meta.json and truth.npz)."
+        ),
+    ] = "v4",
+) -> None:
+    """Download a demo session's raw videos into FOLDER/raw/ (synthetic: truth into FOLDER).
+
+    Rerun to resume: files already downloaded and intact are skipped.
+    """
+    from minime import places
+    from minime.demo import DATASETS, download
+
+    if dataset not in DATASETS:
+        raise typer.BadParameter(f"unknown dataset {dataset!r}; one of {sorted(DATASETS)}")
+    raw = download(folder / "raw", echo=typer.echo, dataset=dataset)
+    places.remember(folder, "demo", raw, dataset=dataset)
+    nxt = f"minime run {raw}"
+    if dataset != "v4":
+        nxt += f", then minime score {folder / 'processed' / 'minime'}"
+    typer.echo(f"done; next: {nxt}")
+
+
+@app.command()
 def score(
     run_dir: Annotated[Path | None, typer.Argument(help="Pipeline run directory.")] = None,
     raw: Annotated[Path | None, typer.Option(help="Raw dir (meta.json is in its parent).")] = None,
@@ -168,7 +304,7 @@ def score(
     else:
         raise typer.BadParameter("give RUN_DIR or --minian")
     text = json.dumps(result, indent=2)
-    dest.write_text(text + "\n")
+    dest.write_text(text + "\n", encoding="utf-8")
     typer.echo(text)
 
 

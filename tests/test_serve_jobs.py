@@ -1,5 +1,4 @@
 import json
-import os
 import subprocess
 import sys
 import threading
@@ -10,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from minime.serve.app import create_app
-from minime.serve.jobs import JobManager
+from minime.serve.jobs import NEW_GROUP, JobManager, _alive, default_command
 from minime.testing import synth
 from tests.conftest import TINY_PARAMS
 
@@ -28,8 +27,10 @@ def raw(tmp_path):
 
 def test_submit_rejects_bad_input(tmp_path, raw):
     jm = JobManager(tmp_path / "cache", command=_sleeper)
-    with pytest.raises(ValueError, match="no .avi"):
+    with pytest.raises(ValueError, match="must start with a number"):
         jm.submit(str(tmp_path), "x", {})
+    with pytest.raises(ValueError, match="frame rate"):
+        jm.submit(str(raw), "x", {}, fps=0)
     with pytest.raises(ValueError, match="unknown parameter"):
         jm.submit(str(raw), "x", {"bogus": 1})
     with pytest.raises(ValueError):
@@ -89,6 +90,8 @@ def test_raw_info(tmp_path, raw):
     info = c.get("/api/raw/info", params={"path": str(raw)}).json()
     assert (info["segments"], info["frames"], info["height"], info["width"]) == (3, 300, 64, 64)
     assert info["fps"] == 30.0 and info["bytes"] > 0
+    assert info["names"] == ["0.avi", "1.avi", "2.avi"] and info["skipped"] == []
+    assert "start with a number" in info["naming_rule"]
     assert c.get("/api/raw/info", params={"path": str(tmp_path)}).status_code == 404
 
 
@@ -108,14 +111,6 @@ def _wait_status(jm, jid, status, timeout=10):
         time.sleep(0.05)
 
 
-def _alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
-
-
 def test_shutdown_stops_the_running_job(tmp_path, raw):
     jm = JobManager(tmp_path / "cache", command=_sleeper)
     a = jm.submit(str(raw), "a", {})
@@ -131,8 +126,13 @@ def test_shutdown_stops_the_running_job(tmp_path, raw):
     assert done.status == "interrupted" and "server stopped" in done.error
     time.sleep(0.3)
     assert jm.get(b.id).status == "queued"  # the worker picks nothing after shutdown
-    saved = {d["id"]: d for d in json.loads((tmp_path / "cache" / "jobs.json").read_text())}
+    saved = {
+        d["id"]: d
+        for d in json.loads((tmp_path / "cache" / "jobs.json").read_text(encoding="utf-8"))
+    }
     assert saved[a.id]["status"] == "interrupted"
+    jm2 = JobManager(tmp_path / "cache", command=_sleeper)  # the next server
+    assert jm2.get(b.id).status == "cancelled" and "before" in jm2.get(b.id).error
 
 
 def test_app_lifespan_shuts_the_job_runner_down(tmp_path, raw):
@@ -145,14 +145,14 @@ def test_app_lifespan_shuts_the_job_runner_down(tmp_path, raw):
 
 
 def test_a_restart_terminates_a_job_process_that_is_still_alive(tmp_path):
-    proc = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
-    )
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], **NEW_GROUP)
     threading.Thread(target=proc.wait, daemon=True).start()  # reap it once it ends
     root = tmp_path / "cache"
     root.mkdir()
     job = {"id": "j1", "raw_dir": "/r", "name": "n", "params": {}, "keep_store": False}
-    (root / "jobs.json").write_text(json.dumps([{**job, "status": "running", "pid": proc.pid}]))
+    (root / "jobs.json").write_text(
+        json.dumps([{**job, "status": "running", "pid": proc.pid}]), encoding="utf-8"
+    )
     try:
         jm = JobManager(root, command=_sleeper)
         assert jm.get("j1").status == "interrupted"
@@ -191,7 +191,7 @@ def test_a_folder_that_became_a_run_after_submit_fails_at_start(tmp_path, raw):
     out = Path(b.out_dir)
     out.mkdir(parents=True)
     for m in ("params.json", "report.json"):
-        (out / m).write_text("{}")
+        (out / m).write_text("{}", encoding="utf-8")
     jm.cancel(a.id)
     done = jm.wait(b.id, timeout=10)
     assert done.status == "failed" and "already holds a run" in done.error
@@ -211,13 +211,15 @@ def test_a_second_job_runner_on_the_same_root_is_refused(tmp_path):
 def test_a_corrupt_jobs_file_is_kept_aside_and_bad_entries_skipped(tmp_path):
     root = tmp_path / "cache"
     root.mkdir()
-    (root / "jobs.json").write_text("[{not json")
+    (root / "jobs.json").write_text("[{not json", encoding="utf-8")
     jm = JobManager(root, command=_sleeper)
     assert jm.list() == []
     assert len(list(root.glob("jobs.json.bad-*"))) == 1
     jm.shutdown()
     good = {"id": "j1", "raw_dir": "/r", "name": "n", "params": {}, "keep_store": False}
-    (root / "jobs.json").write_text(json.dumps([good, {"id": "j2", "bogus": 1}, 7]))
+    (root / "jobs.json").write_text(
+        json.dumps([good, {"id": "j2", "bogus": 1}, 7]), encoding="utf-8"
+    )
     jm = JobManager(root, command=_sleeper)
     assert [j.id for j in jm.list()] == ["j1"]
     jm.shutdown()
@@ -243,3 +245,12 @@ def test_list_and_get_survive_concurrent_submits(tmp_path, raw):
     t.join()
     assert errors == []
     jm.shutdown()
+
+
+def test_run_command_passes_the_fps_given_in_the_launcher(tmp_path, raw):
+    jm = JobManager(tmp_path / "cache", command=_sleeper)
+    job = jm.submit(str(raw), "x", {}, fps=19.5)
+    assert job.fps == 19.5
+    cmd = default_command(job, tmp_path / "p.json")
+    assert cmd[cmd.index("--fps") + 1] == "19.5"
+    assert "--fps" not in default_command(jm.submit(str(raw), "y", {}), tmp_path / "p.json")
