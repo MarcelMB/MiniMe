@@ -103,7 +103,7 @@ class Params:
         }
 
     def to_json(self, path: str | Path) -> None:
-        Path(path).write_text(json.dumps(self.asdict(), indent=1))
+        Path(path).write_text(json.dumps(self.asdict(), indent=1), encoding="utf-8")
 
     @classmethod
     def from_json(cls, path: str | Path, base: Params | None = None) -> Params:
@@ -112,7 +112,8 @@ class Params:
         Keys the file leaves out come from ``base`` (default: the built-in defaults).
         Run metadata (``RUN_METADATA_KEYS``) is ignored; any other unknown key raises.
         """
-        return cls.from_dict(json.loads(Path(path).read_text()), base, source=str(path))
+        text = Path(path).read_text(encoding="utf-8-sig")  # a BOM from Windows Notepad is fine
+        return cls.from_dict(json.loads(text), base, source=str(path))
 
     @classmethod
     def from_dict(

@@ -23,8 +23,8 @@ def test_rerun_with_run_params_reproduces_full_run(tiny_w2_run):
     for name in CNMF_FILES:
         a, b = _load(tiny_w2_run / "cnmf" / name, name), _load(out / "cnmf" / name, name)
         assert np.array_equal(a, b), name
-    full = json.loads((tiny_w2_run / "report.json").read_text())["counts"]
-    rep = json.loads((out / "report.json").read_text())
+    full = json.loads((tiny_w2_run / "report.json").read_text(encoding="utf-8"))["counts"]
+    rep = json.loads((out / "report.json").read_text(encoding="utf-8"))
     assert rep["counts"] == full
     assert rep["source_run"] == str(tiny_w2_run.resolve())
     units = pd.read_csv(out / "cnmf" / "units.csv")
@@ -43,7 +43,7 @@ def test_rerun_writes_every_stage(tiny_w2_run):
     assert list(stages)[2:] == [f"{k}_{i}" for i in range(n_iter) for k in ("spatial", "merge")]
     final = sps.load_npz(out / "cnmf" / "A.npz")
     assert np.array_equal(stages[f"merge_{n_iter - 1}"].toarray(), final.toarray())
-    counts = json.loads((out / "report.json").read_text())["counts"]
+    counts = json.loads((out / "report.json").read_text(encoding="utf-8"))["counts"]
     assert stages["initA"].shape[0] == counts["units_initA"]
     # the rerun looks like a run directory to the tools that read one
     assert (out / "factors" / "meta.json").exists()
@@ -51,14 +51,14 @@ def test_rerun_writes_every_stage(tiny_w2_run):
 
 
 def test_rerun_applies_window2_overrides(tiny_w2_run, tmp_path):
-    (tmp_path / "p.json").write_text(json.dumps({"sparse_snr": 2.0, "n_iter": 1}))
+    (tmp_path / "p.json").write_text(json.dumps({"sparse_snr": 2.0, "n_iter": 1}), encoding="utf-8")
     prm = window2.run_params(tiny_w2_run, tmp_path / "p.json")
     assert prm.sparse_snr == 2.0 and prm.n_iter == 1
     assert prm.tile == TINY.tile and prm.dl_wnd == TINY.dl_wnd  # rest from the run
     out = window2.rerun(tiny_w2_run, prm, name="sp")
     saved = Params.from_json(out / "params.json")
     assert saved == prm
-    counts = json.loads((out / "report.json").read_text())["counts"]
+    counts = json.loads((out / "report.json").read_text(encoding="utf-8"))["counts"]
     assert "units_after_spatial_1" not in counts
 
 
@@ -91,7 +91,7 @@ def test_execution_params_may_differ(tiny_w2_run):
 
 
 def test_cli_cnmf_reruns_window2(tiny_w2_run, tmp_path):
-    (tmp_path / "p.json").write_text(json.dumps({"loop_merge_corr": 0.95}))
+    (tmp_path / "p.json").write_text(json.dumps({"loop_merge_corr": 0.95}), encoding="utf-8")
     res = CliRunner().invoke(
         cli.app, ["cnmf", str(tiny_w2_run), "--params", str(tmp_path / "p.json"), "--name", "cli"]
     )
@@ -102,7 +102,7 @@ def test_cli_cnmf_reruns_window2(tiny_w2_run, tmp_path):
 
 
 def test_cli_cnmf_reports_refused_params(tiny_w2_run, tmp_path):
-    (tmp_path / "p.json").write_text(json.dumps({"tophat_wnd": 3}))
+    (tmp_path / "p.json").write_text(json.dumps({"tophat_wnd": 3}), encoding="utf-8")
     res = CliRunner().invoke(
         cli.app, ["cnmf", str(tiny_w2_run), "--params", str(tmp_path / "p.json")]
     )

@@ -62,7 +62,9 @@ def test_step_log_writes_one_row_per_step_and_the_rerun(tmp_path):
     log.stage("seeds_init")
     log.stage("cnmf")
     log.close()
-    rows = [json.loads(line) for line in (tmp_path / "p.jsonl").read_text().splitlines()]
+    rows = [
+        json.loads(line) for line in (tmp_path / "p.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
     assert [(r["stage"], r["event"]) for r in rows] == [
         ("tune_seeds", "start"),
         ("tune_seeds", "end"),
@@ -78,7 +80,9 @@ def test_step_log_marks_a_failed_step(tmp_path):
     log = at.StepLog(tmp_path / "p.jsonl")
     log.trial(sweep.Trial("seeds", {}, {}, None, None, 0.0))
     log.close(error=True)
-    rows = [json.loads(line) for line in (tmp_path / "p.jsonl").read_text().splitlines()]
+    rows = [
+        json.loads(line) for line in (tmp_path / "p.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
     assert rows[-1]["event"] == "error"
 
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import atexit
 import contextlib
-import fcntl
 import json
 import os
 import signal
@@ -26,6 +25,14 @@ from minime.serve.cache import cache_root
 from minime.serve.runs import is_run
 
 FINAL = {"done", "failed", "cancelled", "interrupted"}
+WINDOWS = sys.platform == "win32"
+# Popen options that give a job its own process group (Ctrl+C in the server's terminal
+# reaches only the server, which then stops the job)
+NEW_GROUP: dict[str, Any] = (
+    {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    if WINDOWS
+    else {"start_new_session": True}
+)
 
 
 def _tune_args(args: dict[str, Any]) -> dict[str, Any]:
@@ -95,6 +102,8 @@ def default_command(job: Job, params_file: Path) -> list[str]:
 
 
 def _alive(pid: int) -> bool:
+    if WINDOWS:  # os.kill(pid, 0) would terminate the process on Windows
+        return _win_image(pid) is not None
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -104,16 +113,55 @@ def _alive(pid: int) -> bool:
     return True
 
 
+def _win_image(pid: int) -> str | None:
+    """Executable path of a running process (Windows), None if it is gone."""
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32")
+    k32.OpenProcess.restype = wintypes.HANDLE
+    h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return None
+    try:
+        code = wintypes.DWORD()
+        if not k32.GetExitCodeProcess(h, ctypes.byref(code)) or code.value != 259:
+            return None  # 259 = STILL_ACTIVE
+        buf = ctypes.create_unicode_buffer(32768)
+        size = wintypes.DWORD(len(buf))
+        ok = k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size))
+        return buf.value if ok else ""
+    finally:
+        k32.CloseHandle(h)
+
+
+def _is_job_leader(pid: int) -> bool:
+    """Whether ``pid`` still leads a job's process group (and was not reused)."""
+    if WINDOWS:
+        image = _win_image(pid)
+        return image is not None and Path(image).name.lower().startswith("python")
+    try:
+        return os.getpgid(pid) == pid
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def _kill_group(pid: int, force: bool = False) -> None:
+    """SIGTERM (or SIGKILL) the process group led by ``pid``; on Windows, end its process
+    tree (there is no graceful stop: the job runs without a window to close)."""
+    if WINDOWS:
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pid, signal.SIGKILL if force else signal.SIGTERM)
+
+
 def _stop_group(pid: int, timeout: float = 10.0) -> None:
     """SIGTERM the process group led by ``pid``, SIGKILL it if it outlives ``timeout``."""
-    try:
-        if os.getpgid(pid) != pid:
-            return  # not a job's process group leader (the pid was reused)
-    except (ProcessLookupError, PermissionError):
+    if not _is_job_leader(pid):
         return
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(pid, sig)
+    for force in (False, True):
+        _kill_group(pid, force)
         t0 = time.time()
         while _alive(pid) and time.time() - t0 < timeout:
             time.sleep(0.05)
@@ -156,9 +204,16 @@ class JobManager:
         atexit.register(self.shutdown)
 
     def _take_lock(self) -> IO[str]:
-        f = (self.root / "jobs.lock").open("w")
+        f = (self.root / "jobs.lock").open("w", encoding="utf-8")
         try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if WINDOWS:
+                import msvcrt
+
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             f.close()
             raise RuntimeError(f"minime serve is already running (jobs in {self.root})") from None
@@ -170,7 +225,7 @@ class JobManager:
         if not f.exists():
             return []
         try:
-            docs = json.loads(f.read_text())
+            docs = json.loads(f.read_text(encoding="utf-8"))
             if not isinstance(docs, list):
                 raise ValueError("jobs.json is not a list")
         except (OSError, ValueError):
@@ -203,7 +258,7 @@ class JobManager:
         pipeline.check_run_name(name)
         jid = uuid.uuid4().hex[:10]
         pfile = self.dir / f"{jid}.params.json"
-        pfile.write_text(json.dumps(params))
+        pfile.write_text(json.dumps(params), encoding="utf-8")
         Params.from_json(pfile)  # raises ValueError on unknown or invalid parameters
         out = pipeline.out_dir_for(raw, name)
         if is_run(out) and not overwrite:
@@ -229,7 +284,7 @@ class JobManager:
             raise ValueError(f"{', '.join(bad)}: not a window-2 parameter (needs a full run)")
         Params.from_dict(params, window2.run_params(run))  # unknown or invalid -> ValueError
         jid = uuid.uuid4().hex[:10]
-        (self.dir / f"{jid}.params.json").write_text(json.dumps(params))
+        (self.dir / f"{jid}.params.json").write_text(json.dumps(params), encoding="utf-8")
         out = run / window2.RERUNS / name
         job = Job(jid, "", name, params, False, out_dir=str(out), overwrite=True)
         job.kind, job.run_dir = "rerun", str(run)
@@ -239,7 +294,7 @@ class JobManager:
         """``minime autotune`` of ``run_dir`` into ``reruns/auto`` (replaced if present)."""
         run = self._source_run(run_dir)
         jid = uuid.uuid4().hex[:10]
-        (self.dir / f"{jid}.params.json").write_text("{}")
+        (self.dir / f"{jid}.params.json").write_text("{}", encoding="utf-8")
         out = run / window2.RERUNS / AUTO
         job = Job(jid, "", AUTO, {}, False, out_dir=str(out), overwrite=True)
         job.kind, job.run_dir, job.tune_args = "autotune", str(run), _tune_args(tune_args or {})
@@ -275,8 +330,7 @@ class JobManager:
         self._thread.join(timeout=10)
         with self._cv:
             if self._proc is not None:  # did not stop on SIGTERM
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(self._proc.pid, signal.SIGKILL)
+                _kill_group(self._proc.pid, force=True)
         self._thread.join(timeout=5)
         with self._cv:
             job = self._current
@@ -300,8 +354,7 @@ class JobManager:
 
     def _terminate(self) -> None:
         if self._proc is not None:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(self._proc.pid, signal.SIGTERM)
+            _kill_group(self._proc.pid)
 
     def wait(self, jid: str, timeout: float) -> Job:
         t0 = time.time()
@@ -318,7 +371,7 @@ class JobManager:
 
     def log_lines(self, jid: str) -> list[str]:
         p = self.log_path(jid)
-        return p.read_text(errors="replace").splitlines() if p.exists() else []
+        return p.read_text(errors="replace", encoding="utf-8").splitlines() if p.exists() else []
 
     def progress_path(self, jid: str) -> Path:
         """The auto-tune steps of a job (its own file: the sweep writes no run folder)."""
@@ -337,7 +390,7 @@ class JobManager:
                 continue
             if not p.exists():
                 continue
-            for line in p.read_text().splitlines():
+            for line in p.read_text(encoding="utf-8").splitlines():
                 try:
                     e = json.loads(line)
                 except json.JSONDecodeError:
@@ -350,7 +403,9 @@ class JobManager:
 
     def _save(self) -> None:
         tmp = self.root / "jobs.json.tmp"
-        tmp.write_text(json.dumps([asdict(j) for j in self.jobs.values()], indent=1))
+        tmp.write_text(
+            json.dumps([asdict(j) for j in self.jobs.values()], indent=1), encoding="utf-8"
+        )
         tmp.replace(self.root / "jobs.json")
 
     def _next(self) -> Job | None:
@@ -376,7 +431,8 @@ class JobManager:
 
     def _run(self, job: Job, cmd: list[str], log: IO[bytes]) -> int:
         """Start ``cmd`` as the job's process group and wait for it; its return code."""
-        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        env = {**os.environ, "PYTHONUTF8": "1"}  # the log is UTF-8 on every OS
+        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=env, **NEW_GROUP)
         with self._cv:
             self._proc = proc
             job.pid = proc.pid

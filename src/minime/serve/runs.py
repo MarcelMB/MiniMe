@@ -76,11 +76,11 @@ def fps_from_files(raw_dir: Path) -> float | None:
     try:
         meta = Path(raw_dir).parent / "meta.json"
         if meta.is_file():
-            return float(json.loads(meta.read_text())["fps"])
+            return float(json.loads(meta.read_text(encoding="utf-8"))["fps"])
         for name in ("metaData.json", "neural_metaData.json"):
             p = Path(raw_dir) / name
             if p.is_file():
-                v = _leading_number(json.loads(p.read_text()).get("frameRate"))
+                v = _leading_number(json.loads(p.read_text(encoding="utf-8")).get("frameRate"))
                 if v:
                     return v
     except (OSError, ValueError, KeyError):
@@ -116,9 +116,13 @@ class RunView:
         self._sidecar: motion.MotionSidecar | None = None
         self._A: sps.csr_matrix | None = None
         self._invalidate_stale_cache()
-        self.params: dict[str, Any] = json.loads((self.path / "params.json").read_text())
-        self.report: dict[str, Any] = json.loads((self.path / "report.json").read_text())
-        m = json.loads((self.path / "factors" / "meta.json").read_text())
+        self.params: dict[str, Any] = json.loads(
+            (self.path / "params.json").read_text(encoding="utf-8")
+        )
+        self.report: dict[str, Any] = json.loads(
+            (self.path / "report.json").read_text(encoding="utf-8")
+        )
+        m = json.loads((self.path / "factors" / "meta.json").read_text(encoding="utf-8"))
         self.H, self.W, self.T = int(m["H"]), int(m["W"]), int(m["T"])
         self.ranks: list[int] = [int(r) for r in m["ranks"]]
         self.tile: int = int(m["tile"])
@@ -299,7 +303,7 @@ class Registry:
 
     def _known(self) -> dict[str, str]:
         p = self.root / "runs.json"
-        return json.loads(p.read_text()) if p.exists() else {}
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
 
     def open(self, path: Path, touch: bool = True) -> RunView:
         """The view of ``path``; ``touch=False`` (listings) leaves the recent runs alone."""
@@ -312,7 +316,7 @@ class Registry:
                     known[rid] = str(self._runs[rid].path)
                     self.root.mkdir(parents=True, exist_ok=True)
                     tmp = self.root / "runs.json.tmp"
-                    tmp.write_text(json.dumps(known))
+                    tmp.write_text(json.dumps(known), encoding="utf-8")
                     tmp.replace(self.root / "runs.json")
             if touch:
                 self._touch(rid)

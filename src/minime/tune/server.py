@@ -161,9 +161,11 @@ class TuneApp:
         for d in sorted(dirs, key=lambda d: (d / "params.json").stat().st_mtime):
             row: dict[str, Any] = {"name": d.name}
             if (d / "summary.json").exists():
-                row |= json.loads((d / "summary.json").read_text())
+                row |= json.loads((d / "summary.json").read_text(encoding="utf-8"))
             elif (d / "error.txt").exists():
-                row["error"] = (d / "error.txt").read_text().strip().splitlines()[-1]
+                row["error"] = (
+                    (d / "error.txt").read_text(encoding="utf-8").strip().splitlines()[-1]
+                )
             else:
                 row["pending"] = True
             try:
@@ -284,7 +286,7 @@ class TuneApp:
             self._rerun(name, self.session.base)
         for d in sorted(self.reruns_dir.glob("*")):
             s = d / "summary.json"
-            text = s.read_text() if s.exists() else ""
+            text = s.read_text(encoding="utf-8") if s.exists() else ""
             stale = s.exists() and (
                 (self.minian_npz and "minian_matched" not in text)
                 or (self.checks() is not None and '"good"' not in text)

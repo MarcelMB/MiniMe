@@ -439,11 +439,10 @@ def render(app: TuneApp, view: str | None, cmp: str | None) -> str:
     elif view:
         main.append('<p class="note">figures are being drawn ...</p>')
     title = f"{app.run_dir.parent.parent.name} / {app.run_dir.name}"
-    css = (STATIC / "tune.css").read_text()
-    js = (
-        f"const VIEW = {json.dumps(view)}, CMP = {json.dumps(cmp)};\n"
-        + (STATIC / "tune.js").read_text()
-    )
+    css = (STATIC / "tune.css").read_text(encoding="utf-8")
+    js = f"const VIEW = {json.dumps(view)}, CMP = {json.dumps(cmp)};\n" + (
+        STATIC / "tune.js"
+    ).read_text(encoding="utf-8")
     return (
         f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
         f'<meta name="viewport" content="width=device-width, initial-scale=1">'

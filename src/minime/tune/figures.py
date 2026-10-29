@@ -86,12 +86,12 @@ def _fps(run_dir: Path) -> float | None:
     meta = raw.parent / "meta.json" if raw is not None else None
     if meta is None or not meta.exists():
         return None
-    return float(json.loads(meta.read_text()).get("fps") or 0) or None
+    return float(json.loads(meta.read_text(encoding="utf-8")).get("fps") or 0) or None
 
 
 def load_run(d: Path) -> RunData:
     d = Path(d)
-    meta = json.loads((d / "factors" / "meta.json").read_text())
+    meta = json.loads((d / "factors" / "meta.json").read_text(encoding="utf-8"))
     st = d / "stages"
     return RunData(
         name=d.name,
@@ -101,7 +101,7 @@ def load_run(d: Path) -> RunData:
         T=int(meta["T"]),
         max_proj=np.load(d / "factors" / "max_proj.npy").astype(np.float32),
         params=Params.from_json(d / "params.json"),
-        report=json.loads((d / "report.json").read_text()),
+        report=json.loads((d / "report.json").read_text(encoding="utf-8")),
         seeds={p.stem: pd.read_csv(p) for p in sorted(st.glob("seeds_*.csv"))},
         stages=window2.footprint_stages(d),
         A=sps.load_npz(d / "cnmf" / "A.npz").tocsr(),
@@ -644,10 +644,12 @@ def make_run_figures(
         autofig.sweep_curves(sweep_csv, doc, out)
         fig_thresholds(run, doc, out / "thresholds.png")
     s = summary(run, mn, checks)
-    (run.dir / "summary.json").write_text(json.dumps(s, indent=1))
+    (run.dir / "summary.json").write_text(json.dumps(s, indent=1), encoding="utf-8")
     return s
 
 
 def write_summary(run: RunData, mn: MinianOverlay | None, checks: Checks | None) -> None:
     """Rewrite ``summary.json`` only (after new checks), without drawing figures."""
-    (run.dir / "summary.json").write_text(json.dumps(summary(run, mn, checks), indent=1))
+    (run.dir / "summary.json").write_text(
+        json.dumps(summary(run, mn, checks), indent=1), encoding="utf-8"
+    )

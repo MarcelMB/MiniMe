@@ -203,12 +203,12 @@ class Factors:
             "ranks": [tf.rank for tf in self.tiles],
             "meta": self.meta,
         }
-        (dir / "meta.json").write_text(json.dumps(meta, indent=1))
+        (dir / "meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
 
     @classmethod
     def load(cls, dir: Path) -> Factors:
         dir = Path(dir)
-        m = json.loads((dir / "meta.json").read_text())
+        m = json.loads((dir / "meta.json").read_text(encoding="utf-8"))
         if m["format_version"] != FORMAT_VERSION:
             raise ValueError(f"unsupported factors format {m['format_version']}")
         grid = tile_grid(m["H"], m["W"], m["tile"])

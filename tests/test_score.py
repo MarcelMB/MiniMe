@@ -43,7 +43,7 @@ def _pixel_units(setup: synth.SynthSetup, offset: np.ndarray, h: int, w: int):
 
 def _meta(tmp_path: Path, h: int, w: int, T: int) -> Path:
     p = tmp_path / "meta.json"
-    p.write_text(json.dumps({"frames": T, "height": h, "width": w, "seed": 0}))
+    p.write_text(json.dumps({"frames": T, "height": h, "width": w, "seed": 0}), encoding="utf-8")
     return p
 
 

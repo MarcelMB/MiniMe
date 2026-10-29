@@ -69,7 +69,7 @@ def run_params(run_dir: Path, override: Path | None = None) -> Params:
 
 def raw_dir(run_dir: Path) -> Path | None:
     """The raw folder recorded in the run's ``params.json`` (``None`` if it is not recorded)."""
-    raw = json.loads((Path(run_dir) / "params.json").read_text()).get("raw_dir")
+    raw = json.loads((Path(run_dir) / "params.json").read_text(encoding="utf-8")).get("raw_dir")
     return Path(raw) if raw else None
 
 
@@ -109,7 +109,7 @@ def check_factor_params(fac: Factors, params: Params) -> None:
 
 
 def _write_params(out: Path, params: Params, run_dir: Path) -> None:
-    src = json.loads((run_dir / "params.json").read_text())
+    src = json.loads((run_dir / "params.json").read_text(encoding="utf-8"))
     doc = {
         **params.asdict(),
         "raw_dir": src.get("raw_dir"),
@@ -117,7 +117,7 @@ def _write_params(out: Path, params: Params, run_dir: Path) -> None:
         "source_run": str(run_dir.resolve()),
         "minime_version": minime.__version__,
     }
-    (out / "params.json").write_text(json.dumps(doc, indent=1))
+    (out / "params.json").write_text(json.dumps(doc, indent=1), encoding="utf-8")
 
 
 def _link_inputs(out: Path, run_dir: Path) -> None:
@@ -134,13 +134,13 @@ def _write_stages(d: Path, w2: pipeline.Window2Result) -> None:
         df.to_csv(d / f"{name}.csv", index=False)
     for name, A in w2.footprints.items():
         sps.save_npz(d / f"A_{name}.npz", sps.csr_matrix(A))
-    (d / "index.json").write_text(json.dumps({"footprints": list(w2.footprints)}))
+    (d / "index.json").write_text(json.dumps({"footprints": list(w2.footprints)}), encoding="utf-8")
 
 
 def footprint_stages(rerun_dir: Path) -> dict[str, sps.csr_matrix]:
     """Footprints after each window-2 step, in pipeline order (``initA`` ... ``merge_{n-1}``)."""
     d = Path(rerun_dir) / "stages"
-    names = json.loads((d / "index.json").read_text())["footprints"]
+    names = json.loads((d / "index.json").read_text(encoding="utf-8"))["footprints"]
     return {n: sps.load_npz(d / f"A_{n}.npz").tocsr() for n in names}
 
 
@@ -193,7 +193,7 @@ class Window2Session:
                 pipeline._write_cnmf(out / "cnmf", w2.cnmf, self.fac.H, self.fac.W_)
                 _write_stages(out / "stages", w2)
         except Exception:
-            (out / "error.txt").write_text(traceback.format_exc())
+            (out / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
             raise
         timer.to_json(
             out / "report.json",

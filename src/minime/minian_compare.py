@@ -24,7 +24,7 @@ from minime.score import MAX_DIST_PX, footprint_centroids, match_units, row_corr
 
 
 def load_run(run_dir: Path) -> dict:
-    meta = json.loads((run_dir / "factors" / "meta.json").read_text())
+    meta = json.loads((run_dir / "factors" / "meta.json").read_text(encoding="utf-8"))
     H, W = int(meta["H"]), int(meta["W"])
     return {
         "A": sparse.load_npz(run_dir / "cnmf" / "A.npz").tocsr(),
@@ -32,7 +32,7 @@ def load_run(run_dir: Path) -> dict:
         "max_proj": np.load(run_dir / "factors" / "max_proj.npy").astype(np.float32),
         "H": H,
         "W": W,
-        "report": json.loads((run_dir / "report.json").read_text()),
+        "report": json.loads((run_dir / "report.json").read_text(encoding="utf-8")),
     }
 
 

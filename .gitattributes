@@ -1,0 +1,2 @@
+# LF line endings in every checkout, Windows included (tests compare file contents)
+* text=auto eol=lf

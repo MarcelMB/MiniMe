@@ -181,7 +181,7 @@ def probe(raw_dir: Path) -> RawInfo:
     counts = [frame_count(s) for s in segments[:-1]]
     counts.append(decoded_frame_count(segments[-1], bgr))
     meta = Path(os.path.abspath(raw_dir)).parent / "meta.json"
-    fps = float(json.loads(meta.read_text())["fps"]) if meta.exists() else None
+    fps = float(json.loads(meta.read_text(encoding="utf-8"))["fps"]) if meta.exists() else None
     return RawInfo(height, width, sum(counts), counts, segments, fps, bgr)
 
 

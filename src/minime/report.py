@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import resource
 import sys
 import time
 from collections.abc import Callable, Iterator
@@ -30,7 +29,7 @@ class StageTimer:
         """Start logging to ``path`` (overwritten); stages already finished come first."""
         self.progress = Path(path)
         now = time.time()
-        with self.progress.open("w") as f:
+        with self.progress.open("w", encoding="utf-8") as f:
             for r in self.rows:
                 f.write(json.dumps({"stage": r["stage"], "event": "end", "t": now, **r}) + "\n")
 
@@ -40,7 +39,7 @@ class StageTimer:
         doc: dict[str, Any] = {"stage": stage, "event": event, "t": time.time()}
         if seconds is not None:
             doc["seconds"] = seconds
-        with self.progress.open("a") as f:
+        with self.progress.open("a", encoding="utf-8") as f:
             f.write(json.dumps(doc) + "\n")
 
     @contextmanager
@@ -62,7 +61,7 @@ class StageTimer:
 
     def to_json(self, path: Path, extra: dict[str, Any]) -> None:
         doc = {"stages": self.rows, "counts": self.counts, **extra}
-        Path(path).write_text(json.dumps(doc, indent=1, default=_json_default))
+        Path(path).write_text(json.dumps(doc, indent=1, default=_json_default), encoding="utf-8")
 
 
 def _json_default(o: Any) -> Any:
@@ -71,14 +70,46 @@ def _json_default(o: Any) -> Any:
     return str(o)
 
 
-def peak_rss(children: bool = False) -> int:
+def peak_rss(children: bool = False) -> int | None:
     """Peak resident set size in bytes of this process, or of its largest finished child.
 
-    ``ru_maxrss`` is bytes on macOS and KiB on Linux.
+    ``ru_maxrss`` is bytes on macOS and KiB on Linux. Windows has no ``resource``: the
+    peak working set of this process, and None for the children.
     """
+    if sys.platform == "win32":
+        return None if children else _peak_working_set()
+    import resource
+
     who = resource.RUSAGE_CHILDREN if children else resource.RUSAGE_SELF
     rss = resource.getrusage(who).ru_maxrss
     return int(rss if sys.platform == "darwin" else rss * 1024)
+
+
+def _peak_working_set() -> int | None:
+    """``PeakWorkingSetSize`` of this process (Windows), None if the call fails."""
+    import ctypes
+    from ctypes import wintypes
+
+    class Counters(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+            (n, ctypes.c_size_t)
+            for n in (
+                "PeakWorkingSetSize",
+                "WorkingSetSize",
+                "QuotaPeakPagedPoolUsage",
+                "QuotaPagedPoolUsage",
+                "QuotaPeakNonPagedPoolUsage",
+                "QuotaNonPagedPoolUsage",
+                "PagefileUsage",
+                "PeakPagefileUsage",
+            )
+        ]
+
+    c = Counters(cb=ctypes.sizeof(Counters))
+    k32 = ctypes.WinDLL("kernel32")
+    k32.GetCurrentProcess.restype = wintypes.HANDLE
+    ok = ctypes.WinDLL("psapi").GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(c), c.cb)
+    return int(c.PeakWorkingSetSize) if ok else None
 
 
 def dir_bytes(path: Path) -> int:

@@ -38,8 +38,8 @@ def _row(run: RunView, d: Path) -> dict[str, Any]:
     row: dict[str, Any] = {"name": d.name, "autotune": (d / at.DOC).is_file()}
     report, error = d / "report.json", d / "error.txt"
     if report.is_file():
-        rep = json.loads(report.read_text())
-        params = json.loads((d / "params.json").read_text())
+        rep = json.loads(report.read_text(encoding="utf-8"))
+        params = json.loads((d / "params.json").read_text(encoding="utf-8"))
         row.update(
             status="done",
             counts=rep.get("counts", {}),
@@ -48,7 +48,9 @@ def _row(run: RunView, d: Path) -> dict[str, Any]:
             changed=_changed(run.params, params),
         )
     elif error.is_file():
-        row.update(status="failed", error=error.read_text().strip().splitlines()[-1:])
+        row.update(
+            status="failed", error=error.read_text(encoding="utf-8").strip().splitlines()[-1:]
+        )
     else:
         row["status"] = "running"
     return row

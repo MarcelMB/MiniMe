@@ -96,6 +96,9 @@ a { color: var(--accent); }
 .card.dim { opacity: 0.6; }
 .label { font-size: 13px; color: var(--muted); font-weight: 500; }
 .big { font-size: 40px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; }
+.run-name { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.2;
+  overflow-wrap: anywhere; }
+.units { color: var(--text); font-weight: 600; }
 
 .btn {
   font: inherit; font-size: 13px; font-weight: 500; color: var(--text);

@@ -4,9 +4,9 @@ Cells are Gaussian patches with spiking exp-decay traces on a smooth vignette ba
 with slow drift, Gaussian noise and integer random-walk rigid motion, uint8. Optional 1p
 effects (``SynthOptions``: drifting background, neuropil, overlapping cells, late-active
 cells, bleaching, vessels, large or non-rigid motion, dropped frames, cell variation,
-bursting spikes, a non-calcium blob, an edge band) are off by default. With the defaults
-the RNG call order (positions, traces, motion steps, then per-chunk noise) is the legacy
-one, so a given ``(h, w, T, seed)`` reproduces the same movie as before the options
+bursting spikes, a non-calcium blob, an edge band, out-of-focus cells) are off by default.
+With the defaults the RNG call order (positions, traces, motion steps, then per-chunk noise)
+is the legacy one, so a given ``(h, w, T, seed)`` reproduces the same movie as before the options
 existed; each effect draws from its own child stream, so enabling one does not move the
 cells or change the noise of the others.
 """
@@ -21,6 +21,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from scipy import sparse
 
 from minime.testing import synth_effects as fx
 
@@ -33,12 +34,25 @@ DECAY_TAU = 15.0  # frames (0.5 s at 30 fps)
 PATCH_MIN = 15
 
 # child RNG streams, one per effect
-(_S_SIZE, _S_BURST, _S_OVERLAP, _S_BG, _S_NP, _S_VESSEL, _S_WARP, _S_FRAMES, _S_HEMO, _S_LATE) = (
-    range(10)
-)
+(
+    _S_SIZE,
+    _S_BURST,
+    _S_OVERLAP,
+    _S_BG,
+    _S_NP,
+    _S_VESSEL,
+    _S_WARP,
+    _S_FRAMES,
+    _S_HEMO,
+    _S_LATE,
+    _S_OOF,
+) = range(11)
 DETECT_BORDER = 5  # px: a cell centred closer to the frame edge is not counted as detectable
 DETECT_SPIKES = 2  # a cell with fewer spikes in the session is not counted as detectable
+EDGE_PX = 12  # a cell centred closer to the frame edge is in the "edge" category
 LATE_RATE = 0.05  # spikes per frame of a late-active cell once it starts
+OOF_SIGMA = 3.0  # out-of-focus cell sigma, in units of CELL_SIGMA (median)
+OOF_AMP = (0.15, 0.35)  # out-of-focus transient amplitude, fraction of CELL_AMP
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +71,8 @@ class SynthOptions:
     late_active: int = 0  # in-frame cells silent before late_active_start * T, bursting after
     late_active_start: float = 0.7
     bleach_tau: float | None = None  # frames; global envelope 0.5 + 0.5 exp(-t / tau)
-    vessels: int = 0  # dark tortuous curves moving with the tissue
+    vessels: int = 0  # branching vessel trees moving with the tissue
+    vessel_density: float = 0.05  # Beer-Lambert density per px of vessel chord (darkness)
     motion_step: int = 1  # max |step| of the rigid random walk, px
     motion_margin: int = MOTION_MARGIN  # canvas margin, px; the walk is clipped to it
     nonrigid: float = 0.0  # px, 99th percentile of the warp amplitude
@@ -70,6 +85,7 @@ class SynthOptions:
     rise_tau: float = 0.0  # frames; 0 = instantaneous rise
     hemo: float = 0.0  # grey levels of one broad blob oscillating at 0.1 Hz
     edge_band: int = 0  # px of border multiplied by 0.2 (fixed on the sensor)
+    out_of_focus: int = 0  # dim, blurred active cells of other depths; not in the truth
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -95,6 +111,7 @@ SCENARIOS: dict[str, SynthOptions] = {
     "bursts": SynthOptions(bursts=True, rise_tau=2.0),
     "hemo": SynthOptions(hemo=20.0),
     "edge": SynthOptions(edge_band=4),
+    "out_of_focus": SynthOptions(out_of_focus=4),
     "realistic": SynthOptions(
         background_drift=15.0,
         neuropil=10.0,
@@ -106,6 +123,31 @@ SCENARIOS: dict[str, SynthOptions] = {
         amp_cv=0.3,
         bursts=True,
         rise_tau=2.0,
+    ),
+    # every effect at once, its counts sized for a 600 x 600 V4 frame (~420 cells) and
+    # tens of thousands of frames (bleaching to ~0.57 over 54 000 frames)
+    "hard": SynthOptions(
+        background_drift=15.0,
+        neuropil=10.0,
+        overlap=40,
+        overlap_corr=0.8,
+        late_active=20,
+        bleach_tau=20000.0,
+        vessels=1,
+        vessel_density=0.025,  # one faint tree
+        motion_step=2,
+        motion_margin=16,
+        nonrigid=2.0,
+        dropped=20,
+        duplicated=20,
+        size_cv=0.3,
+        amp_cv=0.3,
+        noise_sd=8.0,
+        bursts=True,
+        rise_tau=2.0,
+        hemo=20.0,
+        edge_band=4,
+        out_of_focus=80,
     ),
 }
 
@@ -146,6 +188,12 @@ class SynthSetup:
     hemo_field: np.ndarray  # (ch, cw)
     hemo_time: np.ndarray  # (T,)
     frame_map: np.ndarray  # (T,) source frame per recorded frame, -1 = black
+    late: np.ndarray  # (n,) bool, the late-active cells
+    oof_ys: np.ndarray  # (m,) out-of-focus patch top-left in canvas coordinates
+    oof_xs: np.ndarray
+    oof_sigma: np.ndarray  # (m,) px
+    oof_signal: np.ndarray  # (m, T) emitted fluorescence (bleached, no baseline)
+    oof_patches: np.ndarray  # (m, ps, ps) footprints, peak 1
 
 
 def _gauss_patch(size: int = PATCH_MIN, sigma: float = CELL_SIGMA) -> np.ndarray:
@@ -164,7 +212,7 @@ def _cells(
 ) -> tuple[np.ndarray, ...]:
     """Positions, spikes and amplitudes of all cells. Legacy draws (positions, spikes, spike
     amplitudes, motion steps) first, in the legacy order, then the effects on their streams.
-    Returns ``(ys, xs, spikes, amp_u, steps, sigma, amp_f, group)``."""
+    Returns ``(ys, xs, spikes, amp_u, steps, sigma, amp_f, group, late)``."""
     ch, cw = h + 2 * m, w + 2 * m
     n_base = max(1, int(ch * cw / 900))
     n = n_base + o.overlap
@@ -181,6 +229,7 @@ def _cells(
 
     if o.bursts:
         spikes = fx.markov_spikes(child(_S_BURST), n_base, T)
+    late_mask = np.zeros(n, bool)
     if o.late_active > 0:
         # the last late_active cells whose centre is well inside the frame: silent, then
         # bursting at LATE_RATE from late_active_start on (the long-recording unit-loss case)
@@ -191,6 +240,7 @@ def _cells(
         start = int(o.late_active_start * T)
         spikes[late] = 0.0
         spikes[late, start:] = child(_S_LATE).random((late.size, T - start)) < LATE_RATE
+        late_mask[late] = True
     group = np.full(n, -1)
     if o.overlap > 0:
         r = child(_S_OVERLAP)
@@ -206,7 +256,25 @@ def _cells(
         amp_u = np.concatenate([amp_u, r.uniform(0.5, 1.5, (o.overlap, 1)).astype(np.float32)])
         group[partners] = np.arange(o.overlap)
         group[n_base:] = np.arange(o.overlap)
-    return ys, xs, spikes, amp_u, steps, sigma, amp_f, group
+    return ys, xs, spikes, amp_u, steps, sigma, amp_f, group, late_mask
+
+
+def _out_of_focus(
+    r: np.random.Generator, o: SynthOptions, ch: int, cw: int, T: int, bleach: np.ndarray
+) -> tuple[np.ndarray, ...]:
+    """Cells above or below the focal plane: wide (sigma ~3x), dim (15-35 % of an in-focus
+    transient), with their own activity. Returns ``(ys, xs, sigma, signal, patches)``."""
+    m = o.out_of_focus
+    sigma = CELL_SIGMA * OOF_SIGMA * fx.lognormal_factors(r, 0.2, m)
+    ps = min(_patch_size(sigma), min(ch, cw))
+    ys = r.integers(0, ch - ps + 1, m)
+    xs = r.integers(0, cw - ps + 1, m)
+    spikes = fx.markov_spikes(r, m, T) if o.bursts else (r.random((m, T)) < 0.01).astype(np.float32)
+    amp = r.uniform(*OOF_AMP, m).astype(np.float32) * np.float32(CELL_AMP)
+    signal = fx.calcium(spikes, DECAY_TAU, o.rise_tau) * amp[:, None]
+    signal = (signal * bleach.astype(np.float32)[None]).astype(np.float32)
+    patches = np.stack([_gauss_patch(ps, s) for s in sigma])
+    return ys, xs, sigma, signal, patches
 
 
 def _build(
@@ -215,14 +283,14 @@ def _build(
     """All draws before the frame loop; returns the truth and the RNG positioned for noise."""
     o = options or SynthOptions()
     rng = np.random.default_rng(seed)
-    kids = np.random.SeedSequence(seed).spawn(10)
+    kids = np.random.SeedSequence(seed).spawn(11)  # child i is the same for any count > i
 
     def child(i: int) -> np.random.Generator:
         return np.random.default_rng(kids[i])
 
     m = o.motion_margin
     ch, cw = h + 2 * m, w + 2 * m
-    ys, xs, spikes, amp_u, steps, sigma, amp_f, group = _cells(rng, child, o, h, w, m, T)
+    ys, xs, spikes, amp_u, steps, sigma, amp_f, group, late = _cells(rng, child, o, h, w, m, T)
     n = ys.size
 
     scale = (CELL_AMP * amp_f).astype(np.float32)  # exactly 60.0 per cell when amp_cv == 0
@@ -260,7 +328,7 @@ def _build(
         pop = pop / pop.mean() if pop.mean() > 0 else np.ones(T, np.float32)
         np_time = np.stack([0.7 * pop + 0.3 * fx.ou_series(r, T, 300.0) for _ in range(3)])
     vessel_mask = (
-        fx.vessel_mask(child(_S_VESSEL), (ch, cw), o.vessels)
+        fx.vessel_mask(child(_S_VESSEL), (ch, cw), o.vessels, o.vessel_density)
         if o.vessels > 0
         else np.ones((ch, cw), np.float32)
     )
@@ -274,6 +342,10 @@ def _build(
         hemo_field = fx.smooth_field(child(_S_HEMO), (ch, cw), max(ch, cw) / 3)
         hemo_time = (0.5 * (1 + np.sin(2 * np.pi * 0.1 / 30 * np.arange(T)))).astype(np.float32)
     frame_map = fx.frame_map(child(_S_FRAMES), T, o.dropped, o.duplicated)
+    if o.out_of_focus > 0:
+        oof = _out_of_focus(child(_S_OOF), o, ch, cw, T, bleach)
+    else:
+        oof = (np.zeros(0, int), np.zeros(0, int), np.zeros(0), empty_t, np.zeros((0, 1, 1)))
 
     setup = SynthSetup(
         ys=ys,
@@ -303,6 +375,12 @@ def _build(
         hemo_field=hemo_field,
         hemo_time=hemo_time,
         frame_map=frame_map,
+        late=late,
+        oof_ys=oof[0],
+        oof_xs=oof[1],
+        oof_sigma=oof[2],
+        oof_signal=oof[3],
+        oof_patches=oof[4].astype(np.float32),
     )
     return setup, rng
 
@@ -328,6 +406,106 @@ def detectable(setup: SynthSetup, h: int, w: int) -> np.ndarray:
     c = true_centroids(setup)
     inside = (c >= DETECT_BORDER).all(axis=1) & (c < np.array([h, w]) - DETECT_BORDER).all(axis=1)
     return inside & ((setup.spikes > 0).sum(axis=1) >= DETECT_SPIKES)
+
+
+def oof_centroids(setup: SynthSetup) -> np.ndarray:
+    """(m, 2) float (y, x) out-of-focus cell centres in unshifted frame coordinates."""
+    half = setup.oof_patches.shape[-1] // 2
+    return np.stack(
+        [setup.oof_ys + half - setup.margin, setup.oof_xs + half - setup.margin], axis=1
+    ).astype(float)
+
+
+def categories(setup: SynthSetup, h: int, w: int) -> dict[str, np.ndarray]:
+    """(n,) bool masks of the cells each effect makes hard to find, for a recall per category.
+
+    ``overlap``: one of a close, correlated pair; ``near_vessel``: a vessel crosses the cell
+    (transmission < 0.8 where its footprint is above 20 %); ``late``: silent until late in
+    the session; ``small`` / ``dim``: sigma or transient amplitude well below the typical
+    cell; ``edge``: centred within ``EDGE_PX`` of the frame edge; ``near_out_of_focus``: an
+    out-of-focus cell's core (one sigma) covers the centre.
+    """
+    s, c = setup, true_centroids(setup)
+    ps = s.patches.shape[-1]
+    vessel = np.array(
+        [
+            s.vessel_mask[y : y + ps, x : x + ps][s.patches[k] > 0.2].min() < 0.8
+            for k, (y, x) in enumerate(zip(s.ys, s.xs, strict=True))
+        ]
+    )
+    edge = np.minimum(c, np.array([h, w]) - 1 - c).min(axis=1) < EDGE_PX
+    near_oof = np.zeros(c.shape[0], bool)
+    oc = oof_centroids(s)
+    if oc.size:
+        d = np.hypot(c[:, None, 0] - oc[None, :, 0], c[:, None, 1] - oc[None, :, 1])
+        near_oof = (d < s.oof_sigma[None]).any(axis=1)
+    return {
+        "detectable": detectable(s, h, w),
+        "overlap": s.group >= 0,
+        "near_vessel": vessel,
+        "late": s.late.copy(),
+        "small": s.sigma < 0.8 * CELL_SIGMA,
+        "dim": s.amp < 0.6 * CELL_AMP,
+        "edge": edge,
+        "near_out_of_focus": near_oof,
+    }
+
+
+def footprints(setup: SynthSetup, h: int, w: int) -> sparse.csr_matrix:
+    """(n, h*w) float32 cell footprints (peak 1, values >= 1e-3) in unshifted frame
+    coordinates, row-major, cut at the frame edge."""
+    s, ps = setup, setup.patches.shape[-1]
+    rows, cols, vals = [], [], []
+    for k in range(s.ys.size):
+        yy, xx = np.mgrid[0:ps, 0:ps]
+        y, x = yy + s.ys[k] - s.margin, xx + s.xs[k] - s.margin
+        keep = (y >= 0) & (y < h) & (x >= 0) & (x < w) & (s.patches[k] >= 1e-3)
+        rows.append(np.full(int(keep.sum()), k))
+        cols.append((y * w + x)[keep])
+        vals.append(s.patches[k][keep])
+    n = s.ys.size
+    return sparse.csr_matrix(
+        (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+        shape=(n, h * w),
+        dtype=np.float32,
+    )
+
+
+def truth_arrays(setup: SynthSetup, h: int, w: int) -> dict[str, np.ndarray]:
+    """What scoring needs, as plain arrays (the content of ``truth.npz`` minus footprints).
+
+    ``traces`` are the cells' activity above F0 in recorded frame order (zeros on dropped
+    frames, ``frame_ok`` False there); ``shifts`` are the source frames' crop offsets.
+    """
+    s = setup
+    above = (s.C - s.F0).astype(np.float32)
+    ok = s.frame_map >= 0
+    traces = np.zeros_like(above)
+    traces[:, ok] = above[:, s.frame_map[ok]]
+    out = {
+        "centroids": true_centroids(s),
+        "traces": traces,
+        "frame_ok": ok,
+        "shifts": s.shifts,
+        "spikes": s.spikes.astype(np.float32),
+        "sigma": s.sigma,
+        "amp": s.amp,
+        "group": s.group,
+        "first_active": s.first_active,
+        "oof_centroids": oof_centroids(s),
+        "oof_sigma": s.oof_sigma,
+    }
+    out.update({f"cat_{k}": v for k, v in categories(s, h, w).items()})
+    return out
+
+
+def write_truth(setup: SynthSetup, h: int, w: int, path: Path) -> None:
+    """``truth.npz``: ``truth_arrays`` plus the footprints (``A_data``, ``A_indices``,
+    ``A_indptr``, ``A_shape`` of a CSR matrix), so scoring does not regenerate the session."""
+    A = footprints(setup, h, w)
+    arrays = truth_arrays(setup, h, w)
+    arrays.update(A_data=A.data, A_indices=A.indices, A_indptr=A.indptr, A_shape=A.shape)
+    np.savez_compressed(path, **arrays)
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +541,14 @@ def _render(
         canvas[sl] += s.C[k, t0:t1, None, None] * s.patches[k][None]
         if cells is not None:
             cells[sl] += (s.C[k, t0:t1] - s.F0[k, t0:t1])[:, None, None] * s.patches[k][None]
+    ops = s.oof_patches.shape[-1]
+    for k in range(s.oof_ys.size):  # out-of-focus cells are background to CNMF: not in cells
+        sl = (
+            slice(None),
+            slice(s.oof_ys[k], s.oof_ys[k] + ops),
+            slice(s.oof_xs[k], s.oof_xs[k] + ops),
+        )
+        canvas[sl] += s.oof_signal[k, t0:t1, None, None] * s.oof_patches[k][None]
     if o.vessels > 0:
         canvas *= s.vessel_mask[None]
         if cells is not None:
@@ -479,7 +665,7 @@ def write_session(
     options: SynthOptions | None = None,
 ) -> dict:
     """Write ``N.avi`` segments (uncompressed, fourcc GREY) to ``out_dir`` and ``meta.json``
-    to ``out_dir.parent``; returns the metadata dict."""
+    and ``truth.npz`` (``write_truth``) to ``out_dir.parent``; returns the metadata dict."""
     T = int(round(minutes * 60 * fps))
     out_dir.mkdir(parents=True, exist_ok=True)
     fourcc = cv2.VideoWriter_fourcc(*"GREY")
@@ -504,5 +690,6 @@ def write_session(
         "bytes_raw": T * side * side,
         "generate_seconds": time.perf_counter() - t0,
     }
-    (out_dir.parent / "meta.json").write_text(json.dumps(meta, indent=1))
+    write_truth(synth_setup(side, side, T, seed, options), side, side, out_dir.parent / "truth.npz")
+    (out_dir.parent / "meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
     return meta

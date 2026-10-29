@@ -42,7 +42,7 @@ def _session(root: Path, options: synth.SynthOptions, side: int = SIDE) -> Path:
 
 
 def _unit_centroids(run: Path) -> np.ndarray:
-    meta = json.loads((run / "factors" / "meta.json").read_text())
+    meta = json.loads((run / "factors" / "meta.json").read_text(encoding="utf-8"))
     A = sparse.load_npz(run / "cnmf" / "A.npz")
     uc = score.footprint_centroids(A, int(meta["H"]), int(meta["W"]))
     return uc[np.isfinite(uc).all(axis=1)]
@@ -94,12 +94,35 @@ def test_score_truth_against_itself_with_dropped_frames(tmp_path):
     assert out["n_matched"] == keep.size and out["trace_corr_median"] > 0.999
 
 
+def test_score_reads_truth_npz_like_the_regenerated_truth(tmp_path):
+    o = synth.SynthOptions(overlap=2, out_of_focus=2, dropped=3)
+    raw = _session(tmp_path, o, side=64)
+    s = synth.synth_setup(64, 64, T, 0, o)
+    truth, _ = score._truth_traces(s)
+    cents = np.rint(synth.true_centroids(s)).astype(int)
+    keep = np.flatnonzero((cents >= 0).all(axis=1) & (cents < 64).all(axis=1))
+    A = sparse.lil_matrix((keep.size + 1, 64 * 64), dtype=np.float32)
+    for i, k in enumerate(keep):
+        A[i, cents[k, 0] * 64 + cents[k, 1]] = 1.0
+    oc = np.rint(synth.oof_centroids(s)[0]).clip(0, 63).astype(int)
+    A[keep.size, oc[0] * 64 + oc[1]] = 1.0  # a false unit on an out-of-focus cell
+    traces = np.vstack([truth[keep], np.zeros((1, T), np.float32)])
+    meta = raw.parent / "meta.json"
+    from_npz = score.score_run(sparse.csr_matrix(A), traces, 64, 64, meta, s.shifts)
+    (raw.parent / "truth.npz").unlink()
+    regen = score.score_run(sparse.csr_matrix(A), traces, 64, 64, meta, s.shifts)
+    assert from_npz == regen
+    assert from_npz["recall_detectable"] == 1.0
+    assert from_npz["recall_by_category"]["overlap"]["recall"] == 1.0
+    assert from_npz["n_matched"] == keep.size and from_npz["units_on_out_of_focus"] == 1
+
+
 def test_score_meta_without_options(tmp_path):
     raw = _session(tmp_path, synth.SynthOptions(), side=64)
     meta_path = raw.parent / "meta.json"
-    meta = json.loads(meta_path.read_text())
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
     del meta["options"]
-    meta_path.write_text(json.dumps(meta))
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
     s = synth.synth_setup(64, 64, T, 0)
     A = sparse.csr_matrix(np.zeros((1, 64 * 64), np.float32))
     out = score.score_run(A, np.zeros((1, T), np.float32), 64, 64, meta_path, s.shifts)
@@ -174,11 +197,7 @@ def test_vessels_no_unit_on_a_vessel(tmp_path):
     assert int((inner[c[:, 0], c[:, 1]] < 0.7).sum()) == 0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="vessels add false units next to them: precision 0.57 vs 0.94 clean "
-    "(28 units for 23 cells) on 2026-10-27",
-)
+# thin hard-edged vessel lines gave precision 0.57; branching soft vessels give 0.94 = clean
 def test_vessels_keep_precision(tmp_path, clean):
     r = _run(tmp_path, synth.SCENARIOS["vessels"])
     assert r.precision >= clean.precision - 0.1
@@ -250,6 +269,17 @@ def test_hemodynamic_blob_is_not_a_unit(tmp_path, clean):
 def test_edge_band(tmp_path, clean):
     r = _run(tmp_path, synth.SCENARIOS["edge"])
     assert r.recall >= clean.recall - 0.1
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="out-of-focus cells add false units: precision 0.75 vs 0.94 clean (24 units for "
+    "17, 4 of them on out-of-focus cells) on 2026-10-28",
+)
+def test_out_of_focus_cells_keep_precision(tmp_path, clean):
+    r = _run(tmp_path, synth.SCENARIOS["out_of_focus"])
+    assert r.recall >= clean.recall - 0.1
+    assert r.precision >= clean.precision - 0.1 and r.out["units_on_out_of_focus"] == 0
 
 
 def test_realistic_scenario_floor(tmp_path):

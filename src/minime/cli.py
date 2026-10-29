@@ -36,7 +36,7 @@ def run(
         raise typer.Exit(1)
     prm = Params.from_json(params) if params is not None else Params()
     out = pipeline.run(raw_dir, prm, run_name=name, keep_store=keep_store, workers=workers)
-    counts = json.loads((out / "report.json").read_text())["counts"]
+    counts = json.loads((out / "report.json").read_text(encoding="utf-8"))["counts"]
     typer.echo(str(out))
     typer.echo(json.dumps(counts, indent=1))
 
@@ -61,7 +61,7 @@ def cnmf(
     except ValueError as e:
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(1) from None
-    counts = json.loads((out / "report.json").read_text())["counts"]
+    counts = json.loads((out / "report.json").read_text(encoding="utf-8"))["counts"]
     typer.echo(str(out))
     typer.echo(json.dumps(counts, indent=1))
 
@@ -136,7 +136,7 @@ def autotune(
         raise typer.Exit(1) from None
     if log is not None:
         log.close()
-    doc = json.loads((out / at.DOC).read_text())
+    doc = json.loads((out / at.DOC).read_text(encoding="utf-8"))
     typer.echo(str(out))
     typer.echo(f"dup_corr {dup_corr}  min_dist_frac {min_dist_frac}  diameter {diameter}")
     seg = doc["segment"]
@@ -218,9 +218,11 @@ def demo(
 
     Rerun to resume: segments already downloaded and intact are skipped.
     """
+    from minime import places
     from minime.demo import download
 
     raw = download(folder / "raw", echo=typer.echo)
+    places.remember(folder, "demo", raw)
     typer.echo(f"done; next: minime run {raw}")
 
 
@@ -248,7 +250,7 @@ def score(
     else:
         raise typer.BadParameter("give RUN_DIR or --minian")
     text = json.dumps(result, indent=2)
-    dest.write_text(text + "\n")
+    dest.write_text(text + "\n", encoding="utf-8")
     typer.echo(text)
 
 

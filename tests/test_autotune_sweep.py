@@ -122,7 +122,7 @@ def test_all_failed_step_raises_when_the_run_failed_too(tiny_w2_run):
 def test_autotune_writes_a_rerun_whose_score_matches(tiny_w2_run):
     out = at.autotune(tiny_w2_run, D, grids=SMALL, name="auto_t")
     assert out == tiny_w2_run / "reruns" / "auto_t"
-    doc = json.loads((out / "autotune.json").read_text())
+    doc = json.loads((out / "autotune.json").read_text(encoding="utf-8"))
     assert doc["diameter"] == D and set(doc["proposed"]) == set(sweep.SEARCHED)
     assert doc["derived"]["dl_wnd"] == 5 and "dl_wnd" in doc["kept"]
     assert set(doc["at_edge"]) <= set(sweep.SEARCHED)

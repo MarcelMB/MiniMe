@@ -125,7 +125,7 @@ def test_cli_autotune_tune_frames(tiny_w2_run, monkeypatch):
     args = ["autotune", str(tiny_w2_run), "--diameter", "7", "--name", "auto_seg"]
     res = CliRunner().invoke(cli.app, [*args, "--tune-frames", "200"])
     assert res.exit_code == 0, res.output
-    doc = json.loads((tiny_w2_run / "reruns" / "auto_seg" / at.DOC).read_text())
+    doc = json.loads((tiny_w2_run / "reruns" / "auto_seg" / at.DOC).read_text(encoding="utf-8"))
     assert doc["tune_frames"] == 200 and doc["frames"] == 300
     t0, t1 = doc["segment"]
     assert f"explored on frames {t0}-{t1} of 300" in res.output

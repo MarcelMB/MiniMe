@@ -20,7 +20,7 @@ import pandas as pd
 import scipy.sparse as sps
 
 import minime
-from minime import corr, init, io, motion, pass1, pass2, seeds
+from minime import corr, init, io, motion, pass1, pass2, places, seeds
 from minime.cnmf import CnmfResult, run_cnmf
 from minime.factors import Factors
 from minime.params import Params
@@ -81,7 +81,7 @@ def _is_minime_run(out: Path) -> bool:
         ("report.json", {"stages"}),
     ):
         try:
-            doc = json.loads((out / name).read_text())
+            doc = json.loads((out / name).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         if isinstance(doc, dict) and keys & set(doc):
@@ -343,7 +343,7 @@ def _write_params(out: Path, params: Params, raw_dir: Path, raw_hash: str) -> No
         "raw_hash": raw_hash,
         "minime_version": minime.__version__,
     }
-    (out / "params.json").write_text(json.dumps(doc, indent=1))
+    (out / "params.json").write_text(json.dumps(doc, indent=1), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -440,4 +440,5 @@ def run(
             "version": minime.__version__,
         },
     )
+    places.remember(out.parent.parent, "run", raw_dir)  # the session folder: serve opens it
     return out

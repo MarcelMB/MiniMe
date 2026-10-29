@@ -74,7 +74,7 @@ def checks_of(doc: dict[str, Any]) -> score.Checks:
 
 def load_doc(rerun_dir: Path) -> dict[str, Any] | None:
     p = Path(rerun_dir) / DOC
-    return json.loads(p.read_text()) if p.exists() else None
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
 
 
 # ----------------------------------------------------------------------------------------
@@ -178,14 +178,14 @@ class StepLog:
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
-        self.path.write_text("")
+        self.path.write_text("", encoding="utf-8")
         self.step: str | None = None
         self.t0 = 0.0
         self.n = 0
 
     def _write(self, event: str, **extra: Any) -> None:
         doc = {"stage": f"tune_{self.step}", "event": event, "t": time.time(), **extra}
-        with self.path.open("a") as f:
+        with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(doc) + "\n")
 
     def _switch(self, step: str) -> None:
@@ -292,5 +292,5 @@ def autotune(
         "n_trials": len(sw.trials),
         "wall_s": round(time.perf_counter() - t0, 1),
     }
-    (out / DOC).write_text(json.dumps(doc, indent=1))
+    (out / DOC).write_text(json.dumps(doc, indent=1), encoding="utf-8")
     return out

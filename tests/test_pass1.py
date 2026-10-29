@@ -270,13 +270,13 @@ def test_run_params_json_roundtrips(tmp_path):
 
     p = Params(tile=32, pnr_thres=2.5, workers=3, size_thres=(9, None))
     pipeline._write_params(tmp_path, p, tmp_path, "abc")
-    doc = json.loads((tmp_path / "params.json").read_text())
+    doc = json.loads((tmp_path / "params.json").read_text(encoding="utf-8"))
     assert {"raw_dir", "raw_hash", "minime_version"} <= set(doc)
     assert Params.from_json(tmp_path / "params.json") == p  # workers kept as recorded
     old = {**doc, "cafast_version": doc.pop("minime_version")}  # run written as cafast
-    (tmp_path / "old.json").write_text(json.dumps(old))
+    (tmp_path / "old.json").write_text(json.dumps(old), encoding="utf-8")
     assert Params.from_json(tmp_path / "old.json") == p
-    (tmp_path / "bad.json").write_text(json.dumps({"tile": 32, "tiel": 16}))
+    (tmp_path / "bad.json").write_text(json.dumps({"tile": 32, "tiel": 16}), encoding="utf-8")
     with pytest.raises(ValueError, match="tiel"):
         Params.from_json(tmp_path / "bad.json")
 

@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
-from minime import init
+from minime import init, places
 from minime.serve import derived, tune
 from minime.serve.arrays import array_response
 from minime.serve.contours import unit_polygons
@@ -83,6 +83,12 @@ def fs(path: str | None = None) -> dict[str, Any]:
             continue
         entries.append({"name": c.name, "path": str(c), "has_avi": has_avi, "is_run": is_run(c)})
     return {"path": str(p), "parent": str(p.parent), "entries": entries}
+
+
+@router.get("/folders")
+def folders() -> dict[str, Any]:
+    """Folders MiniMe wrote to (demo download, sessions with runs), newest first."""
+    return {"folders": places.known()}
 
 
 @router.get("/runs")

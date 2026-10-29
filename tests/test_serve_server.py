@@ -41,7 +41,8 @@ def test_serve_forever_runs_uvicorn_quietly_on_loopback(monkeypatch, tmp_path):
     monkeypatch.setattr(signal, "signal", lambda sig, h: handlers.update({sig: h}))
     serve_forever(None, port=8123, open_browser=False, token="t")
     assert seen["host"] == "127.0.0.1" and seen["port"] == 8123  # loopback only
-    assert signal.SIGHUP in handlers
+    if hasattr(signal, "SIGHUP"):  # Windows has none
+        assert signal.SIGHUP in handlers
 
 
 def test_a_second_server_on_the_same_cache_exits_with_status_1(monkeypatch, tmp_path, capsys):

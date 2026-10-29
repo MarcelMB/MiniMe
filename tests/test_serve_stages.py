@@ -58,7 +58,10 @@ def test_seeds_of_an_older_run_answer_202_then_200(client, run_copy):
     shutil.rmtree(run_copy / "seeds")
     shutil.rmtree(run_copy / "init")
     pj = run_copy / "params.json"  # older runs still carry Minian's sparse_penal
-    pj.write_text(json.dumps({**json.loads(pj.read_text()), "sparse_penal": 0.01}))
+    pj.write_text(
+        json.dumps({**json.loads(pj.read_text(encoding="utf-8")), "sparse_penal": 0.01}),
+        encoding="utf-8",
+    )
     rid = _open(client, run_copy)
     assert client.get(f"/api/runs/{rid}/seeds").status_code == 202
     assert wait_ok(client, f"/api/runs/{rid}/seeds").status_code == 200
@@ -87,7 +90,10 @@ def test_lowpass_without_a_frame_rate_is_400(client, run_copy):
     import json
 
     pj = run_copy / "params.json"
-    pj.write_text(json.dumps({**json.loads(pj.read_text()), "raw_dir": "/nowhere/raw"}))
+    pj.write_text(
+        json.dumps({**json.loads(pj.read_text(encoding="utf-8")), "raw_dir": "/nowhere/raw"}),
+        encoding="utf-8",
+    )
     rid = _open(client, run_copy)
     assert client.get(f"/api/runs/{rid}/summary").json()["fps"] is None
     assert client.get(f"/api/runs/{rid}/traces/0").status_code == 200

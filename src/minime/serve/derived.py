@@ -49,7 +49,7 @@ def init_A(run: RunView) -> sps.csr_matrix | None:
 def compute_seeds_and_init(run: RunView) -> None:
     """Rerun the seed and init stages on the saved factors (~2.5 min on 3 h) into the cache."""
     fac = run.factors
-    doc = json.loads((run.path / "params.json").read_text())
+    doc = json.loads((run.path / "params.json").read_text(encoding="utf-8"))
     doc.pop("sparse_penal", None)  # older runs; seeds and init do not use it
     p = Params.from_dict(doc, source=str(run.path / "params.json"))
     fc = corr.FactorCorr(fac, p.noise_freq)

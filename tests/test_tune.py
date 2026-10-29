@@ -98,7 +98,7 @@ def test_run_figures_and_summary(tiny_rerun, self_minian):
         assert (tiny_rerun / "figures" / n).read_bytes()[:4] == b"\x89PNG"
     assert summ["units_final"] == run.A.shape[0]
     assert summ["minian_matched"] >= 0.8 * run.A.shape[0]
-    assert json.loads((tiny_rerun / "summary.json").read_text()) == summ
+    assert json.loads((tiny_rerun / "summary.json").read_text(encoding="utf-8")) == summ
     table = figures.unit_table(run, None)
     assert len(table) == run.A.shape[0]
     assert {"size_px", "size10", "parts", "pnr"} <= set(table.columns)
@@ -286,7 +286,7 @@ def test_server_autotune_roundtrip(tune_server, monkeypatch):
     assert "good / flagged" in page_html
     status, ctype, png = _get(base + "/fig/auto/sweep_sparse_snr.png")
     assert status == 200 and png[:4] == b"\x89PNG"
-    summ = json.loads((app.reruns_dir / "base" / "summary.json").read_text())
+    summ = json.loads((app.reruns_dir / "base" / "summary.json").read_text(encoding="utf-8"))
     assert "good" in summ and "flagged" in summ  # every run rescored with the new checks
     table = re.search(r"<table><thead>.*?</table>", page_html, re.S)[0]  # the runs table
     n_head = len(re.findall(r"<th[ >]", table))
@@ -351,7 +351,7 @@ def test_proposal_marks_only_numerically_different_values(tmp_path):
     }
     d = tmp_path / at.AUTO
     d.mkdir()
-    (d / at.DOC).write_text(json.dumps(doc))
+    (d / at.DOC).write_text(json.dumps(doc), encoding="utf-8")
     html = page._proposal(app)
     row = lambda k: re.search(rf"<tr><td class='l'><b>{k}</b>.*?</tr>", html, re.S)[0]  # noqa: E731
     assert 'class="changed"' not in row("merge_corr")
@@ -363,7 +363,7 @@ def test_proposal_marks_only_numerically_different_values(tmp_path):
         derived={"dl_wnd": 7, "merge_dist": 7},
         kept=["merge_dist"],
     )
-    (d / at.DOC).write_text(json.dumps(doc))
+    (d / at.DOC).write_text(json.dumps(doc), encoding="utf-8")
     html = page._proposal(app)
     assert "nothing better than the run" in html and "2 good / 1 flagged" in html
     assert "derived: dl_wnd 7" in html and "kept from the run: merge_dist" in html

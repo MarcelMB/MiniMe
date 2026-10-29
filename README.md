@@ -16,9 +16,35 @@ CNMF stage after that runs on the stored factors and never rereads the movie.
 ## Install
 Released versions: `pip install minime-cnmf` (the import and the command are `minime`).
 
+Supported: Python 3.11 and newer, on Linux and macOS (Windows support is in progress).
+Older Python versions stay supported as long as numpy, numba and opencv ship wheels for
+them, so lab PCs with an IT-managed Python keep working; that is longer than
+[SPEC 0](https://scientific-python.org/specs/spec-0000/) asks for. Dependency minimums
+follow SPEC 0: any core dependency release from the last two years works.
+
+Development:
+
 
     uv venv -p 3.11 && uv pip install -e ".[dev,tune]"
     .venv/bin/pytest
+
+## Fits your machine
+MiniMe is meant to tune itself to the computer it runs on instead of shipping one setting
+for everyone: an 8 GB lab laptop and a 64 GB workstation should each finish a session as
+fast as that machine allows, without running out of memory or disk.
+
+Today:
+- The window-2 stages (background, seeds) use all CPU cores.
+- Each pass-1 worker runs one math-library thread, so many workers don't overload the CPU.
+- You set the number of workers with `--workers` (default 1); each run's peak RAM is in
+  `report.json` and on the viewer's Overview page.
+
+In progress:
+- Choose the number of workers from your CPU cores and free RAM (roughly 1 GB per worker
+  for a 200 x 200 px session, up to 3 GB at 600 x 600 px, plus the main process).
+- Check free disk before pass 1 (the temporary tile store is about the size of the raw
+  videos and is deleted after pass 2).
+- Stop early with a clear message instead of slowing to a crawl when memory runs out.
 
 ## Demo data
 A real session (24 raw `N.avi` segments, ~8.5 GB, CC0) is on
@@ -122,7 +148,9 @@ on synthetic sessions with ground truth (proposal vs. a default and a detuned st
     minime serve [FOLDER]
 
 starts a local server on 127.0.0.1 and opens the browser. It lists the runs under FOLDER
-(default: your home folder), shows every stage of a run, and starts new runs. Runs are only
+(default: the folder of the last `minime demo` download or run, else your home folder; the
+others are one click away under "Recent folders"), shows every stage of a run, and starts
+new runs, with the videos of the last demo or run already chosen. Runs are only
 read; results it has to compute for older runs go to `~/.cache/minime/` (or
 `$MINIME_CACHE`). On a remote machine, start it with `--no-browser --port 8765` and open
 an SSH tunnel: `ssh -L 8765:127.0.0.1:8765 host`, then the printed URL (a different local
@@ -185,10 +213,15 @@ Peak disk = raw size (tile store) + factors (52 MB / 93 MB).
 ## Synthetic data
 
 `minime synth OUT --minutes 5 --side 600 --scenario realistic` writes a session with known
-truth (`meta.json`); `minime score RUN` scores a run against it. Scenarios
+truth (`meta.json`, `truth.npz`); `minime score RUN` scores a run against it, with recall
+per category of hard cells (overlapping, near a vessel, late-active, small, dim, edge, under
+an out-of-focus cell) and the false units on out-of-focus cells. Scenarios
 (`minime.testing.synth.SCENARIOS`): `clean`, one per effect (`background`, `neuropil`,
 `overlap`, `late_active`, `bleach`, `vessels`, `large_motion`, `nonrigid`, `dropped`,
-`cell_variation`, `low_snr`, `bursts`, `hemo`, `edge`) and `realistic` (all tier-1 effects).
+`cell_variation`, `low_snr`, `bursts`, `hemo`, `edge`, `out_of_focus`), `realistic` (all
+tier-1 effects) and `hard` (every effect, sized for a 600 x 600 session of ~30 min:
+`--minutes 30 --scenario hard`, 19 GB). `truth.npz` holds the scoring arrays and the
+footprints, so a downloaded session scores without regenerating it.
 In Python, `SynthOptions` sets any combination; the defaults reproduce the legacy session
 byte for byte. The truth (`synth_setup`) has per-cell size, amplitude, spikes, first active
 frame and overlap group, the background and neuropil components, the vessel mask, the warp,

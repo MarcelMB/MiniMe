@@ -107,6 +107,46 @@ def _truth_traces(setup: synth.SynthSetup) -> tuple[np.ndarray, np.ndarray]:
     return out, ok
 
 
+def load_truth(meta_path: Path) -> dict[str, np.ndarray]:
+    """``synth.truth_arrays`` of the session: from ``truth.npz`` next to ``meta.json`` when
+    it is there (a downloaded session scores without regenerating), else regenerated."""
+    meta = json.loads(Path(meta_path).read_text(encoding="utf-8"))
+    npz = Path(meta_path).with_name("truth.npz")
+    if npz.is_file():
+        with np.load(npz) as z:
+            return {k: z[k] for k in z.files if not k.startswith("A_")}
+    options = synth.SynthOptions.from_dict(meta.get("options"))
+    h, w = meta["height"], meta["width"]
+    return synth.truth_arrays(synth.synth_setup(h, w, meta["frames"], meta["seed"], options), h, w)
+
+
+def by_category(truth: dict[str, np.ndarray], ti: np.ndarray) -> dict[str, dict]:
+    """Recall over the detectable cells of each non-empty category (``cat_*`` masks)."""
+    det = truth["cat_detectable"]
+    hit = np.zeros(det.size, bool)
+    hit[ti] = True
+    out = {}
+    for key in sorted(k for k in truth if k.startswith("cat_") and k != "cat_detectable"):
+        m = truth[key] & det
+        if m.any():
+            out[key[4:]] = {"n": int(m.sum()), "recall": float(hit[m].mean())}
+    return out
+
+
+def units_on_out_of_focus(
+    unit_c: np.ndarray, ui: np.ndarray, truth: dict[str, np.ndarray], offset: np.ndarray
+) -> int:
+    """Unmatched units centred within 1.5 sigma of an out-of-focus cell (false units)."""
+    oc = truth["oof_centroids"].reshape(-1, 2) + offset
+    if not len(oc):
+        return 0
+    free = np.ones(len(unit_c), bool)
+    free[ui] = False
+    u = unit_c[free & np.isfinite(unit_c).all(axis=1)]
+    d = np.hypot(u[:, None, 0] - oc[None, :, 0], u[:, None, 1] - oc[None, :, 1])
+    return int((d < 1.5 * truth["oof_sigma"][None]).any(axis=1).sum())
+
+
 def row_corr(traces: np.ndarray, truth: np.ndarray) -> np.ndarray:
     """Pearson correlation of each row pair; NaN for a flat row."""
     a = traces - traces.mean(axis=1, keepdims=True)
@@ -136,15 +176,15 @@ def score_run(
     added to the true centroids is
     ``offset_sign_used * c``, reported as ``align_offset_px``).
     """
-    meta = json.loads(Path(meta_path).read_text())
-    options = synth.SynthOptions.from_dict(meta.get("options"))
-    setup = synth.synth_setup(meta["height"], meta["width"], meta["frames"], meta["seed"], options)
-    true_c = synth.true_centroids(setup)
+    truth = load_truth(meta_path)
+    true_c = truth["centroids"]
     traces = np.asarray(traces, np.float32)
-    if traces.shape[1] != setup.C.shape[1]:
-        raise ValueError(f"traces have {traces.shape[1]} frames, truth has {setup.C.shape[1]}")
+    if traces.shape[1] != truth["traces"].shape[1]:
+        raise ValueError(
+            f"traces have {traces.shape[1]} frames, truth has {truth['traces'].shape[1]}"
+        )
 
-    c, _, sign = motion_fit(np.asarray(shifts, float), setup.shifts.astype(float))
+    c, _, sign = motion_fit(np.asarray(shifts, float), truth["shifts"].astype(float))
     unit_c = footprint_centroids(A, H, W)
     best: tuple[float, int, np.ndarray, np.ndarray] | None = None
     for mult in (sign, -sign):  # always evaluate both; ties keep the derived sign
@@ -156,8 +196,11 @@ def score_run(
 
     n_units, n_true = A.shape[0], len(true_c)
     out = summarise(ui, ti, n_units, n_true)
-    truth, ok = _truth_traces(setup)
-    corr = row_corr(traces[ui][:, ok], truth[ti][:, ok]) if len(ui) else np.array([np.nan])
+    ok = truth["frame_ok"]
+    corr = (
+        row_corr(traces[ui][:, ok], truth["traces"][ti][:, ok]) if len(ui) else np.array([np.nan])
+    )
+    det = truth["cat_detectable"]
     out.update(
         n_units=int(n_units),
         n_true=int(n_true),
@@ -167,6 +210,10 @@ def score_run(
         offset_sign_used=int(mult),
         median_match_dist_px=None if not np.isfinite(med) else med,
         alignment_ok=bool(med < SELF_CHECK_PX),
+        recall_detectable=float(np.isin(np.flatnonzero(det), ti).mean()) if det.any() else None,
+        n_detectable=int(det.sum()),
+        recall_by_category=by_category(truth, ti),
+        units_on_out_of_focus=units_on_out_of_focus(unit_c, ui, truth, mult * c),
     )
     if not out["alignment_ok"]:
         print(
@@ -181,7 +228,7 @@ def score_run(
 
 
 def _read_json(p: Path) -> dict:
-    return json.loads(p.read_text())
+    return json.loads(p.read_text(encoding="utf-8"))
 
 
 def score_pipeline_dir(run_dir: Path, raw_dir: Path | None = None) -> dict:

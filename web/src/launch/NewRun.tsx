@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getJSON, postJSON } from "../api";
 import { ErrorNote, Loading, Toggle } from "../controls";
 import { fmtBytes, fmtDuration, fmtInt } from "../format";
 import { FolderPicker } from "../home/FolderPicker";
+import { useFolders } from "../home/Home";
 import { useResource } from "../poll";
 import { go } from "../router";
 import type { Job, ParamMeta, RawInfo } from "../types";
@@ -22,6 +23,18 @@ export function NewRun() {
   );
   const [raw, setRaw] = useState("");
   const [picking, setPicking] = useState(true);
+  const folders = useFolders();
+  const [prefilled, setPrefilled] = useState(false);
+  // start from the videos of the newest demo download or run, until the user picks a folder
+  useEffect(() => {
+    if (prefilled || folders.data === undefined) return;
+    setPrefilled(true);
+    const last = folders.data.folders.find((f) => f.raw);
+    if (last?.raw && raw === "") {
+      setRaw(last.raw);
+      setPicking(false);
+    }
+  }, [folders.data, prefilled, raw]);
   const info = useResource(raw ? `raw:${raw}` : null, () =>
     getJSON<RawInfo>(`/raw/info?path=${encodeURIComponent(raw)}`),
   );
