@@ -247,3 +247,15 @@ def test_autotune_doc_records_the_run_trial(tiny_w2_run):
     assert doc["better_than_run"] == (doc["score"]["score"] > doc["run_score"]["score"])
     assert doc["kept"] == ["seeds_max_wnd", "inita_wnd", "dl_wnd", "size_thres"]
     assert set(doc["grids"]["seeds_diff_thres"]) >= {2, 3}  # the grids used, extended or not
+
+
+def test_trials_are_charged_for_the_runs_good_units_they_lose(tiny_w2_run):
+    sess = window2.Window2Session(tiny_w2_run)
+    sw = sweep.Sweep(sess, score.Checks(D), SMALL)
+    sw.run()
+    assert sw.run_trial.score["lost"] == 0 and len(sw._ref) == sw.run_trial.score["good"]
+    for t in sw.trials:
+        if t.score is not None:
+            s = t.score
+            assert s["score"] == s["good"] - s["flagged"] - s["lost"]
+            assert 0 <= s["lost"] <= len(sw._ref)

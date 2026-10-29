@@ -39,7 +39,7 @@ DOC = "autotune.json"
 COUNT_COLS = ("seeds_init", "seeds_pnr", "seeds_merged", "units_init_merge", "units_final")
 MIN_UNITS_FOR_ESTIMATE = 10
 DUP_CORR = score.Checks(1.0).dup_corr  # the default, for the CLI and the page
-SCORE_COLS = ("good", "flagged", "score", *score.REASONS)
+SCORE_COLS = ("good", "flagged", "lost", "score", *score.REASONS)
 
 
 # ----------------------------------------------------------------------------------------
@@ -173,6 +173,8 @@ def autotune(
     flags.to_csv(out / "unit_flags.csv", index=False)
     A0 = sps.load_npz(Path(run_dir) / "cnmf" / "A.npz")
     Y0 = np.load(Path(run_dir) / "cnmf" / "YrA.npy")
+    ref = score.good_centroids(score.unit_flags(A0, Y0, session.fac.H, session.fac.W_, checks))
+    lost = score.lost_units(ref, flags, checks.keep_dist * checks.diameter)
     pairs = {
         which: {
             k: v
@@ -198,7 +200,7 @@ def autotune(
         "proposed": {k: getattr(params, k) for k in SEARCHED},
         "run_values": {k: _json_value(getattr(session.base, k)) for k in SEARCHED + DERIVED},
         "at_edge": [k for k in SEARCHED if at_edge(getattr(params, k), getattr(grids, k))],
-        "score": score.summarize(flags),
+        "score": score.summarize(flags, lost),
         "run_score": sw.run_trial.score,  # None when the run's own parameters failed
         "better_than_run": sw.better_than_run,
         "search_error": sw.search_error,

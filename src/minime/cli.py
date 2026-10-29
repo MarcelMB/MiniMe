@@ -102,8 +102,11 @@ def autotune(
     tune_frames = TUNE_FRAMES if tune_frames is None else tune_frames
 
     def show(t: Trial) -> None:
+        sc = t.score
         res = (
-            t.error if t.score is None else f"good {t.score['good']}  flagged {t.score['flagged']}"
+            t.error
+            if sc is None
+            else f"good {sc['good']}  flagged {sc['flagged']}  lost {sc['lost']}"
         )
         typer.echo(f"{t.step:<10} {res}  ({t.seconds:.1f} s)")
 
@@ -136,7 +139,10 @@ def autotune(
         edge = "  [at edge]" if k in doc["at_edge"] else ""
         typer.echo(f"{k:<17} {doc['run_values'][k]!s:>8} -> {v!s:<8}{edge}")
     s = doc["score"]
-    typer.echo(f"good {s['good']}  flagged {s['flagged']}  ({doc['wall_s']} s)")
+    typer.echo(
+        f"good {s['good']}  flagged {s['flagged']}  lost {s['lost']} of the run's good  "
+        f"({doc['wall_s']} s)"
+    )
     if doc["run_score"] is not None and not doc["better_than_run"]:
         rs = doc["run_score"]
         typer.echo(

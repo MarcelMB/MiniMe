@@ -267,7 +267,8 @@ def _proposal(app: TuneApp) -> str:
     kept_text = f" &middot; kept from the run: {_e(', '.join(sorted(kept)))}" if kept else ""
     return (
         f"<h2>Proposal ({at.AUTO})</h2>{_run_note(doc)}<div class='note'>{s['good']} good / "
-        f"{s['flagged']} flagged ({_e(reasons) or 'none'}) &middot; diameter "
+        f"{s['flagged']} flagged ({_e(reasons) or 'none'}), {s.get('lost', 0)} of the run's "
+        "good units lost &middot; diameter "
         f"{_e(fmt_value(doc['diameter']))} px ({_e(source)}) &middot; derived: {_e(derived)}"
         f"{kept_text} &middot; {doc['n_trials']} settings in {doc['wall_s']} s"
         f"{_segment_text(doc)}</div>"

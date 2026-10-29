@@ -1,4 +1,5 @@
-"""Label-free unit checks: each unit is good or flagged with its reasons; score = good - flagged.
+"""Label-free unit checks: each unit is good or flagged with its reasons; score = good -
+flagged - lost, where lost counts the run's good units a setting drops (``lost_units``).
 
 Footprint metrics are shared with the ``minime tune`` figures (``tune/figures.py`` imports them).
 """
@@ -150,6 +151,10 @@ class Checks:
     # a split cell's halves correlate ~0.65, neighbouring cells ~0.4 (WL25, synthetic, V4);
     # a per-run mixture fit was unstable at 10-90 near pairs, so this stays a visible default
     dup_corr: float = 0.6
+    # a run's good unit is kept when a unit sits this close (x D); without the penalty for
+    # the ones dropped, a setting that removes 11 flagged units with 4 real cells scored +7
+    # (synthetic: recall 0.91 -> 0.61)
+    keep_dist: float = 0.5
 
     def __post_init__(self) -> None:
         if not (isinstance(self.diameter, int | float) and self.diameter > 0):
@@ -187,7 +192,27 @@ def unit_flags(
     df["bad_size"] = (size10 < checks.size_lo * a) | (size10 > checks.size_hi * a)
     df["duplicate"] = duplicates(cent, traces, pnr, checks.diameter, checks.dup_corr)
     df["good"] = ~df[list(REASONS)].any(axis=1)
+    df["y"], df["x"] = cent[:, 0], cent[:, 1]
     return df
+
+
+def good_centroids(flags: pd.DataFrame) -> np.ndarray:
+    """(n, 2) centroids of the good units with a finite centroid."""
+    c = flags.loc[flags["good"], ["y", "x"]].to_numpy(float)
+    return c[np.isfinite(c).all(axis=1)]
+
+
+def lost_units(ref: np.ndarray, flags: pd.DataFrame, radius: float) -> int:
+    """How many points of ``ref`` (the run's good units) have no unit of ``flags`` (good or
+    flagged) within ``radius`` px."""
+    c = flags[["y", "x"]].to_numpy(float)
+    c = c[np.isfinite(c).all(axis=1)]
+    if not len(ref):
+        return 0
+    if not len(c):
+        return len(ref)
+    d, _ = cKDTree(c).query(ref)
+    return int((d > radius).sum())
 
 
 def pair_stats(
@@ -232,13 +257,15 @@ def pair_stats(
     }
 
 
-def summarize(flags: pd.DataFrame) -> dict[str, int]:
-    """Counts of good and flagged units, the score (good - flagged) and each reason."""
+def summarize(flags: pd.DataFrame, lost: int = 0) -> dict[str, int]:
+    """Counts of good and flagged units, the run's good units ``lost``, the score
+    (good - flagged - lost) and each reason."""
     good = int(flags["good"].sum())
     flagged = len(flags) - good
     return {
         "good": good,
         "flagged": flagged,
-        "score": good - flagged,
+        "lost": lost,
+        "score": good - flagged - lost,
         **{r: int(flags[r].sum()) for r in REASONS},
     }

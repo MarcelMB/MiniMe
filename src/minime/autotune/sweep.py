@@ -308,6 +308,7 @@ class Sweep:
     fc: corr.FactorCorr | None = None
     fac: Factors = field(init=False)  # what the steps run on: the segment or the session
     segment: tuple[int, int] | None = field(init=False)  # frames explored on, None = all
+    _ref: np.ndarray = field(init=False, repr=False)  # the run's good units, (n, 2) y, x
     _pnr: np.ndarray = field(init=False, repr=False)  # per-pixel seed PNR, NaN = not yet read
 
     def __post_init__(self) -> None:
@@ -317,6 +318,7 @@ class Sweep:
         self.fac = self.session.fac
         self.segment = middle_segment(self.fac.block_edges, self.tune_frames)
         self._pnr = np.full(self.fac.P, np.nan)
+        self._ref = np.zeros((0, 2))
         if self.grids is None:
             integer = bool(np.issubdtype(self.fac.block_max.dtype, np.integer))
             self.grids = relative_grids(self.session.base, integer_diff=integer)
@@ -370,8 +372,15 @@ class Sweep:
     # ---- one setting ---------------------------------------------------------------
 
     def _try(
-        self, step: str, values: dict[str, Any], stage: Stage, base: Params | None = None
+        self,
+        step: str,
+        values: dict[str, Any],
+        stage: Stage,
+        base: Params | None = None,
+        reference: bool = False,
     ) -> Trial:
+        """One setting, scored; a ``reference`` trial (the run's parameters on the data the
+        steps run on) sets the good units every later trial is charged for losing."""
         t0, timer = time.perf_counter(), StageTimer()
         try:
             A, traces = stage(self._params(values, base), timer)
@@ -380,7 +389,10 @@ class Sweep:
         else:
             fac = self.fac
             flags = score.unit_flags(A, traces, fac.H, fac.W_, self.checks)
-            sc, err = score.summarize(flags), None
+            if reference:
+                self._ref = score.good_centroids(flags)
+            radius = self.checks.keep_dist * self.checks.diameter
+            sc, err = score.summarize(flags, score.lost_units(self._ref, flags, radius)), None
             med = float(np.median(flags["size10"])) if len(flags) else None
         t = Trial(step, dict(values), dict(timer.counts), sc, med, time.perf_counter() - t0, err)
         self.trials.append(t)
@@ -429,7 +441,7 @@ class Sweep:
             with self.timer("corr_setup"):
                 self.fc = corr.FactorCorr(self.fac, self.base.noise_freq)
         run_values = {k: getattr(run, k) for k in SEARCHED}
-        self.run_trial = self._try("run", run_values, self._full, base=run)
+        self.run_trial = self._try("run", run_values, self._full, base=run, reference=True)
         top: list[Trial] = []
         try:
             top = self._search(run_values)
@@ -458,7 +470,8 @@ class Sweep:
         self.fc = self.session.factor_corr(self.base.noise_freq, self.timer)
         self._pnr = np.full(self.fac.P, np.nan)  # the segment's PNR is not the session's
         self.run_trial = None  # no caps: the session has more seeds than the segment
-        run = self._try("decide", run_values, self._full, base=self.session.base)
+        self._ref = np.zeros((0, 2))
+        run = self._try("decide", run_values, self._full, base=self.session.base, reference=True)
         others = [
             self._try("decide", t.values, self._full)
             for t in [t for t in top if t.values != run_values][: self.grids.n_decide]
