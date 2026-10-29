@@ -43,6 +43,19 @@ class JobBody(BaseModel):
     params: dict[str, Any] = {}
     keep_store: bool = False
     overwrite: bool = False
+    tune: bool = False  # auto-tune window 2 after the run
+    tune_args: dict[str, Any] = {}  # diameter, dup_corr, min_dist_frac, tune_frames
+
+
+class RerunBody(BaseModel):
+    run_dir: str
+    name: str
+    params: dict[str, Any] = {}  # the window-2 keys that change
+
+
+class AutotuneBody(BaseModel):
+    run_dir: str
+    tune_args: dict[str, Any] = {}
 
 
 class PreviewBody(BaseModel):
@@ -131,8 +144,34 @@ def list_jobs(request: Request) -> dict[str, Any]:
 def submit(request: Request, body: JobBody) -> dict[str, Any]:
     try:
         job = _jobs(request).submit(
-            body.raw_dir, body.name, body.params, body.keep_store, body.overwrite
+            body.raw_dir,
+            body.name,
+            body.params,
+            body.keep_store,
+            body.overwrite,
+            body.tune,
+            body.tune_args,
         )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    return asdict(job)
+
+
+@router.post("/jobs/rerun")
+def submit_rerun(request: Request, body: RerunBody) -> dict[str, Any]:
+    """Window 2 of a run again with changed parameters, into ``reruns/<name>``."""
+    try:
+        job = _jobs(request).submit_rerun(body.run_dir, body.name, body.params)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    return asdict(job)
+
+
+@router.post("/jobs/autotune")
+def submit_autotune(request: Request, body: AutotuneBody) -> dict[str, Any]:
+    """``minime autotune`` of a run into ``reruns/auto``."""
+    try:
+        job = _jobs(request).submit_autotune(body.run_dir, body.tune_args)
     except ValueError as e:
         raise HTTPException(400, str(e)) from None
     return asdict(job)

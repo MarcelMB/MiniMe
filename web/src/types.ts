@@ -57,6 +57,62 @@ export type Job = {
   started: number | null;
   ended: number | null;
   error: string;
+  kind: "run" | "rerun" | "autotune";
+  run_dir: string;
+  tune: boolean;
+  tune_args: Record<string, number>;
+};
+
+/** A window-2 rerun of a run (``reruns/<name>``). */
+export type Rerun = {
+  name: string;
+  autotune: boolean;
+  status: "done" | "failed" | "running";
+  counts?: Record<string, number>;
+  wall_total?: number | null;
+  params?: Record<string, unknown>;
+  changed?: Record<string, [unknown, unknown]>;
+  error?: string[];
+};
+
+export type Checks = { diameter: number; pnr_min: number; piece_frac: number; size_lo: number; size_hi: number; dup_corr: number; keep_dist: number };
+export type CurvePoint = { value: unknown; good: number; flagged: number };
+export type Score = { good: number; flagged: number; lost?: number; score: number } & Record<string, number>;
+/** ``autotune.json`` of ``reruns/auto`` plus the sweep curves. */
+export type Proposal = {
+  diameter: number;
+  diameter_source: string;
+  min_dist_frac: number;
+  tune_frames: number;
+  segment: [number, number] | null;
+  frames: number;
+  checks: Checks;
+  derived: Record<string, unknown>;
+  kept: string[];
+  proposed: Record<string, unknown>;
+  run_values: Record<string, unknown>;
+  at_edge: string[];
+  score: Score;
+  run_score: Score | null;
+  better_than_run: boolean;
+  search_error: string | null;
+  n_trials: number;
+  wall_s: number;
+  curves: Record<string, CurvePoint[]>;
+};
+export type Flags = { good: number; flagged: number; reasons: Record<string, number[]>; checks: Checks };
+export type Pairs = {
+  corr_bins: number[];
+  near_corr: number[];
+  far_corr: number[];
+  nn_bins: number[];
+  nn_dist: number[];
+  dup_corr: number;
+  min_dist_frac: number;
+  n_near: number;
+  n_near_above: number;
+  n_closer: number;
+  far_p99: number | null;
 };
 
 export type ParamMeta = {
@@ -66,6 +122,7 @@ export type ParamMeta = {
   default: unknown;
   help: string;
   common: boolean;
+  window2: boolean;
 };
 
 export type RawInfo = {

@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from minime import init
-from minime.serve import derived
+from minime.serve import derived, tune
 from minime.serve.arrays import array_response
 from minime.serve.contours import unit_polygons
 from minime.serve.frames import SOURCES, FrameSource, tile_map
@@ -27,11 +27,19 @@ router = APIRouter()
 IMAGES = ("max_proj", "background", "rank", "noise")
 
 
-def _run(request: Request, rid: str) -> RunView:
+def _run(request: Request, rid: str, rerun: str | None = None) -> RunView:
+    """The run ``rid``, or its window-2 rerun ``rerun`` (``reruns/<name>``) as a run view."""
+    reg = request.app.state.registry
     try:
-        return request.app.state.registry.get(rid)
+        run = reg.get(rid)
     except KeyError:
         raise HTTPException(404, f"unknown run {rid}") from None
+    if not rerun:
+        return run
+    try:
+        return reg.open(run.rerun_dir(rerun))
+    except (KeyError, ValueError):
+        raise HTTPException(404, f"run {rid} has no finished rerun {rerun!r}") from None
 
 
 def _frames(request: Request, run: RunView) -> FrameSource:
@@ -112,8 +120,8 @@ def set_fps(request: Request, rid: str, body: FpsBody) -> dict[str, Any]:
 
 
 @router.get("/runs/{rid}/image/{name}")
-def image(request: Request, rid: str, name: str) -> Response:
-    run = _run(request, rid)
+def image(request: Request, rid: str, name: str, rerun: str | None = None) -> Response:
+    run = _run(request, rid, rerun)
     if name not in IMAGES:
         raise HTTPException(404, f"unknown image {name!r} (one of {', '.join(IMAGES)})")
     try:
@@ -170,8 +178,8 @@ def motion_residual(request: Request, rid: str) -> Response:
 
 
 @router.get("/runs/{rid}/seeds", response_model=None)
-def seeds_(request: Request, rid: str) -> Response | dict[str, Any]:
-    run = _run(request, rid)
+def seeds_(request: Request, rid: str, rerun: str | None = None) -> Response | dict[str, Any]:
+    run = _run(request, rid, rerun)
     s = derived.seeds(run)
     if s is None:
         return computing(request, run, "seeds", lambda: derived.compute_seeds_and_init(run))
@@ -179,8 +187,10 @@ def seeds_(request: Request, rid: str) -> Response | dict[str, Any]:
 
 
 @router.get("/runs/{rid}/units", response_model=None)
-def units(request: Request, rid: str, stage: str = "final") -> Response | dict[str, Any]:
-    run = _run(request, rid)
+def units(
+    request: Request, rid: str, stage: str = "final", rerun: str | None = None
+) -> Response | dict[str, Any]:
+    run = _run(request, rid, rerun)
     if stage == "final":
         A = run.A
         peak = pd.read_csv(run.path / "cnmf" / "units.csv")["peak"].to_numpy()
@@ -216,8 +226,10 @@ def _kind(kind: str) -> str:
 
 
 @router.get("/runs/{rid}/traces/overview", response_model=None)
-def traces_overview(request: Request, rid: str, kind: str = "C", bins: int = 2000) -> Response:
-    run = _run(request, rid)
+def traces_overview(
+    request: Request, rid: str, kind: str = "C", bins: int = 2000, rerun: str | None = None
+) -> Response:
+    run = _run(request, rid, rerun)
     kind = _kind(kind)
     if not 1 <= bins <= 20000:
         raise HTTPException(400, "bins must be in 1..20000")
@@ -237,8 +249,9 @@ def trace(
     stop: int | None = None,
     kind: str = "C",
     lowpass_hz: float | None = None,
+    rerun: str | None = None,
 ) -> Response:
-    run = _run(request, rid)
+    run = _run(request, rid, rerun)
     C = run.traces(_kind(kind))
     if not 0 <= unit < C.shape[0]:
         raise HTTPException(400, f"unit {unit} out of range 0..{C.shape[0] - 1}")
@@ -251,10 +264,58 @@ def trace(
 
 
 @router.get("/runs/{rid}/zooms", response_model=None)
-def zooms_(request: Request, rid: str) -> Response | dict[str, Any]:
-    run = _run(request, rid)
+def zooms_(request: Request, rid: str, rerun: str | None = None) -> Response | dict[str, Any]:
+    run = _run(request, rid, rerun)
     ov = derived.traces_overview(run, "C", 2000)
     if ov is None:
         key = "overview:C:2000"
         return computing(request, run, key, lambda: derived.compute_overview(run, "C", 2000))
     return zooms(ov[:, 1].max(axis=1), run.T, run.fps)
+
+
+# ---------------------------------------------------------------------------
+# Tune: reruns, the auto-tune proposal, unit checks and pair statistics
+# ---------------------------------------------------------------------------
+
+
+@router.get("/runs/{rid}/reruns")
+def reruns(request: Request, rid: str) -> dict[str, Any]:
+    return {"reruns": tune.reruns(_run(request, rid))}
+
+
+@router.get("/runs/{rid}/autotune")
+def autotune_(request: Request, rid: str) -> dict[str, Any]:
+    doc = tune.proposal(_run(request, rid))
+    if doc is None:
+        raise HTTPException(404, "this run has no auto-tune yet")
+    return doc
+
+
+def _checks(request: Request, rid: str) -> Any:
+    ch = tune.checks(_run(request, rid))
+    if ch is None:
+        raise HTTPException(404, "the unit checks need an auto-tune of this run first")
+    return ch
+
+
+@router.get("/runs/{rid}/flags", response_model=None)
+def flags(request: Request, rid: str, rerun: str | None = None) -> Response | dict[str, Any]:
+    """The unit checks of the run or a rerun, with the thresholds of the last auto-tune."""
+    ch = _checks(request, rid)
+    run = _run(request, rid, rerun)
+    doc = tune.flags(run, ch)
+    if doc is None:
+        return computing(request, run, "flags", lambda: tune.compute_flags(run, ch))
+    return doc
+
+
+@router.get("/runs/{rid}/pairs", response_model=None)
+def pairs(request: Request, rid: str, rerun: str | None = None) -> Response | dict[str, Any]:
+    """Histograms of near-pair correlations and neighbour distances (the two thresholds)."""
+    ch = _checks(request, rid)
+    frac = tune.min_dist_frac_of(_run(request, rid))
+    run = _run(request, rid, rerun)
+    doc = tune.pairs(run, ch, frac)
+    if doc is None:
+        return computing(request, run, "pairs", lambda: tune.compute_pairs(run, ch, frac))
+    return doc

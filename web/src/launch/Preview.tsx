@@ -63,11 +63,53 @@ function Inset({ img, c }: { img: Img; c: Circle }) {
   );
 }
 
+/** The pass-1 steps in the order the run applies them: ``shown`` ones this preview computes on
+ * the frame, the others are only decided here and run on every frame of the session. */
+export function pipelineSteps(v: Record<string, unknown>): { label: string; shown: boolean }[] {
+  const bp = v.motion_bandpass as [number, number] | undefined;
+  const motionFirst = Boolean(v.motion_before_tophat);
+  const median = { label: `median ${v.median_ksize} px`, shown: true };
+  const bandpass = { label: `band-pass σ ${bp?.[0] ?? "?"}–${bp?.[1] ?? "?"} px`, shown: true };
+  const motion = { label: `motion correction ≤ ${v.motion_max_shift} px`, shown: false };
+  const tophat = { label: `tophat ${v.tophat_wnd} px`, shown: true };
+  const rest = [
+    { label: `${v.tile} px tiles · compression`, shown: false },
+    { label: "seeds · init · CNMF", shown: false },
+  ];
+  return motionFirst ? [median, bandpass, motion, tophat, ...rest] : [median, tophat, motion, ...rest];
+}
+
+function Steps({ values }: { values: Record<string, unknown> }) {
+  const steps = pipelineSteps(values);
+  return (
+    <div className="row" style={{ gap: 6, fontSize: 12 }} aria-label="Preprocessing order">
+      <span className="chip" aria-pressed="true" style={{ cursor: "default" }}>
+        raw frame
+      </span>
+      {steps.map((s) => (
+        <span key={s.label} className="row" style={{ gap: 6 }}>
+          <span className="muted">›</span>
+          <span className="chip" aria-pressed={s.shown} style={{ cursor: "default" }} title={s.shown ? "computed on this frame" : "decided here, done in the run"}>
+            {s.label}
+          </span>
+        </span>
+      ))}
+      <span className="muted" style={{ flexBasis: "100%" }}>
+        Dark chips are computed on the frame below. The others are set here but run on the whole session: motion correction
+        {values.motion_before_tophat ? " is estimated on the band-passed frame (vessels stay as landmarks), then the tophat is applied to the registered frames" : " is estimated on the tophat frame"}
+        . "Check motion here" runs it on 150 frames around the chosen one.
+      </span>
+    </div>
+  );
+}
+
 export function Preview(p: {
   raw: string;
   info: RawInfo;
   values: Record<string, unknown>;
   onChange: (name: string, v: unknown) => void;
+  /** The cell diameter the user applied (the auto-tune after the run starts from it). */
+  onDiameter?: (px: number) => void;
 }) {
   const { frames, fps, width: W, height: H } = p.info;
   const ts = useMemo(() => POSITIONS.map((f) => Math.round(f * (frames - 1))), [frames]);
@@ -123,6 +165,7 @@ export function Preview(p: {
     getJSON<Record<string, unknown>>(`/params/derived?diameter=${diameter}`).then(
       (d) => {
         for (const [k, v] of Object.entries(d)) p.onChange(k, v);
+        p.onDiameter?.(diameter);
         setApplied(`set ${Object.keys(d).join(", ")} for ${diameter} px cells; edit them under Parameters`);
       },
       (e: Error) => setApplied(e.message),
@@ -145,6 +188,7 @@ export function Preview(p: {
   return (
     <section className="card span4" aria-label="2. Preprocessing preview">
       <span className="label">2 · Look at the frames and the preprocessing</span>
+      <Steps values={p.values} />
       <div style={{ display: "grid", gridTemplateColumns: `repeat(${POSITIONS.length}, minmax(0, 1fr))`, gap: 8 }}>
         {POSITIONS.map((f, i) => (
           <button key={f} type="button" className="thumb" aria-pressed={t === ts[i]} onClick={() => setT(ts[i])}>

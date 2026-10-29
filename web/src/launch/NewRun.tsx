@@ -29,6 +29,8 @@ export function NewRun() {
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [keep, setKeep] = useState(false);
+  const [tune, setTune] = useState(true); // the run is meant to end with estimates; off = tune by hand
+  const [diameter, setDiameter] = useState<number | null>(null);
   const [overwrite, setOverwrite] = useState(false);
   const [offered, setOffered] = useState(false);
   const [submitErr, setSubmitErr] = useState("");
@@ -59,6 +61,8 @@ export function NewRun() {
       params: changedOnly(merged, defaults.data!.params),
       keep_store: keep,
       overwrite,
+      tune,
+      tune_args: tune && diameter ? { diameter } : {},
     }).then(
       (job) => go({ name: "job", id: job.id }),
       (e: Error) => {
@@ -126,6 +130,7 @@ export function NewRun() {
               setValues((x) => ({ ...x, [n]: v }));
               setErrors((x) => ({ ...x, [n]: "" }));
             }}
+            onDiameter={setDiameter}
           />
         )}
         <section className="card span4" aria-label="3. Output">
@@ -150,6 +155,13 @@ export function NewRun() {
         </section>
         <section className="card span4" aria-label="4. Parameters">
           <span className="label">4 · Parameters</span>
+          <Toggle
+            label={`Auto-tune the seed, init and CNMF parameters after the run (a few more minutes; the proposal opens on the run's Tune page${
+              diameter ? `, cell diameter ${diameter} px from step 2` : ""
+            }). Switch off only to set every parameter by hand.`}
+            checked={tune}
+            onChange={setTune}
+          />
           <Loading res={defaults} what="parameters">
             {(d) => (
               <ParamsForm

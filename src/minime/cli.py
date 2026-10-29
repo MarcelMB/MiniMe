@@ -90,6 +90,7 @@ def autotune(
             "session (0 = explore on the whole session)."
         ),
     ] = None,
+    progress: Annotated[Path | None, typer.Option(hidden=True)] = None,
 ) -> None:
     """Propose window-2 parameters for RUN_DIR (sweep, then a rerun in RUN_DIR/reruns/NAME/)."""
     import json
@@ -97,11 +98,15 @@ def autotune(
     from minime.autotune import run as at
     from minime.autotune.sweep import MIN_DIST_FRAC, TUNE_FRAMES, Trial
 
+    log = at.StepLog(progress) if progress is not None else None
+
     dup_corr = at.DUP_CORR if dup_corr is None else dup_corr
     min_dist_frac = MIN_DIST_FRAC if min_dist_frac is None else min_dist_frac
     tune_frames = TUNE_FRAMES if tune_frames is None else tune_frames
 
     def show(t: Trial) -> None:
+        if log is not None:
+            log.trial(t)
         sc = t.score
         res = (
             t.error
@@ -122,10 +127,15 @@ def autotune(
             dup_corr=dup_corr,
             min_dist_frac=min_dist_frac,
             tune_frames=tune_frames,
+            on_stage=None if log is None else log.stage,
         )
     except (ValueError, RuntimeError) as e:
+        if log is not None:
+            log.close(error=True)
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(1) from None
+    if log is not None:
+        log.close()
     doc = json.loads((out / at.DOC).read_text())
     typer.echo(str(out))
     typer.echo(f"dup_corr {dup_corr}  min_dist_frac {min_dist_frac}  diameter {diameter}")

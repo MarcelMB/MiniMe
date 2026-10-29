@@ -32,6 +32,15 @@ const STAGES: Record<string, string> = {
   cnmf: "CNMF",
   initA: "init footprints",
   initC: "init traces",
+  tune_run: "auto-tune · the run's values",
+  tune_seeds: "auto-tune · seeds",
+  tune_merge: "auto-tune · merge",
+  tune_inita: "auto-tune · init footprints",
+  tune_confirm: "auto-tune · confirm through CNMF",
+  tune_sparse: "auto-tune · sparse_snr",
+  tune_loop_merge: "auto-tune · loop merge",
+  tune_decide: "auto-tune · decide on the whole session",
+  tune_rerun: "auto-tune · final rerun",
 };
 
 export function stageLabel(name: string): string {

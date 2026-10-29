@@ -14,10 +14,11 @@ from typing import Any
 import numpy as np
 import scipy.sparse as sps
 
-from minime import io, motion
+from minime import io, motion, pipeline
 from minime.factors import Factors
 from minime.params import Params
 from minime.serve.cache import RunCache, cache_root
+from minime.window2 import RERUNS
 
 MARKERS = ("params.json", "report.json")
 SKIP_DIRS = {"Library"}  # macOS ~/Library: huge, and never holds runs
@@ -165,6 +166,19 @@ class RunView:
     @property
     def has_saved_init(self) -> bool:
         return (self.path / "init" / "A.npz").is_file()
+
+    @property
+    def has_stages(self) -> bool:
+        """A window-2 rerun: seeds and footprints of every step in ``stages/``."""
+        return (self.path / "stages" / "index.json").is_file()
+
+    def rerun_dir(self, name: str) -> Path:
+        """``reruns/name`` of this run; ``KeyError`` unless it holds a finished rerun."""
+        pipeline.check_run_name(name)
+        d = self.path / RERUNS / name
+        if not is_run(d):
+            raise KeyError(name)
+        return d
 
     @property
     def fps(self) -> float | None:

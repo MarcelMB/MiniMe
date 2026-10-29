@@ -54,12 +54,14 @@ export type ProgressEvent = {
   event: "start" | "end" | "error";
   t: number;
   seconds?: number;
+  n?: number; // auto-tune steps: settings tried
 };
 export type StageRow = {
   stage: string;
   seconds: number | null;
   running: boolean;
   failed: boolean;
+  n?: number;
 };
 
 export function stageRows(events: ProgressEvent[]): StageRow[] {
@@ -78,6 +80,7 @@ export function stageRows(events: ProgressEvent[]): StageRow[] {
         seconds: e.seconds ?? null,
         running: false,
         failed: e.event === "error",
+        n: e.n,
       });
   }
   return [...rows.values()];

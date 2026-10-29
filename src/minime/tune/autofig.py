@@ -10,47 +10,15 @@ import numpy as np
 import pandas as pd
 from matplotlib.figure import Figure
 
+from minime.autotune.run import best_per_value, same_value  # noqa: F401 - re-export
 from minime.autotune.score import footprint_image, peak_mask
-from minime.autotune.sweep import SEARCHED, STEP_OF
+from minime.autotune.sweep import SEARCHED
 from minime.init import centroids
 from minime.tune.figures import FRAG, INK, MINIAN, MINIME, MUTED, OUTLINE_LEVEL, _style
 
 GOOD, FLAGGED, CHOSEN = MINIME, FRAG, MINIAN
 DPI = 110
 THUMB_SCALE = 4
-
-
-def _is_num(v: Any) -> bool:
-    try:
-        float(v)
-    except (TypeError, ValueError):
-        return False
-    return True
-
-
-def _order(values: pd.Series) -> list[Any]:
-    """Grid order: ``auto`` first, then numbers ascending."""
-    uniq = list(dict.fromkeys(values.tolist()))
-    words = [v for v in uniq if not _is_num(v)]
-    nums = sorted((v for v in uniq if _is_num(v)), key=float)
-    return words + nums
-
-
-def best_per_value(df: pd.DataFrame, key: str) -> pd.DataFrame:
-    """Per value of ``key`` in its step: the best-scoring successful trial, in grid order."""
-    d = df[(df["step"] == STEP_OF[key]) & df["score"].notna()]
-    if d.empty:
-        return d
-    top = d.sort_values("score", ascending=False, kind="stable").drop_duplicates(key)
-    order = {v: i for i, v in enumerate(_order(top[key]))}
-    return top.sort_values(key, key=lambda s: s.map(order)).reset_index(drop=True)
-
-
-def same_value(a: Any, b: Any) -> bool:
-    """``2`` and ``2.0`` and ``"2.0"`` are one value; ``auto`` only equals ``auto``."""
-    if _is_num(a) and _is_num(b):
-        return float(a) == float(b)
-    return str(a) == str(b)
 
 
 def _curve(df: pd.DataFrame, key: str, chosen: Any, path: Path) -> None:

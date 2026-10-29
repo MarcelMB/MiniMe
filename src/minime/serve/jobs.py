@@ -1,4 +1,5 @@
-"""Run queue of ``minime serve``: one ``minime run`` subprocess at a time."""
+"""Run queue of ``minime serve``: one subprocess at a time (``minime run``, ``cnmf`` or
+``autotune``; a run with ``tune`` set chains an auto-tune after it)."""
 
 from __future__ import annotations
 
@@ -18,12 +19,31 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import IO, Any
 
-from minime import pipeline
+from minime import pipeline, window2
+from minime.autotune.run import AUTO, check_not_reserved
 from minime.params import Params
 from minime.serve.cache import cache_root
 from minime.serve.runs import is_run
 
 FINAL = {"done", "failed", "cancelled", "interrupted"}
+
+
+def _tune_args(args: dict[str, Any]) -> dict[str, Any]:
+    """The auto-tune options given (``None`` means the default), checked as numbers."""
+    bad = set(args) - set(TUNE_OPTIONS)
+    if bad:
+        raise ValueError(f"unknown auto-tune option: {', '.join(sorted(bad))}")
+    out = {}
+    for k, v in args.items():
+        if v is None or v == "":
+            continue
+        try:
+            out[k] = int(v) if k == "tune_frames" else float(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"{k}: enter a number") from None
+    return out
+
+
 STOPPED = "the server stopped during the run"
 NOT_STARTED = "the server stopped before the run started"
 
@@ -43,9 +63,31 @@ class Job:
     error: str = ""
     overwrite: bool = False
     pid: int | None = None
+    kind: str = "run"  # run | rerun (window 2 on the factors) | autotune
+    run_dir: str = ""  # rerun, autotune: the source run
+    tune: bool = False  # run: auto-tune window 2 after it
+    tune_args: dict[str, Any] = field(default_factory=dict)  # diameter, dup_corr, ...
+
+
+TUNE_OPTIONS = ("diameter", "dup_corr", "min_dist_frac", "tune_frames")
+
+
+def tune_command(run_dir: str, args: dict[str, Any], progress: Path) -> list[str]:
+    cmd = [sys.executable, "-m", "minime", "autotune", run_dir, "--progress", str(progress)]
+    for k in TUNE_OPTIONS:
+        if args.get(k) is not None:
+            cmd += [f"--{k.replace('_', '-')}", str(args[k])]
+    return cmd
 
 
 def default_command(job: Job, params_file: Path) -> list[str]:
+    """The subprocess of ``job`` (``tune_command`` is the chained auto-tune of a run)."""
+    if job.kind == "rerun":
+        cmd = [sys.executable, "-m", "minime", "cnmf", job.run_dir]
+        return cmd + ["--params", str(params_file), "--name", job.name]
+    if job.kind == "autotune":
+        progress = params_file.parent / f"{job.id}.progress.jsonl"  # JobManager.progress_path
+        return tune_command(job.run_dir, job.tune_args, progress)
     cmd = [sys.executable, "-m", "minime", "run", job.raw_dir]
     cmd += ["--params", str(params_file), "--name", job.name]
     cmd += ["--keep-store"] if job.keep_store else []
@@ -152,6 +194,8 @@ class JobManager:
         params: dict[str, Any],
         keep_store: bool = False,
         overwrite: bool = False,
+        tune: bool = False,
+        tune_args: dict[str, Any] | None = None,
     ) -> Job:
         raw = Path(raw_dir).expanduser()
         if not raw.is_dir() or not any(raw.glob("*.avi")):
@@ -165,10 +209,48 @@ class JobManager:
         if is_run(out) and not overwrite:
             raise ValueError(f"{out} already holds a run; choose another name or overwrite")
         job = Job(jid, str(raw), name, params, keep_store, out_dir=str(out), overwrite=overwrite)
+        job.tune, job.tune_args = tune, _tune_args(tune_args or {})
+        return self._enqueue(job)
+
+    def _source_run(self, run_dir: str) -> Path:
+        run = Path(run_dir).expanduser()
+        if not is_run(run):
+            raise ValueError(f"not a minime run: {run}")
+        return run
+
+    def submit_rerun(self, run_dir: str, name: str, params: dict[str, Any]) -> Job:
+        """Window 2 of ``run_dir`` with ``params`` (the changed keys) into ``reruns/name``;
+        an existing rerun of that name is replaced."""
+        run = self._source_run(run_dir)
+        pipeline.check_run_name(name)
+        check_not_reserved(name)
+        bad = [k for k in params if k in window2.FACTOR_PARAMS + window2.EXECUTION_PARAMS]
+        if bad:
+            raise ValueError(f"{', '.join(bad)}: not a window-2 parameter (needs a full run)")
+        Params.from_dict(params, window2.run_params(run))  # unknown or invalid -> ValueError
+        jid = uuid.uuid4().hex[:10]
+        (self.dir / f"{jid}.params.json").write_text(json.dumps(params))
+        out = run / window2.RERUNS / name
+        job = Job(jid, "", name, params, False, out_dir=str(out), overwrite=True)
+        job.kind, job.run_dir = "rerun", str(run)
+        return self._enqueue(job)
+
+    def submit_autotune(self, run_dir: str, tune_args: dict[str, Any] | None = None) -> Job:
+        """``minime autotune`` of ``run_dir`` into ``reruns/auto`` (replaced if present)."""
+        run = self._source_run(run_dir)
+        jid = uuid.uuid4().hex[:10]
+        (self.dir / f"{jid}.params.json").write_text("{}")
+        out = run / window2.RERUNS / AUTO
+        job = Job(jid, "", AUTO, {}, False, out_dir=str(out), overwrite=True)
+        job.kind, job.run_dir, job.tune_args = "autotune", str(run), _tune_args(tune_args or {})
+        return self._enqueue(job)
+
+    def _enqueue(self, job: Job) -> Job:
+        out = job.out_dir
         with self._cv:
-            if any(j.out_dir == str(out) and j.status not in FINAL for j in self.jobs.values()):
+            if any(j.out_dir == out and j.status not in FINAL for j in self.jobs.values()):
                 raise ValueError(f"a queued or running job already writes to {out}")
-            self.jobs[jid] = job
+            self.jobs[job.id] = job
             self._save()
             self._cv.notify_all()
         return job
@@ -238,20 +320,31 @@ class JobManager:
         p = self.log_path(jid)
         return p.read_text(errors="replace").splitlines() if p.exists() else []
 
+    def progress_path(self, jid: str) -> Path:
+        """The auto-tune steps of a job (its own file: the sweep writes no run folder)."""
+        return self.dir / f"{jid}.progress.jsonl"
+
     def progress(self, job: Job) -> list[dict[str, Any]]:
-        """Stage events of this job's run (older lines of a previous run are skipped)."""
-        p = Path(job.out_dir) / "progress.jsonl"
-        if job.started is None or not p.exists():
+        """Stage events of this job: the run's (or rerun's) ``progress.jsonl`` and the
+        auto-tune steps, by time (older lines of a previous run are skipped)."""
+        if job.started is None:
             return []
         out = []
-        for line in p.read_text().splitlines():
-            try:
-                e = json.loads(line)
-            except json.JSONDecodeError:
-                continue  # a line being written
-            if e.get("t", 0) >= job.started - 1:
-                out.append(e)
-        return out
+        # an auto-tune job shows its steps only (its final rerun is one of them)
+        own = Path(job.out_dir) / "progress.jsonl" if job.kind != "autotune" else None
+        for p in (own, self.progress_path(job.id)):
+            if p is None:
+                continue
+            if not p.exists():
+                continue
+            for line in p.read_text().splitlines():
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # a line being written
+                if e.get("t", 0) >= job.started - 1:
+                    out.append(e)
+        return sorted(out, key=lambda e: e.get("t", 0))
 
     # -- worker -----------------------------------------------------------------
 
@@ -281,6 +374,21 @@ class JobManager:
             self._save()
             self._cv.notify_all()
 
+    def _run(self, job: Job, cmd: list[str], log: IO[bytes]) -> int:
+        """Start ``cmd`` as the job's process group and wait for it; its return code."""
+        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        with self._cv:
+            self._proc = proc
+            job.pid = proc.pid
+            self._save()
+            if job.id in self._cancel or self._stopping:  # between "running" and Popen
+                self._terminate()
+        rc = proc.wait()
+        with self._cv:
+            if job.id in self._cancel or self._stopping:
+                return rc or 1  # a cancelled first command must not start the next
+        return rc
+
     def _worker(self) -> None:
         while True:
             job = self._next()
@@ -288,24 +396,21 @@ class JobManager:
                 return
             pfile = self.dir / f"{job.id}.params.json"
             out = Path(job.out_dir)
-            if is_run(out) and not job.overwrite:
+            if job.kind == "run" and is_run(out) and not job.overwrite:
                 self._fail(job, f"{out} already holds a run; start again with overwrite")
                 continue
+            commands = [self.command(job, pfile)]
+            if job.tune:
+                commands.append(
+                    tune_command(job.out_dir, job.tune_args, self.progress_path(job.id))
+                )
             try:
                 with self.log_path(job.id).open("wb") as log:
-                    proc = subprocess.Popen(
-                        self.command(job, pfile),
-                        stdout=log,
-                        stderr=subprocess.STDOUT,
-                        start_new_session=True,
-                    )
-                    with self._cv:
-                        self._proc = proc
-                        job.pid = proc.pid
-                        self._save()
-                        if job.id in self._cancel or self._stopping:  # between "running" and Popen
-                            self._terminate()
-                    rc = proc.wait()
+                    rc = 0
+                    for cmd in commands:
+                        rc = self._run(job, cmd, log)
+                        if rc != 0:
+                            break
             except Exception as e:  # noqa: BLE001 - keep the worker alive
                 self._fail(job, f"could not start the run: {e}")
                 continue

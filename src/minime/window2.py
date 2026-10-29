@@ -185,6 +185,7 @@ class Window2Session:
         _write_params(out, params, self.run_dir)
         _link_inputs(out, self.run_dir)
         timer = StageTimer(on_stage)
+        timer.attach_progress(out / "progress.jsonl")  # the serve job runner follows it
         try:
             fc = self.factor_corr(params.noise_freq, timer)
             w2 = pipeline.run_window2(self.fac, params, timer, fc)

@@ -23,6 +23,7 @@ from minime.autotune.sweep import (
     DERIVED,
     MIN_DIST_FRAC,
     SEARCHED,
+    STEP_OF,
     TUNE_FRAMES,
     Grids,
     Sweep,
@@ -77,6 +78,42 @@ def load_doc(rerun_dir: Path) -> dict[str, Any] | None:
 
 
 # ----------------------------------------------------------------------------------------
+# Sweep table helpers (the curves of the tune page)
+# ----------------------------------------------------------------------------------------
+def _is_num(v: Any) -> bool:
+    try:
+        float(v)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _order(values: pd.Series) -> list[Any]:
+    """Grid order: ``auto`` first, then numbers ascending."""
+    uniq = list(dict.fromkeys(values.tolist()))
+    words = [v for v in uniq if not _is_num(v)]
+    nums = sorted((v for v in uniq if _is_num(v)), key=float)
+    return words + nums
+
+
+def best_per_value(df: pd.DataFrame, key: str) -> pd.DataFrame:
+    """Per value of ``key`` in its step: the best-scoring successful trial, in grid order."""
+    d = df[(df["step"] == STEP_OF[key]) & df["score"].notna()]
+    if d.empty:
+        return d
+    top = d.sort_values("score", ascending=False, kind="stable").drop_duplicates(key)
+    order = {v: i for i, v in enumerate(_order(top[key]))}
+    return top.sort_values(key, key=lambda s: s.map(order)).reset_index(drop=True)
+
+
+def same_value(a: Any, b: Any) -> bool:
+    """``2`` and ``2.0`` and ``"2.0"`` are one value; ``auto`` only equals ``auto``."""
+    if _is_num(a) and _is_num(b):
+        return float(a) == float(b)
+    return str(a) == str(b)
+
+
+# ----------------------------------------------------------------------------------------
 # Input checks
 # ----------------------------------------------------------------------------------------
 def check_diameter(diameter: float, H: int, W: int) -> None:
@@ -126,6 +163,53 @@ def check_not_reserved(name: str) -> None:
 
 
 # ----------------------------------------------------------------------------------------
+# Progress file
+# ----------------------------------------------------------------------------------------
+RERUN_STEP = "rerun"
+
+
+class StepLog:
+    """One ``progress.jsonl`` row per sweep step (``tune_seeds`` ...) and one for the final
+    rerun, in ``StageTimer``'s line format, so ``minime serve`` shows them as stages.
+
+    ``trial`` is the ``on_trial`` callback, ``stage`` the ``on_stage`` one; ``close`` ends
+    the open row (``error=True`` marks it failed).
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self.path.write_text("")
+        self.step: str | None = None
+        self.t0 = 0.0
+        self.n = 0
+
+    def _write(self, event: str, **extra: Any) -> None:
+        doc = {"stage": f"tune_{self.step}", "event": event, "t": time.time(), **extra}
+        with self.path.open("a") as f:
+            f.write(json.dumps(doc) + "\n")
+
+    def _switch(self, step: str) -> None:
+        if step == self.step:
+            return
+        self.close()
+        self.step, self.t0, self.n = step, time.time(), 0
+        self._write("start")
+
+    def trial(self, t: Trial) -> None:
+        self._switch(t.step)
+        self.n += 1
+
+    def stage(self, name: str) -> None:
+        self._switch(RERUN_STEP)
+
+    def close(self, error: bool = False) -> None:
+        if self.step is None:
+            return
+        self._write("error" if error else "end", seconds=time.time() - self.t0, n=self.n)
+        self.step = None
+
+
+# ----------------------------------------------------------------------------------------
 # Driver
 # ----------------------------------------------------------------------------------------
 def autotune(
@@ -140,13 +224,14 @@ def autotune(
     dup_corr: float = DUP_CORR,
     min_dist_frac: float = MIN_DIST_FRAC,
     tune_frames: int = TUNE_FRAMES,
+    on_stage: Callable[[str], None] | None = None,
 ) -> Path:
     """Sweep window 2 of ``run_dir`` and write the proposal to ``run_dir/reruns/name``.
 
     ``diameter`` None: ``estimate_diameter`` of the run. ``dup_corr`` and ``min_dist_frac``
     are the two thresholds the checks and the derived merge distance rest on. The search
     explores on a middle segment of ``tune_frames`` frames (0 = the whole session) and decides
-    on the whole session.
+    on the whole session. ``on_stage`` follows the final rerun's stages.
     """
     t0 = time.perf_counter()
     session = session or Window2Session(run_dir)
@@ -165,7 +250,7 @@ def autotune(
     )
     params = sw.run()
     grids = sw.grids  # extended where a best value sat at an edge
-    out = session.run(params, name)
+    out = session.run(params, name, on_stage=on_stage)
     sweep_table(sw.trials).to_csv(out / "sweep.csv", index=False)
     A = sps.load_npz(out / "cnmf" / "A.npz")
     YrA = np.load(out / "cnmf" / "YrA.npy")

@@ -7,6 +7,7 @@ from dataclasses import fields
 from typing import Any
 
 from minime.params import Params
+from minime.window2 import WINDOW2_PARAMS
 
 GROUPS: dict[str, list[str]] = {
     "Preprocessing + motion": [
@@ -100,6 +101,7 @@ def defaults() -> list[dict[str, Any]]:
             "default": json.loads(json.dumps(d[name])),
             "help": HELP[name],
             "common": name in COMMON,
+            "window2": name in WINDOW2_PARAMS,  # free in a rerun on the saved factors
         }
         for group, names in GROUPS.items()
         for name in names

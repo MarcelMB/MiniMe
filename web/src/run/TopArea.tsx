@@ -6,7 +6,7 @@ import { STALE, latest } from "../frames";
 import { fmtClock } from "../format";
 import { ImageView } from "../ImageView";
 import { playStep, prefetchTiming } from "../playback";
-import { sourceOptions, useRun, type Source } from "./RunContext";
+import { rerunOptions, sourceOptions, useRun, type Source } from "./RunContext";
 
 const SPEEDS = ["1", "4", "16"] as const;
 
@@ -129,6 +129,15 @@ export function TopArea() {
         <div className="row">
           <Segmented label="Image" glass options={sourceOptions(summary.available)} value={source} onChange={setSource} />
           <span className="spacer" />
+          {run.reruns.length > 0 && (
+            <Segmented
+              label="Rerun shown"
+              glass
+              options={rerunOptions(run.reruns)}
+              value={run.rerun ?? "run"}
+              onChange={(v) => run.setRerun(v === "run" ? null : v)}
+            />
+          )}
           <div className="glass" style={{ padding: "6px 14px" }}>
             <Toggle label="Contours" checked={contours} onChange={setContours} />
           </div>
