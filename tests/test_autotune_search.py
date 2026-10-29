@@ -142,7 +142,7 @@ def test_sweep_uses_relative_grids_by_default(tiny_w2_run):
     assert sw.grids == sweep.relative_grids(
         sess.base, integer_diff=np.issubdtype(sess.fac.block_max.dtype, np.integer)
     )
-    assert sw.grids.n_trials() == at.n_trials(sess)
+    assert sw.grids.n_trials() == at.n_trials(sess, strategy="grid")
 
 
 def test_sweep_extends_a_grid_whose_best_is_at_the_edge(tiny_w2_run):
@@ -241,7 +241,7 @@ def test_pair_stats_counts(tiny_w2_run):
 
 
 def test_autotune_doc_records_the_run_trial(tiny_w2_run):
-    out = at.autotune(tiny_w2_run, D, grids=SMALL, name="auto_s")
+    out = at.autotune(tiny_w2_run, D, grids=SMALL, name="auto_s", strategy="grid")
     doc = at.load_doc(out)
     assert set(doc["run_score"]) == set(doc["score"])
     assert doc["better_than_run"] == (doc["score"]["score"] > doc["run_score"]["score"])

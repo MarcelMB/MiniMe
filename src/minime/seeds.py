@@ -164,6 +164,22 @@ def seeds_init(
     """
     if block_max.dtype == np.float64:  # cv2 morphology has no float64 path
         block_max = block_max.astype(np.float32)
+    ranges = window_ranges(block_edges, T, wnd_size, stp_size, t0, session_T)
+    count = count_local_maxima(block_max, ranges, disk_kernels(2, max_wnd), diff_thres)
+    arr = seeds_from_count(count)
+    return pd.DataFrame(arr, columns=["height", "width", "seeds"])
+
+
+def window_ranges(
+    block_edges: np.ndarray,
+    T: int,
+    wnd_size: int,
+    stp_size: int,
+    t0: int = 0,
+    session_T: int | None = None,
+) -> list[tuple[int, int]]:
+    """Block ranges of the seed windows; on a time subset (frames ``t0`` to ``t0 + T`` of a
+    ``session_T``-frame session) the session's windows inside the subset."""
     windows = [
         Window(w.start - t0, w.stop - t0)
         for w in rolling_windows(session_T or T, wnd_size, stp_size)
@@ -171,10 +187,45 @@ def seeds_init(
     ]
     if not windows:
         raise ValueError(f"no {wnd_size}-frame seed window fits in {T} frames")
-    ranges = window_block_ranges(block_edges, windows)
-    count = count_local_maxima(block_max, ranges, disk_kernels(2, max_wnd), diff_thres)
-    arr = seeds_from_count(count)
-    return pd.DataFrame(arr, columns=["height", "width", "seeds"])
+    return window_block_ranges(block_edges, windows)
+
+
+def contrast_hist(
+    block_max: np.ndarray, ranges: list[tuple[int, int]], kernels: list[np.ndarray]
+) -> np.ndarray:
+    """Histogram (whole grey levels) of the local-max contrast ``local_max_union`` compares with
+    ``diff``: per pixel and window, the largest ``max - min`` over the kernels in which the pixel
+    is the local maximum. A pixel is a seed candidate at ``diff`` iff its contrast > ``diff``."""
+    counts = []
+    for i0, i1 in ranges:
+        fm = window_projection(block_max, i0, i1)
+        if fm.dtype == np.float64:
+            fm = fm.astype(np.float32)
+        best = np.full(fm.shape, -1.0, np.float32)
+        for k in kernels:
+            mx, mn = cv2.dilate(fm, k), cv2.erode(fm, k)
+            c = mx.astype(np.float32) - mn
+            np.maximum(best, np.where(fm == mx, c, -1.0), out=best)
+        counts.append(np.bincount(np.floor(best[best >= 0]).astype(np.int64)))
+    n = max((len(c) for c in counts), default=0)
+    return sum((np.pad(c, (0, n - len(c))) for c in counts), np.zeros(n, np.int64))
+
+
+def contrast_knee(hist: np.ndarray, ratio: float = 1.5) -> int | None:
+    """The lowest contrast ``c`` from which the count of local maxima falls by less than
+    ``ratio`` per grey level for two levels in a row: below it noise maxima dominate (their
+    count drops 2-10x per level), above it the slow tail of cells (1.0-1.4x). None if the
+    histogram never flattens."""
+    h = hist.astype(np.float64)
+    for c in range(1, len(h) - 2):
+        if (
+            h[c + 1] > 0
+            and h[c + 2] > 0
+            and h[c] / h[c + 1] < ratio
+            and h[c + 1] / h[c + 2] < ratio
+        ):
+            return c
+    return None
 
 
 # ---------------------------------------------------------------------------

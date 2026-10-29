@@ -522,3 +522,169 @@ class Sweep:
                 tried.append(values)
                 self._try("confirm", values, self._full)
         return ranked(self._step("confirm", "sparse", "loop_merge"), base)
+
+
+# ---------------------------------------------------------------------------
+# Local search from a data-driven start (the default)
+# ---------------------------------------------------------------------------
+
+# sparse_snr first, then the keys in pipeline order: at a far-off sparse_snr the init settings
+# tie (V4 2 h at 3.74: seeds, merge and inita within 10 of each other; inita_corr drifted to
+# 0.55 against the grid's 0.75, final 333 against the grid's 411). init_merge_corr stays at the
+# run's value: on V4 2 h its whole grid (0.7-0.95) scored within 8 of 523
+LOCAL_ORDER = (
+    "sparse_snr",
+    "seeds_diff_thres",
+    "pnr_thres",
+    "merge_corr",
+    "inita_corr",
+    "loop_merge_corr",
+)
+LOCAL_SCALE = 1.4  # thresholds and sparse_snr: one step is x or / this
+LOCAL_CORR = 0.05  # correlations: one step is +- this
+# passes over LOCAL_ORDER; a further one only when the last moved a key. One is the fast
+# default: synthetic GRIN 207 in 13 settings (grid 204 in 80). From a far-off start a second
+# finds the moves that need several keys together: V4 2 h 358 (21) -> 409 (39), grid 411 (81)
+LOCAL_PASSES = 1
+LOCAL_MAX_STEPS = 5  # steps in one direction while the score keeps improving (3.74 -> 0.96 is 4)
+# seed PNR is ptp(0.1-99.9 %) / (6.18 sigma), so white noise scores ~1: start at twice that
+# (V4 2 h grid optimum 2.0; the 2-GMM "auto" scored 87 lower there)
+START_PNR = 2.0
+KNEE_RATIO = 1.5  # seeds.contrast_knee
+KNEE_WINDOWS = 16  # seed windows sampled for the contrast histogram
+
+
+def local_n_trials(
+    max_steps: int = LOCAL_MAX_STEPS, passes: int = LOCAL_PASSES, n_decide: int = 1
+) -> int:
+    """Upper bound on the settings ``LocalSearch.run`` tries: the run, two starts, each pass's
+    lines (one step back plus ``max_steps`` on), the decide reruns (the run's and the best)."""
+    return 3 + passes * len(LOCAL_ORDER) * (max_steps + 1) + 1 + n_decide
+
+
+def step_value(key: str, value: Any, up: bool, integer: bool = False) -> Any:
+    """``value`` one step up or down (None for a string or when clipping leaves it as is)."""
+    if isinstance(value, str):
+        return None
+    if key in CORR_KEYS:
+        lo, hi = CORR_RANGE
+        new = round(min(hi, max(lo, value + (LOCAL_CORR if up else -LOCAL_CORR))), 3)
+    else:
+        new = _round(value * LOCAL_SCALE if up else value / LOCAL_SCALE, integer)
+        if integer and new == value:  # small integers: at least one grey level
+            new = max(1, value + (1 if up else -1))
+    return None if new == value else new
+
+
+def start_diff_thres(fac: Factors, p: Params, n_windows: int = KNEE_WINDOWS) -> float | None:
+    """``seeds_diff_thres`` at the knee of the local-max contrast histogram of ``n_windows``
+    seed windows spread over ``fac`` (``seeds.contrast_knee``); None if it has no knee.
+    V4 2 h: 6 (grid optimum 6 on the segment, 9 on the session); synthetic GRIN: 7."""
+    ranges = seeds.window_ranges(
+        fac.block_edges, fac.T, p.seeds_wnd, p.seeds_stp, fac.t0, fac.session_T
+    )
+    ranges = ranges[:: max(1, len(ranges) // n_windows)]
+    hist = seeds.contrast_hist(fac.block_max, ranges, seeds.disk_kernels(2, p.seeds_max_wnd))
+    return seeds.contrast_knee(hist, KNEE_RATIO)
+
+
+@dataclass
+class LocalSearch(Sweep):
+    """Coordinate search from a data-driven start instead of grids: ``seeds_diff_thres`` from
+    the seed-contrast knee and ``pnr_thres`` = ``START_PNR`` where the run left them at their
+    defaults, the other keys at the run's values. Then per key of ``LOCAL_ORDER``: one step
+    down; while that improves, further down (``max_steps``); else one step up and on while it
+    improves. Every setting is scored after CNMF; upstream stages are cached per key. About
+    2 + 2 x 6 settings, against ~75 for the grid ``Sweep``."""
+
+    max_steps: int = LOCAL_MAX_STEPS
+    passes: int = LOCAL_PASSES
+    start: dict[str, Any] = field(init=False, default_factory=dict)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.grids = dataclasses.replace(self.grids, n_decide=1)
+
+    def n_trials(self) -> int:
+        """Upper bound on the settings ``run`` tries."""
+        return local_n_trials(self.max_steps, self.passes, self.grids.n_decide)
+
+    def start_values(self, run_values: dict[str, Any]) -> dict[str, Any]:
+        d, run = Params(), self.session.base
+        v = dict(run_values)
+        if _norm(run.seeds_diff_thres) == _norm(d.seeds_diff_thres):
+            knee = start_diff_thres(self.fac, self.base)
+            if knee is not None:
+                v["seeds_diff_thres"] = knee
+        if _norm(run.pnr_thres) == _norm(d.pnr_thres):
+            v["pnr_thres"] = START_PNR
+        return v
+
+    def _stage(self, key: str, v: dict[str, Any]) -> Stage:
+        """The stage a change of ``key`` on top of ``v`` needs; what lies upstream is cached."""
+        if STEP_OF[key] == "seeds":
+            return self._full
+        if key in ("merge_corr", "inita_corr"):
+            s_pnr = pipeline.seeds_unmerged(
+                self.fac, self._params(v), StageTimer(), pnr_of=self._pnr_of
+            )
+            return lambda p, t: self._cnmf(p, t, *self._init(p, t, s_pnr))
+        A, C = self._init(self._params(v), StageTimer())
+        return lambda p, t: self._cnmf(p, t, A, C)
+
+    @staticmethod
+    def _better(t: Trial, than: Trial) -> bool:
+        return t.score is not None and (
+            than.score is None or t.score["score"] > than.score["score"]
+        )
+
+    def _line(self, key: str, cur: Trial, tried: list[Any], integer: bool) -> Trial:
+        """Best trial along ``key`` from ``cur``: one step down, on down while the score does
+        not drop (a tie is crossed, only a gain is taken); else the same upward."""
+        stage: Stage | None = None
+        base = cur
+        for up in (False, True):
+            v = base.values
+            for _ in range(self.max_steps):
+                new = step_value(key, v[key], up, integer)
+                if new is None:
+                    break
+                stage = stage or self._stage(key, base.values)
+                tried.append(new)
+                t = self._try(STEP_OF[key], {**v, key: new}, stage)
+                if t.score is None or t.score["score"] < cur.score["score"]:
+                    break
+                v = t.values
+                if self._better(t, cur):
+                    cur = t
+            if cur is not base:
+                break  # improved going down: no step up
+        return cur
+
+    def _search(self, run_values: dict[str, Any]) -> list[Trial]:
+        integer = self.grids.integer_diff
+        self.start = self.start_values(run_values)
+        cur = self._try("start", self.start, self._full)
+        # the run's values when they score better: the data-driven start is a guess (synthetic
+        # GRIN: start 177, run 188; the grid found 204 next to the run's seed thresholds)
+        if self.start != run_values and (
+            cur.score is None
+            or self.run_trial.score is None
+            or self.run_trial.score["score"] >= cur.score["score"]
+        ):
+            other = self._try("start", run_values, self._full)
+            if self._better(other, cur):
+                cur = other
+        if cur.score is None:
+            raise RuntimeError(f"auto-tune: the start setting failed ({cur.error})")
+        tried: dict[str, list[Any]] = {k: [cur.values[k]] for k in SEARCHED}
+        for _ in range(self.passes):  # a second pass only when the first moved a key
+            start = cur
+            for key in LOCAL_ORDER:
+                cur = self._line(key, cur, tried[key], integer and key == "seeds_diff_thres")
+            if cur is start:
+                break
+        self.grids = dataclasses.replace(
+            self.grids, **{k: _unique(vals) for k, vals in tried.items()}
+        )
+        return ranked([t for t in self.trials if t.step not in ("run", "decide")], self.base)

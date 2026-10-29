@@ -21,15 +21,18 @@ import scipy.sparse as sps
 from minime.autotune import score
 from minime.autotune.sweep import (
     DERIVED,
+    LOCAL_PASSES,
     MIN_DIST_FRAC,
     SEARCHED,
     STEP_OF,
     TUNE_FRAMES,
     Grids,
+    LocalSearch,
     Sweep,
     Trial,
     at_edge,
     derived_keys,
+    local_n_trials,
     relative_grids,
 )
 from minime.window2 import Window2Session
@@ -37,6 +40,7 @@ from minime.window2 import Window2Session
 AUTO = "auto"
 DEFAULT_GRIDS: Grids | None = None  # None: ``relative_grids`` of the run
 DOC = "autotune.json"
+STRATEGIES = ("local", "grid")  # LocalSearch (default), the grid Sweep
 COUNT_COLS = ("seeds_init", "seeds_pnr", "seeds_merged", "units_init_merge", "units_final")
 MIN_UNITS_FOR_ESTIMATE = 10
 DUP_CORR = score.Checks(1.0).dup_corr  # the default, for the CLI and the page
@@ -134,8 +138,15 @@ def grids_of(session: Window2Session, grids: Grids | None = None) -> Grids:
     return relative_grids(session.base, integer_diff=integer)
 
 
-def n_trials(session: Window2Session, grids: Grids | None = None) -> int:
+def n_trials(
+    session: Window2Session,
+    grids: Grids | None = None,
+    strategy: str = "local",
+    passes: int = LOCAL_PASSES,
+) -> int:
     """Upper bound on the settings an auto-tune of ``session`` tries."""
+    if strategy == "local":
+        return local_n_trials(passes=passes)
     return grids_of(session, grids).n_trials()
 
 
@@ -225,14 +236,22 @@ def autotune(
     min_dist_frac: float = MIN_DIST_FRAC,
     tune_frames: int = TUNE_FRAMES,
     on_stage: Callable[[str], None] | None = None,
+    strategy: str = "local",
+    passes: int = LOCAL_PASSES,
 ) -> Path:
     """Sweep window 2 of ``run_dir`` and write the proposal to ``run_dir/reruns/name``.
 
     ``diameter`` None: ``estimate_diameter`` of the run. ``dup_corr`` and ``min_dist_frac``
     are the two thresholds the checks and the derived merge distance rest on. The search
     explores on a middle segment of ``tune_frames`` frames (0 = the whole session) and decides
-    on the whole session. ``on_stage`` follows the final rerun's stages.
+    on the whole session. ``on_stage`` follows the final rerun's stages. ``strategy`` "local"
+    searches step by step from a data-driven start (``LocalSearch``, ~15 settings per pass of
+    ``passes``), "grid" sweeps the grids (``Sweep``, ~75).
     """
+    if strategy not in STRATEGIES:
+        raise ValueError(f"strategy must be one of {STRATEGIES}, got {strategy!r}")
+    if passes < 1:
+        raise ValueError(f"passes must be >= 1, got {passes}")
     t0 = time.perf_counter()
     session = session or Window2Session(run_dir)
     source = "given" if diameter is not None else "footprints"
@@ -240,13 +259,15 @@ def autotune(
         diameter = estimate_diameter(run_dir)
     check_diameter(diameter, session.fac.H, session.fac.W_)
     checks = checks or score.Checks(diameter, dup_corr=dup_corr)
-    sw = Sweep(
+    kw = {"passes": passes} if strategy == "local" else {}
+    sw = (LocalSearch if strategy == "local" else Sweep)(
         session,
         checks,
         grids_of(session, grids),
         on_trial,
         min_dist_frac=min_dist_frac,
         tune_frames=tune_frames,
+        **kw,
     )
     params = sw.run()
     grids = sw.grids  # extended where a best value sat at an edge
@@ -271,6 +292,9 @@ def autotune(
         for which, a, y in (("run", A0, Y0), ("proposal", A, YrA))
     }
     doc = {
+        "strategy": strategy,
+        "passes": passes if strategy == "local" else None,
+        "start": {k: _json_value(v) for k, v in getattr(sw, "start", {}).items()},
         "diameter": diameter,
         "diameter_source": source,
         "min_dist_frac": min_dist_frac,

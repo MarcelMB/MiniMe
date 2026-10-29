@@ -132,6 +132,20 @@ def autotune(
             "session (0 = explore on the whole session)."
         ),
     ] = None,
+    strategy: Annotated[
+        str,
+        typer.Option(
+            help="local: step by step from a data-driven start (~15 settings); "
+            "grid: the full grid sweep (~75)."
+        ),
+    ] = "local",
+    passes: Annotated[
+        int,
+        typer.Option(
+            help="local: passes over the parameters (a second only when the first moved one); "
+            "2 finds moves of several parameters together when the run starts far off."
+        ),
+    ] = 1,
     progress: Annotated[Path | None, typer.Option(hidden=True)] = None,
 ) -> None:
     """Propose window-2 parameters for RUN_DIR (sweep, then a rerun in RUN_DIR/reruns/NAME/)."""
@@ -170,6 +184,8 @@ def autotune(
             min_dist_frac=min_dist_frac,
             tune_frames=tune_frames,
             on_stage=None if log is None else log.stage,
+            strategy=strategy,
+            passes=passes,
         )
     except (ValueError, RuntimeError) as e:
         if log is not None:
