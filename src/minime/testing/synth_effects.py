@@ -232,22 +232,3 @@ def frame_map(rng: Generator, T: int, dropped: int, duplicated: int) -> np.ndarr
     for t in np.sort(dups):
         fm[t] = fm[t - 1]
     return fm
-
-
-def grin_aperture(shape: tuple[int, int], radius: float) -> tuple[np.ndarray, np.ndarray]:
-    """GRIN lens optics on the sensor: ``(transmission, rim_blur)``, both (h, w) float32.
-
-    With ``R = radius`` x half the frame side and ``r`` the distance from the centre, the
-    transmission is a broad Gaussian falloff ``exp(-(r/R)^2 / 1.0)`` cut by a soft lens edge
-    (logistic at 1.05 R, 0.08 R wide) over a 2 % floor: the radial profile of a UCLA V4
-    recording through a GRIN lens (1, 0.79, 0.42, 0.17, 0.03 at r/R = 0.1, 0.5, 0.85, 1.05,
-    1.3). ``rim_blur`` = ``(r/R)^4`` clipped to 1 is the weight of a blurred frame (the lens
-    aberrates toward its rim).
-    """
-    h, w = shape
-    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-    big_r = radius * min(h, w) / 2
-    rr = np.hypot(yy - (h - 1) / 2, xx - (w - 1) / 2) / big_r
-    edge = 1 / (1 + np.exp((rr - 1.05) / 0.08))
-    trans = (np.exp(-(rr**2)) * edge * 0.98 + 0.02).astype(np.float32)
-    return trans, np.clip(rr**4, 0, 1).astype(np.float32)

@@ -46,8 +46,7 @@ PATCH_MIN = 15
     _S_HEMO,
     _S_LATE,
     _S_OOF,
-    _S_RATE,
-) = range(12)
+) = range(11)
 DETECT_BORDER = 5  # px: a cell centred closer to the frame edge is not counted as detectable
 DETECT_SPIKES = 2  # a cell with fewer spikes in the session is not counted as detectable
 EDGE_PX = 12  # a cell centred closer to the frame edge is in the "edge" category
@@ -87,16 +86,6 @@ class SynthOptions:
     hemo: float = 0.0  # grey levels of one broad blob oscillating at 0.1 Hz
     edge_band: int = 0  # px of border multiplied by 0.2 (fixed on the sensor)
     out_of_focus: int = 0  # dim, blurred active cells of other depths; not in the truth
-    # calibration to a recording (defaults = the legacy session)
-    amp_scale: float = 1.0  # multiplies every cell's transient amplitude (CELL_AMP)
-    cell_f0: float = BASELINE_F0  # resting fluorescence of a cell, grey levels
-    cell_sigma: float = CELL_SIGMA  # median cell sigma, px
-    spike_rate: float = 0.01  # mean spikes per frame of a (non-bursting) cell
-    rate_cv: float = 0.0  # lognormal CV of the per-cell spike rate (most cells quiet)
-    decay_tau: float = DECAY_TAU  # frames
-    background: float = 1.0  # scales the vignetted background (40-70 grey levels)
-    shot_noise: float = 0.0  # noise sd sqrt(noise_sd^2 + shot_noise^2 * intensity), on sensor
-    aperture: float = 0.0  # GRIN lens: circular aperture radius / half the frame side (0 = off)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -122,7 +111,6 @@ SCENARIOS: dict[str, SynthOptions] = {
     "bursts": SynthOptions(bursts=True, rise_tau=2.0),
     "hemo": SynthOptions(hemo=20.0),
     "edge": SynthOptions(edge_band=4),
-    "grin": SynthOptions(aperture=1.03),
     "out_of_focus": SynthOptions(out_of_focus=4),
     "realistic": SynthOptions(
         background_drift=15.0,
@@ -200,8 +188,6 @@ class SynthSetup:
     hemo_field: np.ndarray  # (ch, cw)
     hemo_time: np.ndarray  # (T,)
     frame_map: np.ndarray  # (T,) source frame per recorded frame, -1 = black
-    aperture: np.ndarray  # (h, w) GRIN transmission on the sensor (empty when off)
-    rim_blur: np.ndarray  # (h, w) weight of the blurred frame toward the lens rim
     late: np.ndarray  # (n,) bool, the late-active cells
     oof_ys: np.ndarray  # (m,) out-of-focus patch top-left in canvas coordinates
     oof_xs: np.ndarray
@@ -231,14 +217,13 @@ def _cells(
     n_base = max(1, int(ch * cw / 900))
     n = n_base + o.overlap
     r_size = child(_S_SIZE)
-    sigma = o.cell_sigma * fx.lognormal_factors(r_size, o.size_cv, n)
+    sigma = CELL_SIGMA * fx.lognormal_factors(r_size, o.size_cv, n)
     amp_f = fx.lognormal_factors(r_size, o.amp_cv, n)
     ps = _patch_size(sigma)
 
     ys = rng.integers(0, ch - ps, n_base)
     xs = rng.integers(0, cw - ps, n_base)
-    rate = o.spike_rate * fx.lognormal_factors(child(_S_RATE), o.rate_cv, n_base)
-    spikes = (rng.random((n_base, T)) < rate[:, None]).astype(np.float32)
+    spikes = (rng.random((n_base, T)) < 0.01).astype(np.float32)
     amp_u = rng.uniform(0.5, 1.5, (n_base, 1)).astype(np.float32)
     steps = rng.integers(-o.motion_step, o.motion_step + 1, (T, 2))
 
@@ -260,11 +245,11 @@ def _cells(
     if o.overlap > 0:
         r = child(_S_OVERLAP)
         partners = r.choice(n_base, o.overlap, replace=o.overlap > n_base)
-        dist = r.uniform(0.4, 0.8, o.overlap) * 4 * o.cell_sigma
+        dist = r.uniform(0.4, 0.8, o.overlap) * 4 * CELL_SIGMA
         ang = r.uniform(0, 2 * np.pi, o.overlap)
         oy = np.clip(np.rint(ys[partners] + dist * np.sin(ang)), 0, ch - ps).astype(ys.dtype)
         ox = np.clip(np.rint(xs[partners] + dist * np.cos(ang)), 0, cw - ps).astype(xs.dtype)
-        own = (r.random((o.overlap, T)) < o.spike_rate).astype(np.float32)
+        own = (r.random((o.overlap, T)) < 0.01).astype(np.float32)
         ospk = o.overlap_corr * spikes[partners] + (1 - o.overlap_corr) * own
         ys, xs = np.concatenate([ys, oy]), np.concatenate([xs, ox])
         spikes = np.concatenate([spikes, ospk.astype(np.float32)])
@@ -280,17 +265,13 @@ def _out_of_focus(
     """Cells above or below the focal plane: wide (sigma ~3x), dim (15-35 % of an in-focus
     transient), with their own activity. Returns ``(ys, xs, sigma, signal, patches)``."""
     m = o.out_of_focus
-    sigma = o.cell_sigma * OOF_SIGMA * fx.lognormal_factors(r, 0.2, m)
+    sigma = CELL_SIGMA * OOF_SIGMA * fx.lognormal_factors(r, 0.2, m)
     ps = min(_patch_size(sigma), min(ch, cw))
     ys = r.integers(0, ch - ps + 1, m)
     xs = r.integers(0, cw - ps + 1, m)
-    spikes = (
-        fx.markov_spikes(r, m, T)
-        if o.bursts
-        else (r.random((m, T)) < o.spike_rate).astype(np.float32)
-    )
-    amp = r.uniform(*OOF_AMP, m).astype(np.float32) * np.float32(CELL_AMP * o.amp_scale)
-    signal = fx.calcium(spikes, o.decay_tau, o.rise_tau) * amp[:, None]
+    spikes = fx.markov_spikes(r, m, T) if o.bursts else (r.random((m, T)) < 0.01).astype(np.float32)
+    amp = r.uniform(*OOF_AMP, m).astype(np.float32) * np.float32(CELL_AMP)
+    signal = fx.calcium(spikes, DECAY_TAU, o.rise_tau) * amp[:, None]
     signal = (signal * bleach.astype(np.float32)[None]).astype(np.float32)
     patches = np.stack([_gauss_patch(ps, s) for s in sigma])
     return ys, xs, sigma, signal, patches
@@ -302,7 +283,7 @@ def _build(
     """All draws before the frame loop; returns the truth and the RNG positioned for noise."""
     o = options or SynthOptions()
     rng = np.random.default_rng(seed)
-    kids = np.random.SeedSequence(seed).spawn(12)  # child i is the same for any count > i
+    kids = np.random.SeedSequence(seed).spawn(11)  # child i is the same for any count > i
 
     def child(i: int) -> np.random.Generator:
         return np.random.default_rng(kids[i])
@@ -312,15 +293,14 @@ def _build(
     ys, xs, spikes, amp_u, steps, sigma, amp_f, group, late = _cells(rng, child, o, h, w, m, T)
     n = ys.size
 
-    # exactly 60.0 per cell when amp_cv == 0 and amp_scale == 1
-    scale = (CELL_AMP * o.amp_scale * amp_f).astype(np.float32)
+    scale = (CELL_AMP * amp_f).astype(np.float32)  # exactly 60.0 per cell when amp_cv == 0
     amp = scale * amp_u[:, 0]
-    transient = fx.calcium(spikes * amp_u, o.decay_tau, o.rise_tau)  # legacy: traces * amp_u
+    transient = fx.calcium(spikes * amp_u, DECAY_TAU, o.rise_tau)  # legacy: traces * amp_u
     bleach = fx.bleach_curve(T, o.bleach_tau) if o.bleach_tau else np.ones(T)
     signal = transient * scale[:, None]  # (n, T) above F0
     bleach32 = bleach.astype(np.float32)
-    C = ((np.float32(o.cell_f0) + signal) * bleach32[None]).astype(np.float32)
-    F0 = np.broadcast_to((np.float32(o.cell_f0) * bleach32)[None], (n, T))
+    C = ((np.float32(BASELINE_F0) + signal) * bleach32[None]).astype(np.float32)
+    F0 = np.broadcast_to((np.float32(BASELINE_F0) * bleach32)[None], (n, T))
     has = spikes > 0
     first_active = np.where(has.any(axis=1), has.argmax(axis=1), T)
 
@@ -328,8 +308,6 @@ def _build(
     vign = 40.0 + 30.0 * np.exp(
         -((yy - ch / 2) ** 2 + (xx - cw / 2) ** 2) / (2 * (0.4 * max(ch, cw)) ** 2)
     )
-    if o.background != 1.0:
-        vign = vign * np.float32(o.background)
     drift = 1.0 + 0.05 * np.sin(2 * np.pi * np.arange(T) / (30 * 60))
     shifts = np.clip(np.cumsum(steps, axis=0), -m, m)
     patches = np.stack([_gauss_patch(_patch_size(sigma), s) for s in sigma])
@@ -364,11 +342,6 @@ def _build(
         hemo_field = fx.smooth_field(child(_S_HEMO), (ch, cw), max(ch, cw) / 3)
         hemo_time = (0.5 * (1 + np.sin(2 * np.pi * 0.1 / 30 * np.arange(T)))).astype(np.float32)
     frame_map = fx.frame_map(child(_S_FRAMES), T, o.dropped, o.duplicated)
-    aperture, rim_blur = (
-        fx.grin_aperture((h, w), o.aperture)
-        if o.aperture > 0
-        else (np.zeros((0, 0), np.float32), np.zeros((0, 0), np.float32))
-    )
     if o.out_of_focus > 0:
         oof = _out_of_focus(child(_S_OOF), o, ch, cw, T, bleach)
     else:
@@ -402,8 +375,6 @@ def _build(
         hemo_field=hemo_field,
         hemo_time=hemo_time,
         frame_map=frame_map,
-        aperture=aperture,
-        rim_blur=rim_blur,
         late=late,
         oof_ys=oof[0],
         oof_xs=oof[1],
@@ -473,8 +444,8 @@ def categories(setup: SynthSetup, h: int, w: int) -> dict[str, np.ndarray]:
         "overlap": s.group >= 0,
         "near_vessel": vessel,
         "late": s.late.copy(),
-        "small": s.sigma < 0.8 * s.options.cell_sigma,
-        "dim": s.amp < 0.6 * CELL_AMP * s.options.amp_scale,
+        "small": s.sigma < 0.8 * CELL_SIGMA,
+        "dim": s.amp < 0.6 * CELL_AMP,
         "edge": edge,
         "near_out_of_focus": near_oof,
     }
@@ -586,19 +557,13 @@ def _render(
 
 
 def _crop_frames(s: SynthSetup, canvas: np.ndarray, t0: int, h: int, w: int) -> np.ndarray:
-    """Recorded (n, h, w) float32 frames: rigid crop, non-rigid warp, GRIN aperture, edge
-    band."""
+    """Recorded (n, h, w) float32 frames: rigid crop, non-rigid warp, edge band."""
     o, m = s.options, s.margin
     out = np.empty((canvas.shape[0], h, w), np.float32)
     for i in range(canvas.shape[0]):
         dy, dx = s.shifts[t0 + i]
         fr = canvas[i, m + dy : m + dy + h, m + dx : m + dx + w]
         out[i] = fx.warp(fr, s.warp_field, float(s.warp_amp[t0 + i])) if o.nonrigid > 0 else fr
-    if o.aperture > 0:  # fixed on the sensor: blur toward the rim, then the lens transmission
-        for i in range(out.shape[0]):
-            blurred = cv2.GaussianBlur(out[i], (0, 0), 2.5, borderType=cv2.BORDER_REFLECT)
-            out[i] += s.rim_blur * (blurred - out[i])
-        out *= s.aperture[None]
     if o.edge_band > 0:
         b = o.edge_band
         out[:, :b] *= 0.2
@@ -654,22 +619,11 @@ def synth_chunks(
     prev = None
     for t0 in range(0, T, chunk):
         t1 = min(T, t0 + chunk)
-        o = s.options
-        noise = rng.standard_normal((t1 - t0, ch, cw), dtype=np.float32)
-        if o.shot_noise > 0:  # on the sensor, after the optics: sd grows with intensity
-            canvas, _ = _render(s, t0, t1, None, want_cells=False)
-            frames = _crop_frames(s, canvas, t0, h, w)
-            del canvas
-            sd = np.sqrt(o.noise_sd**2 + o.shot_noise**2 * np.maximum(frames, 0))
-            frames += noise[:, :h, :w] * sd
-            del noise, sd
-        else:
-            noise *= o.noise_sd
-            canvas, _ = _render(s, t0, t1, noise, want_cells=False)
-            del noise  # bounds the peak at two canvases plus one frame array
-            frames = _crop_frames(s, canvas, t0, h, w)
-            del canvas
-        frames, prev = _apply_frame_map(s, frames, t0, prev)
+        noise = rng.standard_normal((t1 - t0, ch, cw), dtype=np.float32) * s.options.noise_sd
+        canvas, _ = _render(s, t0, t1, noise, want_cells=False)
+        del noise  # bounds the peak at two canvases plus one frame array
+        frames, prev = _apply_frame_map(s, _crop_frames(s, canvas, t0, h, w), t0, prev)
+        del canvas
         yield t0, np.clip(frames, 0, 255, out=frames).astype(np.uint8)
 
 
