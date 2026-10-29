@@ -211,6 +211,20 @@ def synth(
 
 
 @app.command()
+def demo(
+    folder: Annotated[Path, typer.Argument(help="Where to put the demo (raw/ is made inside).")],
+) -> None:
+    """Download the demo session's raw videos (24 N.avi, ~8.5 GB) into FOLDER/raw/.
+
+    Rerun to resume: segments already downloaded and intact are skipped.
+    """
+    from minime.demo import download
+
+    raw = download(folder / "raw", echo=typer.echo)
+    typer.echo(f"done; next: minime run {raw}")
+
+
+@app.command()
 def score(
     run_dir: Annotated[Path | None, typer.Argument(help="Pipeline run directory.")] = None,
     raw: Annotated[Path | None, typer.Option(help="Raw dir (meta.json is in its parent).")] = None,

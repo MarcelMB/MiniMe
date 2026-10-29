@@ -20,6 +20,16 @@ Released versions: `pip install minime-cnmf` (the import and the command are `mi
     uv venv -p 3.11 && uv pip install -e ".[dev,tune]"
     .venv/bin/pytest
 
+## Demo data
+A real session (24 raw `N.avi` segments, ~8.5 GB, CC0) is on
+[UCLA Dataverse](https://dataverse.ucla.edu/dataset.xhtml?persistentId=doi:10.25346/S6SGHPCZ).
+This fetches only the raw videos and checks each one's MD5; run it again to resume:
+
+    minime demo ~/minime-demo          # -> ~/minime-demo/raw/0.avi ... 23.avi
+    minime run ~/minime-demo/raw       # -> ~/minime-demo/processed/minime
+
+The behavior video and the Minian/ezTrack outputs are in the same dataset if you want them.
+
 ## Run
 
     .venv/bin/minime run RAW_DIR --workers 6 --name NAME [--params p.json] [--keep-store] [--overwrite]
