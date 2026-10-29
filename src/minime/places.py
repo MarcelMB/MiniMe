@@ -30,14 +30,17 @@ def _load() -> list[dict[str, Any]]:
     )
 
 
-def remember(folder: Path, kind: str, raw: Path | None = None) -> None:
-    """Put ``folder`` first (``kind``: "demo" or "run"; ``raw``: its video folder).
+def remember(folder: Path, kind: str, raw: Path | None = None, dataset: str | None = None) -> None:
+    """Put ``folder`` first (``kind``: "demo" or "run"; ``raw``: its video folder;
+    ``dataset``: which demo, e.g. "v4" or "grin").
 
     Never raises: a run or download must not fail over a shortcut list.
     """
     entry = {"path": os.path.abspath(folder), "kind": kind, "time": time.time()}
     if raw is not None:
         entry["raw"] = os.path.abspath(raw)
+    if dataset is not None:
+        entry["dataset"] = dataset
     rest = [p for p in _load() if p["path"] != entry["path"]]
     dest = places_file()
     try:

@@ -255,17 +255,29 @@ def synth(
 @app.command()
 def demo(
     folder: Annotated[Path, typer.Argument(help="Where to put the demo (raw/ is made inside).")],
+    dataset: Annotated[
+        str,
+        typer.Option(
+            help="v4: real V4 CA1 recording (24 N.avi, ~8.5 GB); grin: synthetic V4 through a "
+            "GRIN lens with ground truth (36 N.avi, ~13 GB, plus meta.json and truth.npz)."
+        ),
+    ] = "v4",
 ) -> None:
-    """Download the demo session's raw videos (24 N.avi, ~8.5 GB) into FOLDER/raw/.
+    """Download a demo session's raw videos into FOLDER/raw/ (synthetic: truth into FOLDER).
 
-    Rerun to resume: segments already downloaded and intact are skipped.
+    Rerun to resume: files already downloaded and intact are skipped.
     """
     from minime import places
-    from minime.demo import download
+    from minime.demo import DATASETS, download
 
-    raw = download(folder / "raw", echo=typer.echo)
-    places.remember(folder, "demo", raw)
-    typer.echo(f"done; next: minime run {raw}")
+    if dataset not in DATASETS:
+        raise typer.BadParameter(f"unknown dataset {dataset!r}; one of {sorted(DATASETS)}")
+    raw = download(folder / "raw", echo=typer.echo, dataset=dataset)
+    places.remember(folder, "demo", raw, dataset=dataset)
+    nxt = f"minime run {raw}"
+    if dataset != "v4":
+        nxt += f", then minime score {folder / 'processed' / 'minime'}"
+    typer.echo(f"done; next: {nxt}")
 
 
 @app.command()

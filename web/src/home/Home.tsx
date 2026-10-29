@@ -95,7 +95,7 @@ export function Home() {
               title={f.path}
               onClick={() => choose(f.path)}
             >
-              {f.kind === "demo" ? "demo · " : ""}
+              {f.kind !== "demo" ? "" : f.dataset === "grin" ? "synthetic demo · " : "demo · "}
               {f.path.split("/").filter(Boolean).slice(-2).join("/")}
             </button>
           ))}

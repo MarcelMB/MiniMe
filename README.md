@@ -53,6 +53,7 @@ A real session (24 raw `N.avi` segments, ~8.5 GB, CC0) is on
 This fetches only the raw videos and checks each one's MD5; run it again to resume:
 
     minime demo ~/minime-demo          # -> ~/minime-demo/raw/0.avi ... 23.avi
+    minime demo ~/minime-grin --dataset grin   # synthetic GRIN V4 with truth: raw/ + truth.npz
     minime run ~/minime-demo/raw       # -> ~/minime-demo/processed/minime
 
 The behavior video and the Minian/ezTrack outputs are in the same dataset if you want them.

@@ -42,7 +42,13 @@ export type UnitsResponse = { stage: "final" | "init"; units: Unit[] };
 export type Seeds = { init: number[][]; pnr: number[][]; merged: number[][] };
 
 export type FsEntry = { name: string; path: string; has_avi: boolean; is_run: boolean };
-export type Place = { path: string; kind: "demo" | "run"; raw?: string; time: number };
+export type Place = {
+  path: string;
+  kind: "demo" | "run";
+  raw?: string;
+  dataset?: string; // which demo: "v4" (real) or "grin" (synthetic)
+  time: number;
+};
 
 export type FsListing = { path: string; parent: string; entries: FsEntry[] };
 

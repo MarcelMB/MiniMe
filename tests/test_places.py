@@ -51,16 +51,20 @@ def test_a_finished_run_remembers_its_session_folder(tiny_run):
 
 
 def test_demo_command_remembers_the_folder(cache, monkeypatch):
-    monkeypatch.setattr("minime.demo.download", lambda dest, echo: dest)
+    monkeypatch.setattr("minime.demo.download", lambda dest, echo, dataset: dest)
     (cache / "demo" / "raw").mkdir(parents=True)
-    r = CliRunner().invoke(cli.app, ["demo", str(cache / "demo")])
+    r = CliRunner().invoke(cli.app, ["demo", str(cache / "demo"), "--dataset", "grin"])
     assert r.exit_code == 0, r.output
+    assert "minime score" in r.output
     first = places.known()[0]
-    assert (first["path"], first["kind"], first["raw"]) == (
+    assert (first["path"], first["kind"], first["raw"], first["dataset"]) == (
         str(cache / "demo"),
         "demo",
         str(cache / "demo" / "raw"),
+        "grin",
     )
+    bad = CliRunner().invoke(cli.app, ["demo", str(cache / "demo"), "--dataset", "nope"])
+    assert bad.exit_code != 0
 
 
 def test_folders_route_lists_known_folders(client, cache):

@@ -229,6 +229,7 @@ def test_options_round_trip_and_scenarios():
     assert synth.SCENARIOS["clean"] == synth.SynthOptions()
     assert set(synth.SCENARIOS) >= {"realistic", "overlap", "late_active", "vessels", "hard"}
     assert synth.SCENARIOS["hard"].out_of_focus > 0
+    assert synth.SCENARIOS["grin_v4"].aperture > 0
 
 
 def test_truth_matches_generator_with_every_effect():
@@ -258,6 +259,9 @@ def test_truth_matches_generator_with_every_effect():
         dict(hemo=20.0),
         dict(edge_band=3),
         dict(out_of_focus=3),
+        dict(spike_rate=0.003, rate_cv=2.0),
+        dict(amp_scale=0.5, cell_f0=10.0, decay_tau=24.0),
+        dict(aperture=1.0, shot_noise=0.4, background=1.5),
     ],
 )
 def test_single_effect_keeps_cells_and_motion(opts):
@@ -413,3 +417,30 @@ def test_truth_npz_holds_the_scoring_arrays_and_footprints(tmp_path):
     peak = np.asarray(A[inside].argmax(axis=1)).ravel()
     c = np.rint(synth.true_centroids(s)[inside]).astype(int)
     assert np.array_equal(peak, c[:, 0] * 48 + c[:, 1])
+
+
+def test_grin_aperture_matches_the_v4_radial_profile():
+    t, rim = fx.grin_aperture((600, 600), 1.0)
+    yy, xx = np.mgrid[0:600, 0:600]
+    r = np.hypot(yy - 299.5, xx - 299.5) / 300
+    centre = t[r < 0.2].mean()
+    rel = [t[(r >= a) & (r < b)].mean() / centre for a, b in [(0.4, 0.6), (0.9, 1.0), (1.2, 1.42)]]
+    assert np.allclose(rel, [0.79, 0.28, 0.03], atol=0.06)  # real V4: 0.79, 0.28, 0.03
+    assert rim[300, 300] < 0.01 and rim[0, 0] == 1.0
+
+
+def test_spike_rate_and_spread_make_most_cells_quiet():
+    base = synth.synth_setup(128, 128, 2000, seed=0)
+    o = synth.SynthOptions(spike_rate=0.002, rate_cv=3.0)
+    on = synth.synth_setup(128, 128, 2000, seed=0, options=o)
+    per_cell = (on.spikes > 0).sum(axis=1)
+    assert per_cell.sum() < (base.spikes > 0).sum() / 2
+    assert np.median(per_cell) < per_cell.mean() / 2  # a few busy cells, most quiet
+
+
+def test_shot_noise_grows_with_brightness():
+    o = synth.SynthOptions(aperture=1.0, shot_noise=0.5, noise_sd=1.0)
+    movie = synth.synth_movie(96, 96, 60, seed=0, options=o).astype(float)
+    sd = np.diff(movie, axis=0).std(axis=0) / np.sqrt(2)
+    mean = movie.mean(axis=0)
+    assert sd[mean > np.quantile(mean, 0.9)].mean() > 1.5 * sd[mean < np.quantile(mean, 0.1)].mean()
