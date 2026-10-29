@@ -5,6 +5,7 @@ import json
 import shutil
 import sys
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -109,7 +110,7 @@ def test_submit_rerun_and_autotune_validate(tmp_path, tiny_run):
         jm.submit_autotune(str(tiny_run), {"grid": 1})
     job = jm.submit_autotune(str(tiny_run), {"diameter": "7", "tune_frames": None})
     assert job.kind == "autotune" and job.tune_args == {"diameter": 7.0}
-    assert job.out_dir.endswith("reruns/auto")
+    assert Path(job.out_dir).parts[-2:] == ("reruns", "auto")
     with pytest.raises(ValueError, match="already writes"):
         jm.submit_autotune(str(tiny_run))
     jm.shutdown()
