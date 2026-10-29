@@ -17,9 +17,9 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 import pandas as pd
-from sklearn.mixture import GaussianMixture
 
 from minime.factors import Factors
+from minime.gmm import fit_gmm_1d
 
 # ---------------------------------------------------------------------------
 # Windows and blocks
@@ -266,9 +266,9 @@ def pnr_refine(
     if isinstance(thres, str):
         if thres != "auto":
             raise ValueError(f"unknown pnr threshold {thres!r}")
-        dat = np.log(np.maximum(pnr, np.finfo(np.float64).tiny))[:, None]
-        gmm = GaussianMixture(n_components=2, random_state=0).fit(dat)
-        mask = gmm.predict(dat) == np.argmax(gmm.means_.ravel())
+        dat = np.log(np.maximum(pnr, np.finfo(np.float64).tiny))
+        gmm = fit_gmm_1d(dat, 2)
+        mask = gmm.predict(dat) == np.argmax(gmm.means)
     else:
         mask = pnr > thres
     if not mask.any():
@@ -295,12 +295,11 @@ def gmm_refine(
     which is the documented intent and independent of component labelling.
     """
     ptp = seed_ptp(f, seed_pixels(f, seeds), q)
-    dat = ptp.reshape(-1, 1)
-    gmm = GaussianMixture(n_components=n_components, random_state=0).fit(dat)
-    idg = np.argsort(gmm.means_.ravel())[-valid_components:]
-    valid = np.isin(gmm.predict(dat), idg)
+    gmm = fit_gmm_1d(ptp, n_components)
+    idg = np.argsort(gmm.means)[-valid_components:]
+    valid = np.isin(gmm.predict(ptp), idg)
     if mean_mask:
-        valid &= ptp > np.sort(gmm.means_.ravel())[0]
+        valid &= ptp > gmm.means.min()
     if not valid.any():
         raise ValueError("no seeds survived gmm_refine")
     out = seeds.copy()
