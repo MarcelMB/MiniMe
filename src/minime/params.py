@@ -13,6 +13,7 @@ RUN_METADATA_KEYS = frozenset(
     {
         "raw_dir",
         "raw_hash",
+        "fps",
         "minime_version",
         "caanfast_version",
         "cafast_version",

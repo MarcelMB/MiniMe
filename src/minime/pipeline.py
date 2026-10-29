@@ -336,11 +336,14 @@ def _write_cnmf(d: Path, res: CnmfResult, H: int, W: int) -> None:
     ).to_csv(d / "units.csv", index=False)
 
 
-def _write_params(out: Path, params: Params, raw_dir: Path, raw_hash: str) -> None:
+def _write_params(
+    out: Path, params: Params, raw_dir: Path, raw_hash: str, fps: float | None = None
+) -> None:
     doc = {
         **params.asdict(),
         "raw_dir": str(Path(raw_dir).resolve()),
         "raw_hash": raw_hash,
+        "fps": fps,  # given by the user; None: read from the raw folder's files
         "minime_version": minime.__version__,
     }
     (out / "params.json").write_text(json.dumps(doc, indent=1), encoding="utf-8")
@@ -358,8 +361,13 @@ def run(
     out_root: Path | None = None,
     keep_store: bool = False,
     workers: int | None = None,
+    fps: float | None = None,
 ) -> Path:
-    """Run the whole pipeline on ``raw_dir``; returns the (fresh) output directory."""
+    """Run the whole pipeline on ``raw_dir``; returns the (fresh) output directory.
+
+    ``fps``: frame rate of the recording, recorded in ``params.json`` (only for display;
+    default: ``io.fps_from_files``).
+    """
     t_start = time.perf_counter()
     raw_dir = Path(raw_dir)
     workers = params.workers if workers is None else int(workers)
@@ -375,7 +383,7 @@ def run(
     # read a valid sidecar into memory before the output dir is wiped
     sc = motion.load_if_valid(out / "motion", raw_hash, params.motion_params(), info.frames)
     _reset_dir(out)
-    _write_params(out, params, raw_dir, raw_hash)  # first: marks the dir as a minime run
+    _write_params(out, params, raw_dir, raw_hash, fps)  # first: marks the dir as a minime run
     timer.attach_progress(out / "progress.jsonl")
 
     with timer("template"):

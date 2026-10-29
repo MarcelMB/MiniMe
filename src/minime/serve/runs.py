@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import shutil
 import threading
 from functools import cached_property
@@ -64,28 +63,6 @@ def find_runs(root: Path, max_depth: int = 4) -> list[Path]:
 def report_stamp(path: Path) -> list[int]:
     st = (Path(path) / "report.json").stat()
     return [st.st_mtime_ns, st.st_size]
-
-
-def _leading_number(v: Any) -> float | None:
-    m = re.match(r"\s*([0-9]+(?:\.[0-9]+)?)", str(v))
-    return float(m.group(1)) if m else None
-
-
-def fps_from_files(raw_dir: Path) -> float | None:
-    """``fps`` of ``raw_dir/../meta.json``, else ``frameRate`` of a Miniscope metadata file."""
-    try:
-        meta = Path(raw_dir).parent / "meta.json"
-        if meta.is_file():
-            return float(json.loads(meta.read_text(encoding="utf-8"))["fps"])
-        for name in ("metaData.json", "neural_metaData.json"):
-            p = Path(raw_dir) / name
-            if p.is_file():
-                v = _leading_number(json.loads(p.read_text(encoding="utf-8")).get("frameRate"))
-                if v:
-                    return v
-    except (OSError, ValueError, KeyError):
-        return None
-    return None
 
 
 def _norm(v: Any) -> Any:
@@ -186,17 +163,19 @@ class RunView:
 
     @property
     def fps(self) -> float | None:
+        """Frame rate given when the run started, else from the raw folder's files, else
+        the one set in the viewer."""
+        if self.params.get("fps"):
+            return float(self.params["fps"])
         if self.raw_dir is not None:
-            f = fps_from_files(self.raw_dir)
+            f = io.fps_from_files(self.raw_dir)
             if f:
                 return f
         user = self.cache.load_json("fps.json")
         return float(user["fps"]) if user else None
 
     def set_fps(self, fps: float) -> None:
-        if not 0 < float(fps) <= 1000:
-            raise ValueError(f"frame rate must be in (0, 1000] Hz, got {fps}")
-        self.cache.save_json("fps.json", {"fps": float(fps)})
+        self.cache.save_json("fps.json", {"fps": io.check_fps(fps)})
 
     # The heavy parts load once (also under concurrent requests) and ``release`` drops them.
 

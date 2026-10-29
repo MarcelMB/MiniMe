@@ -150,15 +150,24 @@ def test_cli_run_wires_options(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pipeline, "run", fake_run)
     Params(tile=32).to_json(tmp_path / "p.json")
+    for n in ("0_a.avi", "behavior.avi"):
+        (tmp_path / n).touch()
     res = CliRunner().invoke(
         cli.app,
         ["run", str(tmp_path), "--params", str(tmp_path / "p.json"), "--workers", "3"]
-        + ["--name", "x", "--keep-store"],
+        + ["--name", "x", "--keep-store", "--fps", "19.5"],
     )
     assert res.exit_code == 0, res.output
     assert seen["params"].tile == 32 and seen["workers"] == 3
-    assert seen["run_name"] == "x" and seen["keep_store"] is True
+    assert seen["run_name"] == "x" and seen["keep_store"] is True and seen["fps"] == 19.5
+    assert "read in this order: 0_a.avi" in res.output and "behavior.avi" in res.output
     assert "units_final" in res.output and str(tmp_path / "out") in res.output
+
+
+def test_cli_run_refuses_a_folder_without_numbered_videos(tmp_path):
+    (tmp_path / "session.avi").touch()
+    res = CliRunner().invoke(cli.app, ["run", str(tmp_path)])
+    assert res.exit_code != 0 and "start with a number" in res.output
 
 
 def test_cli_run_refuses_existing_run_without_overwrite(tmp_path, monkeypatch):

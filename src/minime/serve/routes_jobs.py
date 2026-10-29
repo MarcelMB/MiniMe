@@ -18,7 +18,6 @@ from minime.params import Params
 from minime.serve import preview
 from minime.serve.arrays import array_response
 from minime.serve.jobs import FINAL, Job, JobManager
-from minime.serve.runs import fps_from_files
 
 router = APIRouter()
 
@@ -45,6 +44,7 @@ class JobBody(BaseModel):
     overwrite: bool = False
     tune: bool = False  # auto-tune window 2 after the run
     tune_args: dict[str, Any] = {}  # diameter, dup_corr, min_dist_frac, tune_frames
+    fps: float | None = None  # frame rate typed in the launcher (default: from the files)
 
 
 class RerunBody(BaseModel):
@@ -76,7 +76,7 @@ def _info(request: Request, path: str) -> tuple[Path, io.RawInfo]:
     if info is None:
         try:
             info = io.probe(raw)
-        except OSError as e:
+        except (OSError, ValueError) as e:
             raise HTTPException(400, f"cannot read the videos in {raw}: {e}") from None
         with state.raw_infos_lock:
             state.raw_infos[key] = info
@@ -102,8 +102,11 @@ def raw_info(request: Request, path: str) -> dict[str, Any]:
         "frames": info.frames,
         "height": info.height,
         "width": info.width,
-        "fps": fps_from_files(raw),
+        "fps": io.fps_from_files(raw),
         "bytes": int(sum(p.stat().st_size for p in info.segments)),
+        "names": [p.name for p in info.segments],  # in the order they are read
+        "skipped": io.skipped_videos(raw),
+        "naming_rule": io.NAMING_RULE,
     }
 
 
@@ -151,6 +154,7 @@ def submit(request: Request, body: JobBody) -> dict[str, Any]:
             body.overwrite,
             body.tune,
             body.tune_args,
+            body.fps,
         )
     except ValueError as e:
         raise HTTPException(400, str(e)) from None

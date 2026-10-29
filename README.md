@@ -59,12 +59,23 @@ The behavior video and the Minian/ezTrack outputs are in the same dataset if you
 
 ## Run
 
-    .venv/bin/minime run RAW_DIR --workers 6 --name NAME [--params p.json] [--keep-store] [--overwrite]
+    .venv/bin/minime run RAW_DIR --workers 6 --name NAME [--params p.json] [--fps 20] [--keep-store] [--overwrite]
     .venv/bin/minime score RAW_DIR/../processed/NAME     # synthetic sessions only
 
-**Input:** `RAW_DIR` = a folder of `N.avi` grayscale uint8 segments (Miniscope DAQ layout,
-sorted by integer stem). Read-only. A single long AVI works if it is named `0.avi` (a
-symlink is enough). Pass-1 workers stream each segment in 1000-frame batches, so worker
+**Input:** `RAW_DIR` = a folder of grayscale uint8 `.avi` videos, read-only. **Each file name
+must start with a number** (`0.avi`, `1.avi`, ... as the Miniscope DAQ writes them, or
+`0_session.avi`, `01-part.avi`). The videos are read as one recording in the order of that
+number, compared as integers, so `2.avi` comes before `10.avi`. `.avi` files whose name does
+not start with a number (`behavior.avi`) are ignored, and two files with the same number
+(`1.avi`, `01.avi`) are an error. `minime run` and the launcher list the order and the
+ignored files before they start. A single long AVI works too (`0.avi` or `0_whole.avi`).
+
+**Frame rate:** read from `RAW_DIR/../meta.json` (`fps`) or a Miniscope `metaData.json`
+(`frameRate`) in `RAW_DIR`; `--fps` (or the field in the launcher) sets or replaces it. It
+is stored in `params.json` and only used for display (time axes, durations), not for the
+analysis.
+
+Pass-1 workers stream each segment in 1000-frame batches, so worker
 memory does not grow with the file (about 3 x 1000 frames, ~1.1 GB at 600 x 600). A single
 file is still processed by one pass-1 worker, and the last segment (here: the whole file) is
 decoded once more at startup to count its frames.
@@ -73,7 +84,7 @@ decoded once more at startup to count its frames.
 
 | path | content |
 |---|---|
-| `params.json` | every parameter used, raw content hash, package version |
+| `params.json` | every parameter used, raw folder and content hash, frame rate given with `--fps`, package version |
 | `motion/` | shifts (T, 2), template (the prepared half-resolution image, about H/2 x W/2), per-frame quality; reused on a rerun with the same raw data and motion params |
 | `factors/` | per-tile factors `W, V, mean, sigma, energy`, max projection, block maxima |
 | `cnmf/A.npz` | footprints, scipy CSR (K, H*W) float32; row maximum 1, except units merged after the last spatial update (mean of the merged rows, maximum can be below 1) |
@@ -221,7 +232,9 @@ an out-of-focus cell) and the false units on out-of-focus cells. Scenarios
 `overlap`, `late_active`, `bleach`, `vessels`, `large_motion`, `nonrigid`, `dropped`,
 `cell_variation`, `low_snr`, `bursts`, `hemo`, `edge`, `out_of_focus`), `realistic` (all
 tier-1 effects) and `hard` (every effect, sized for a 600 x 600 session of ~30 min:
-`--minutes 30 --scenario hard`, 19 GB). `truth.npz` holds the scoring arrays and the
+`--minutes 30 --scenario hard`, 19 GB) and `grin_v4` (a V4 recording through a GRIN
+lens: lens vignetting, shot noise, dim and mostly quiet cells, fitted to a real V4 session;
+`--minutes 30 --fps 20 --scenario grin_v4`, 13 GB). `truth.npz` holds the scoring arrays and the
 footprints, so a downloaded session scores without regenerating it.
 In Python, `SynthOptions` sets any combination; the defaults reproduce the legacy session
 byte for byte. The truth (`synth_setup`) has per-cell size, amplitude, spikes, first active

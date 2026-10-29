@@ -11,9 +11,33 @@ def main() -> None:
     """Factor-first CNMF pipeline for one-photon miniscope data."""
 
 
+def _input_summary(
+    segments: list[Path], skipped: list[str], fps: float | None, fps_found: float | None
+) -> list[str]:
+    """What ``run`` will read: the video order, the ignored files and the frame rate."""
+    names = [p.name for p in segments]
+    shown = names if len(names) <= 6 else [*names[:3], "...", *names[-2:]]
+    lines = [f"{len(names)} video(s), read in this order: {', '.join(shown)}"]
+    if skipped:
+        lines.append(f"ignored (name does not start with a number): {', '.join(skipped)}")
+    if fps is not None:
+        lines.append(f"frame rate: {fps:g} fps (--fps)")
+    elif fps_found is not None:
+        lines.append(f"frame rate: {fps_found:g} fps (from the metadata file)")
+    else:
+        lines.append("frame rate: unknown (no meta.json / metaData.json; pass --fps to set it)")
+    return lines
+
+
 @app.command()
 def run(
-    raw_dir: Annotated[Path, typer.Argument(help="Folder of N.avi segments (read-only).")],
+    raw_dir: Annotated[
+        Path,
+        typer.Argument(
+            help="Folder of .avi videos (read-only). Each name must start with a number "
+            "(0.avi, 1.avi, ... or 0_session.avi); they are read in the order of that number."
+        ),
+    ],
     params: Annotated[Path | None, typer.Option(help="Params JSON (default: built-in).")] = None,
     workers: Annotated[int | None, typer.Option(help="Worker processes (default: params).")] = None,
     name: Annotated[str, typer.Option(help="Run name under ../processed/.")] = "minime",
@@ -21,11 +45,18 @@ def run(
     overwrite: Annotated[
         bool, typer.Option(help="Replace an existing run of this name, its reruns and tune files.")
     ] = False,
+    fps: Annotated[
+        float | None,
+        typer.Option(
+            help="Frame rate of the recording in Hz (default: from ../meta.json or the "
+            "Miniscope metaData.json). Only for display: time axes, durations."
+        ),
+    ] = None,
 ) -> None:
     """Run the pipeline on RAW_DIR; outputs go to RAW_DIR/../processed/NAME/."""
     import json
 
-    from minime import pipeline
+    from minime import io, pipeline
     from minime.params import Params
 
     out = pipeline.out_dir_for(raw_dir, name)
@@ -34,8 +65,19 @@ def run(
             f"error: {out} already exists; choose another --name or pass --overwrite", err=True
         )
         raise typer.Exit(1)
+    try:
+        segments = io.list_segments(raw_dir)
+        fps = io.check_fps(fps) if fps is not None else None
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from None
+    if not segments:
+        raise typer.BadParameter(f"no videos in {raw_dir}: {io.NAMING_RULE}")
+    for line in _input_summary(
+        segments, io.skipped_videos(raw_dir), fps, io.fps_from_files(raw_dir)
+    ):
+        typer.echo(line)
     prm = Params.from_json(params) if params is not None else Params()
-    out = pipeline.run(raw_dir, prm, run_name=name, keep_store=keep_store, workers=workers)
+    out = pipeline.run(raw_dir, prm, run_name=name, keep_store=keep_store, workers=workers, fps=fps)
     counts = json.loads((out / "report.json").read_text(encoding="utf-8"))["counts"]
     typer.echo(str(out))
     typer.echo(json.dumps(counts, indent=1))

@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from minime.serve.app import create_app
-from minime.serve.jobs import NEW_GROUP, JobManager, _alive
+from minime.serve.jobs import NEW_GROUP, JobManager, _alive, default_command
 from minime.testing import synth
 from tests.conftest import TINY_PARAMS
 
@@ -27,8 +27,10 @@ def raw(tmp_path):
 
 def test_submit_rejects_bad_input(tmp_path, raw):
     jm = JobManager(tmp_path / "cache", command=_sleeper)
-    with pytest.raises(ValueError, match="no .avi"):
+    with pytest.raises(ValueError, match="must start with a number"):
         jm.submit(str(tmp_path), "x", {})
+    with pytest.raises(ValueError, match="frame rate"):
+        jm.submit(str(raw), "x", {}, fps=0)
     with pytest.raises(ValueError, match="unknown parameter"):
         jm.submit(str(raw), "x", {"bogus": 1})
     with pytest.raises(ValueError):
@@ -88,6 +90,8 @@ def test_raw_info(tmp_path, raw):
     info = c.get("/api/raw/info", params={"path": str(raw)}).json()
     assert (info["segments"], info["frames"], info["height"], info["width"]) == (3, 300, 64, 64)
     assert info["fps"] == 30.0 and info["bytes"] > 0
+    assert info["names"] == ["0.avi", "1.avi", "2.avi"] and info["skipped"] == []
+    assert "start with a number" in info["naming_rule"]
     assert c.get("/api/raw/info", params={"path": str(tmp_path)}).status_code == 404
 
 
@@ -241,3 +245,12 @@ def test_list_and_get_survive_concurrent_submits(tmp_path, raw):
     t.join()
     assert errors == []
     jm.shutdown()
+
+
+def test_run_command_passes_the_fps_given_in_the_launcher(tmp_path, raw):
+    jm = JobManager(tmp_path / "cache", command=_sleeper)
+    job = jm.submit(str(raw), "x", {}, fps=19.5)
+    assert job.fps == 19.5
+    cmd = default_command(job, tmp_path / "p.json")
+    assert cmd[cmd.index("--fps") + 1] == "19.5"
+    assert "--fps" not in default_command(jm.submit(str(raw), "y", {}), tmp_path / "p.json")

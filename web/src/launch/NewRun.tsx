@@ -7,6 +7,7 @@ import { useFolders } from "../home/Home";
 import { useResource } from "../poll";
 import { go } from "../router";
 import type { Job, ParamMeta, RawInfo } from "../types";
+import { fpsOverride } from "./fps";
 import {
   changedOnly,
   defaultRunName,
@@ -38,6 +39,11 @@ export function NewRun() {
   const info = useResource(raw ? `raw:${raw}` : null, () =>
     getJSON<RawInfo>(`/raw/info?path=${encodeURIComponent(raw)}`),
   );
+  const [fpsText, setFpsText] = useState("");
+  // a new folder starts from the frame rate of its metadata file
+  useEffect(() => setFpsText(info.data?.fps ? String(info.data.fps) : ""), [info.data]);
+  const fps = fpsOverride(fpsText, info.data?.fps ?? null);
+  const shownFps = fps.fps ?? info.data?.fps ?? null;
   const [name, setName] = useState(() => defaultRunName(new Date()));
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -55,7 +61,7 @@ export function NewRun() {
     return { ...d, ...values };
   }, [defaults.data, values]);
   const failing = failingCount(errors);
-  const invalid = failing > 0;
+  const invalid = failing > 0 || fps.error !== "";
   const resetOverwrite = () => {
     setOverwrite(false);
     setOffered(false);
@@ -76,6 +82,7 @@ export function NewRun() {
       overwrite,
       tune,
       tune_args: tune && diameter ? { diameter } : {},
+      fps: fps.fps,
     }).then(
       (job) => go({ name: "job", id: job.id }),
       (e: Error) => {
@@ -92,8 +99,12 @@ export function NewRun() {
       <h1>New run</h1>
       <div className="bento">
         <section className="card span4" aria-label="1. Raw videos">
-          <span className="label">
-            1 · Folder with the raw videos (0.avi, 1.avi, …)
+          <span className="label">1 · Folder with the raw videos</span>
+          <span className="muted">
+            Each video's file name must start with a number (0.avi, 1.avi, … or
+            0_session.avi). The videos are read in the order of that number, so
+            2.avi comes before 10.avi; .avi files whose name does not start with
+            a number are ignored.
           </span>
           <div className="row">
             <span className="mono">{raw || "none chosen"}</span>
@@ -109,14 +120,44 @@ export function NewRun() {
           {raw && (
             <Loading res={info} what="the videos">
               {(i) => (
-                <span className="muted">
-                  {i.segments} files · {fmtInt(i.frames)} frames · {i.width} ×{" "}
-                  {i.height}
-                  {i.fps
-                    ? ` · ${i.fps} fps · ${fmtDuration(i.frames / i.fps)}`
-                    : " · frame rate unknown"}{" "}
-                  · {fmtBytes(i.bytes)}
-                </span>
+                <>
+                  <span className="muted">
+                    {i.segments} files · {fmtInt(i.frames)} frames · {i.width} ×{" "}
+                    {i.height}
+                    {shownFps
+                      ? ` · ${shownFps} fps · ${fmtDuration(i.frames / shownFps)}`
+                      : " · frame rate unknown"}{" "}
+                    · {fmtBytes(i.bytes)}
+                  </span>
+                  <span className="label">Read in this order</span>
+                  <span className="mono video-order">{i.names.join(" → ")}</span>
+                  {i.skipped.length > 0 && (
+                    <span className="muted">
+                      Ignored (name does not start with a number):{" "}
+                      <span className="mono">{i.skipped.join(", ")}</span>
+                    </span>
+                  )}
+                  <label className="field">
+                    Frame rate of the recording (Hz)
+                    <input
+                      type="number"
+                      min={1}
+                      max={1000}
+                      step="any"
+                      placeholder="unknown"
+                      value={fpsText}
+                      onChange={(e) => setFpsText(e.target.value)}
+                    />
+                  </label>
+                  <span className={fps.error ? "error" : "muted"}>
+                    {fps.error ||
+                      (i.fps
+                        ? fps.fps
+                          ? `replaces the ${i.fps} fps of the metadata file`
+                          : "from the metadata file (meta.json or metaData.json)"
+                        : "no metadata file found; type it in for time axes and durations")}
+                  </span>
+                </>
               )}
             </Loading>
           )}
@@ -137,7 +178,7 @@ export function NewRun() {
         {info.data && defaults.data && (
           <Preview
             raw={raw}
-            info={info.data}
+            info={{ ...info.data, fps: shownFps }}
             values={merged}
             onChange={(n, v) => {
               setValues((x) => ({ ...x, [n]: v }));

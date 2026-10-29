@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from minime import io, tiles
 
@@ -11,10 +12,29 @@ def test_segments_and_probe(tiny_session):
     assert info.segment_frames == [100, 100, 100] and info.fps == 30
 
 
-def test_list_segments_skips_other_avi_names(tmp_path):
-    for n in ("1.avi", "0.avi", "10.avi", "._0.avi", "behavior.avi"):
+def test_list_segments_sorts_by_leading_number_and_skips_the_rest(tmp_path):
+    for n in ("1_b.avi", "0.avi", "10-part.avi", "2.avi", "._0.avi", "behavior.avi", "x.mp4"):
         (tmp_path / n).touch()
-    assert [s.name for s in io.list_segments(tmp_path)] == ["0.avi", "1.avi", "10.avi"]
+    assert [s.name for s in io.list_segments(tmp_path)] == [
+        "0.avi",
+        "1_b.avi",
+        "2.avi",
+        "10-part.avi",
+    ]
+    assert io.skipped_videos(tmp_path) == ["behavior.avi"]
+
+
+def test_list_segments_refuses_two_videos_with_the_same_number(tmp_path):
+    for n in ("1.avi", "01_b.avi"):
+        (tmp_path / n).touch()
+    with pytest.raises(ValueError, match="both start with 1"):
+        io.list_segments(tmp_path)
+
+
+def test_probe_names_the_rule_when_no_video_starts_with_a_number(tmp_path):
+    (tmp_path / "session.avi").touch()
+    with pytest.raises(FileNotFoundError, match="must start with a number"):
+        io.probe(tmp_path)
 
 
 def test_read_avi_roundtrip(tiny_session):

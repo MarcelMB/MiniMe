@@ -23,7 +23,7 @@ from typing import Any
 import scipy.sparse as sps
 
 import minime
-from minime import corr, pipeline, seeds
+from minime import corr, io, pipeline, seeds
 from minime.factors import Factors
 from minime.params import Params
 from minime.report import StageTimer
@@ -73,6 +73,14 @@ def raw_dir(run_dir: Path) -> Path | None:
     return Path(raw) if raw else None
 
 
+def run_fps(run_dir: Path) -> float | None:
+    """Frame rate given when the run started, else ``io.fps_from_files`` of its raw folder."""
+    doc = json.loads((Path(run_dir) / "params.json").read_text(encoding="utf-8"))
+    if doc.get("fps"):
+        return float(doc["fps"])
+    return io.fps_from_files(Path(doc["raw_dir"])) if doc.get("raw_dir") else None
+
+
 def _norm(v: Any) -> Any:
     return list(v) if isinstance(v, tuple | list) else v
 
@@ -114,6 +122,7 @@ def _write_params(out: Path, params: Params, run_dir: Path) -> None:
         **params.asdict(),
         "raw_dir": src.get("raw_dir"),
         "raw_hash": src.get("raw_hash"),
+        "fps": src.get("fps"),
         "source_run": str(run_dir.resolve()),
         "minime_version": minime.__version__,
     }

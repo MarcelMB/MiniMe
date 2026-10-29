@@ -4,13 +4,13 @@ import time
 
 import pytest
 
+from minime.io import fps_from_files
 from minime.serve.cache import Background, RunCache
 from minime.serve.runs import (
     Registry,
     RunView,
     changed_params,
     find_runs,
-    fps_from_files,
     is_run,
     run_id,
 )
@@ -57,6 +57,13 @@ def test_run_view_reports_missing_parts(run_copy, cache_dir):
     assert RunView(run_copy, cache_dir).fps == 20.0
     with pytest.raises(ValueError):
         rv.set_fps(0)
+
+
+def test_run_view_prefers_the_fps_given_at_launch(run_copy, cache_dir):
+    pj = json.loads((run_copy / "params.json").read_text(encoding="utf-8"))
+    pj["fps"] = 19.5
+    (run_copy / "params.json").write_text(json.dumps(pj), encoding="utf-8")
+    assert RunView(run_copy, cache_dir).fps == 19.5
 
 
 def test_fps_from_miniscope_metadata(tmp_path):

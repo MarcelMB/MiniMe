@@ -269,9 +269,9 @@ def test_run_params_json_roundtrips(tmp_path):
     from minime import pipeline
 
     p = Params(tile=32, pnr_thres=2.5, workers=3, size_thres=(9, None))
-    pipeline._write_params(tmp_path, p, tmp_path, "abc")
+    pipeline._write_params(tmp_path, p, tmp_path, "abc", 19.5)
     doc = json.loads((tmp_path / "params.json").read_text(encoding="utf-8"))
-    assert {"raw_dir", "raw_hash", "minime_version"} <= set(doc)
+    assert {"raw_dir", "raw_hash", "minime_version"} <= set(doc) and doc["fps"] == 19.5
     assert Params.from_json(tmp_path / "params.json") == p  # workers kept as recorded
     old = {**doc, "cafast_version": doc.pop("minime_version")}  # run written as cafast
     (tmp_path / "old.json").write_text(json.dumps(old), encoding="utf-8")

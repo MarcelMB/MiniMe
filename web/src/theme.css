@@ -63,6 +63,7 @@ body {
 a { color: var(--accent); }
 .mono { font-family: "Geist Mono Variable", ui-monospace, monospace; }
 .muted { color: var(--muted); }
+.video-order { max-height: 120px; overflow-y: auto; overflow-wrap: anywhere; font-size: 13px; }
 
 .topbar {
   max-width: 1280px; margin: 0 auto; padding: 16px 16px 0;

@@ -82,11 +82,7 @@ class RunData:
 
 
 def _fps(run_dir: Path) -> float | None:
-    raw = window2.raw_dir(run_dir)
-    meta = raw.parent / "meta.json" if raw is not None else None
-    if meta is None or not meta.exists():
-        return None
-    return float(json.loads(meta.read_text(encoding="utf-8")).get("fps") or 0) or None
+    return window2.run_fps(run_dir)
 
 
 def load_run(d: Path) -> RunData:

@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import IO, Any
 
-from minime import pipeline, window2
+from minime import io, pipeline, window2
 from minime.autotune.run import AUTO, check_not_reserved
 from minime.params import Params
 from minime.serve.cache import cache_root
@@ -74,6 +74,7 @@ class Job:
     run_dir: str = ""  # rerun, autotune: the source run
     tune: bool = False  # run: auto-tune window 2 after it
     tune_args: dict[str, Any] = field(default_factory=dict)  # diameter, dup_corr, ...
+    fps: float | None = None  # run: frame rate given by the user (``minime run --fps``)
 
 
 TUNE_OPTIONS = ("diameter", "dup_corr", "min_dist_frac", "tune_frames")
@@ -98,6 +99,7 @@ def default_command(job: Job, params_file: Path) -> list[str]:
     cmd = [sys.executable, "-m", "minime", "run", job.raw_dir]
     cmd += ["--params", str(params_file), "--name", job.name]
     cmd += ["--keep-store"] if job.keep_store else []
+    cmd += ["--fps", str(job.fps)] if job.fps else []
     return cmd + (["--overwrite"] if job.overwrite else [])
 
 
@@ -261,10 +263,12 @@ class JobManager:
         overwrite: bool = False,
         tune: bool = False,
         tune_args: dict[str, Any] | None = None,
+        fps: float | None = None,
     ) -> Job:
         raw = Path(raw_dir).expanduser()
-        if not raw.is_dir() or not any(raw.glob("*.avi")):
-            raise ValueError(f"no .avi files in {raw}")
+        if not raw.is_dir() or not io.list_segments(raw):
+            raise ValueError(f"no videos in {raw}: {io.NAMING_RULE}")
+        fps = io.check_fps(fps) if fps is not None else None
         pipeline.check_run_name(name)
         jid = uuid.uuid4().hex[:10]
         pfile = self.dir / f"{jid}.params.json"
@@ -275,6 +279,7 @@ class JobManager:
             raise ValueError(f"{out} already holds a run; choose another name or overwrite")
         job = Job(jid, str(raw), name, params, keep_store, out_dir=str(out), overwrite=overwrite)
         job.tune, job.tune_args = tune, _tune_args(tune_args or {})
+        job.fps = fps
         return self._enqueue(job)
 
     def _source_run(self, run_dir: str) -> Path:

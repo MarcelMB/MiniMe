@@ -135,6 +135,9 @@ export type RawInfo = {
   width: number;
   fps: number | null;
   bytes: number;
+  names: string[]; // the videos in the order they are read
+  skipped: string[]; // .avi files whose name does not start with a number
+  naming_rule: string;
 };
 
 export type Zooms = { units: number[]; windows: { start: number; stop: number }[] };
