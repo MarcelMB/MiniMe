@@ -29,6 +29,9 @@ Development:
     uv venv -p 3.11 && uv pip install -e ".[dev,tune]"
     .venv/bin/pytest
 
+Apple-silicon GPU (optional): `uv pip install -e ".[gpu]"`, then `minime run ... --device gpu`
+runs the pass-2 SVD products on the GPU with MLX; everything else stays on the CPU.
+
 ## Fits your machine
 MiniMe is meant to tune itself to the computer it runs on instead of shipping one setting
 for everyone: an 8 GB lab laptop and a 64 GB workstation should each finish a session as

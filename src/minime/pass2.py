@@ -13,7 +13,12 @@ from minime.tiles import Tile, TileStore
 
 
 def pass2_worker(
-    store_root: str, grid: list[Tile], n_parts: int, indices: range, params: Params
+    store_root: str,
+    grid: list[Tile],
+    n_parts: int,
+    indices: range,
+    params: Params,
+    device: str = "cpu",
 ) -> list[TileFactors]:
     """Compress the tiles ``indices`` (seed = tile index)."""
     store = TileStore(Path(store_root), grid, n_parts)
@@ -27,17 +32,21 @@ def pass2_worker(
             seed=i,
             noise_freq=params.noise_freq,
             noise_frames=params.noise_frames,
+            device=device,
         )
         for i in indices
     ]
 
 
 def run_pass2(
-    store: TileStore, grid: list[Tile], params: Params, workers: int
+    store: TileStore, grid: list[Tile], params: Params, workers: int, device: str = "cpu"
 ) -> list[TileFactors]:
-    """Compress every tile with ``workers`` single-threaded processes; grid order."""
+    """Compress every tile with ``workers`` single-threaded processes; grid order.
+
+    ``device="gpu"``: each worker runs its SVD products on the (shared) GPU.
+    """
     ranges = _split(len(grid), workers)
-    jobs = [(str(store.root), grid, store.n_parts, r, params) for r in ranges]
+    jobs = [(str(store.root), grid, store.n_parts, r, params, device) for r in ranges]
     res = run_workers(pass2_worker, jobs)
     return [tf for chunk in res for tf in chunk]
 

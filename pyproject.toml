@@ -30,6 +30,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6", "httpx>=0.27", "scikit-learn>=1.4"]  # sklearn: reference fits in tests
 tune = ["matplotlib>=3.8"]
+gpu = ["mlx>=0.25; sys_platform == 'darwin' and platform_machine == 'arm64'"]  # --device gpu
 [project.scripts]
 minime = "minime.cli:app"
 [project.urls]

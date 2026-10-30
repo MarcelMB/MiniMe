@@ -20,7 +20,7 @@ import pandas as pd
 import scipy.sparse as sps
 
 import minime
-from minime import corr, init, io, motion, pass1, pass2, places, seeds
+from minime import corr, gpu, init, io, motion, pass1, pass2, places, seeds
 from minime.cnmf import CnmfResult, run_cnmf
 from minime.factors import Factors
 from minime.params import Params
@@ -362,12 +362,15 @@ def run(
     keep_store: bool = False,
     workers: int | None = None,
     fps: float | None = None,
+    device: str = "cpu",
 ) -> Path:
     """Run the whole pipeline on ``raw_dir``; returns the (fresh) output directory.
 
     ``fps``: frame rate of the recording, recorded in ``params.json`` (only for display;
-    default: ``io.fps_from_files``).
+    default: ``io.fps_from_files``). ``device``: ``"gpu"`` runs the pass-2 SVD products on
+    the GPU (``minime.gpu``; needs MLX).
     """
+    gpu.check_device(device)
     t_start = time.perf_counter()
     raw_dir = Path(raw_dir)
     workers = params.workers if workers is None else int(workers)
@@ -403,7 +406,7 @@ def run(
         with timer("sidecar_save"):
             _save_sidecar(out, p1, template_img, params, raw_hash, workers)
         with timer("pass2"):
-            tiles = pass2.run_pass2(store, grid, params, workers)
+            tiles = pass2.run_pass2(store, grid, params, workers, device)
         fac = pass2.build_factors(info, grid, p1, tiles, params)
         with timer("factors_save"):
             fac.save(out / "factors")
@@ -445,6 +448,7 @@ def run(
             "peak_rss_children": peak_rss(children=True),
             "wall_total": time.perf_counter() - t_start,
             "workers": workers,
+            "device": device,
             "version": minime.__version__,
         },
     )

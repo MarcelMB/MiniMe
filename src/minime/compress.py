@@ -183,14 +183,22 @@ def compress_tile(
     chunk: int = SVD_CHUNK,
     noise_freq: float = 0.06,
     noise_frames: int = 0,
+    device: str = "cpu",
 ) -> TileFactors:
     """(T, th, tw) uint8 -> ``TileFactors``.
+
+    ``device="gpu"``: the products of the randomized SVD run on the GPU (``minime.gpu``).
 
     Start at rank ``k0``; while any of the last ``ADAPT_MARGIN`` components still passes
     the autocorrelation cut, double k (up to ``min(MAX_RANK, P - 1, T - 1)``) and redo.
     If no component passes, keep component 0 only.
     """
-    Y = TileMatrix(raw, chunk)
+    if device == "gpu":
+        from minime.gpu import MlxTileMatrix
+
+        Y: TileMatrix = MlxTileMatrix(raw)
+    else:
+        Y = TileMatrix(raw, chunk)
     sigma = Y.noise(noise_freq, noise_frames)
     rng = np.random.default_rng(seed)
     k_cap = max(1, min(MAX_RANK, Y.P - 1, Y.T - 1))

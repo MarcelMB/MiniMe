@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 import scipy.sparse as sps
 
 from minime import compress, pass2, tiles
@@ -236,3 +237,12 @@ def test_energy_one_pass_matches_centred_sum():
     X = raw.reshape(len(raw), -1).astype(np.float64)
     assert np.allclose(Y.energy, ((X - X.mean(0)) ** 2).sum(0), rtol=1e-9)
     assert np.allclose(Y.mean, X.mean(0), rtol=1e-6)
+
+
+def test_check_device_without_mlx_explains_the_install(monkeypatch):
+    from minime import gpu
+
+    monkeypatch.setattr(gpu, "available", lambda: False)
+    with pytest.raises(RuntimeError, match="minime-cnmf\\[gpu\\]"):
+        gpu.check_device("gpu")
+    gpu.check_device("cpu")
