@@ -64,11 +64,19 @@ class Template:
 
 
 def estimate(frames: np.ndarray, tmpl: Template, max_shift: int = 20) -> np.ndarray:
-    """Rigid (dy, dx) per frame vs the template, as (n, 2) float64."""
+    """Rigid (dy, dx) per frame vs the template, as (n, 2) float64.
+
+    The cross-correlation is computed in float32 (the frames are float32; a complex128
+    template would promote the product and the inverse FFT to float64) and its peak is
+    searched only in the ``(2m+1)^2`` window of allowed shifts.
+    """
     f = _prep(frames, tmpl.down)
     n, h, w = f.shape
-    corr = np.fft.irfft2(np.fft.rfft2(f) * np.conj(tmpl.fft)[None], s=(h, w))
+    t_conj = np.conj(tmpl.fft).astype(np.complex64)
+    corr = np.fft.irfft2(np.fft.rfft2(f) * t_conj[None], s=(h, w))
     m = max_shift // tmpl.down
+    if 2 * m + 3 <= min(h, w):
+        return tmpl.down * _peak_in_window(corr, m)
     fy, fx = np.fft.fftfreq(h) * h, np.fft.fftfreq(w) * w
     outside = (np.abs(fy)[:, None] > m) | (np.abs(fx)[None] > m)
     corr[:, outside] = -np.inf
@@ -80,6 +88,27 @@ def estimate(frames: np.ndarray, tmpl: Template, max_shift: int = 20) -> np.ndar
     dy = np.where(iy > h // 2, iy - h, iy) + sy
     dx = np.where(ix > w // 2, ix - w, ix) + sx
     return tmpl.down * np.stack([dy, dx], axis=1)
+
+
+def _peak_in_window(corr: np.ndarray, m: int) -> np.ndarray:
+    """(dy, dx) of the correlation peak over shifts ``-m..m``, sub-pixel, as (n, 2) float64.
+
+    Same result as masking everything outside the window and taking the full argmax: the
+    window is cut out with a one-sample ring, and the ring is zeroed like the masked
+    samples the parabolic fit would see at the window edge.
+    """
+    n, h, w = corr.shape
+    off = np.arange(-m - 1, m + 2)
+    win = corr[:, off % h][:, :, off % w].astype(np.float64)
+    win[:, [0, -1], :] = 0.0
+    win[:, :, [0, -1]] = 0.0
+    side = 2 * m + 1
+    k = win[:, 1:-1, 1:-1].reshape(n, -1).argmax(axis=1)
+    jy, jx = k // side + 1, k % side + 1
+    i = np.arange(n)
+    sy = _parabolic(win[i, jy - 1, jx], win[i, jy, jx], win[i, jy + 1, jx])
+    sx = _parabolic(win[i, jy, jx - 1], win[i, jy, jx], win[i, jy, jx + 1])
+    return np.stack([off[jy] + sy, off[jx] + sx], axis=1)
 
 
 def apply_shifts(frames: np.ndarray, shifts: np.ndarray) -> np.ndarray:

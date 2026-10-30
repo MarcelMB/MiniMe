@@ -36,8 +36,15 @@ def tile_grid(h: int, w: int, tile: int = 64) -> list[Tile]:
 
 
 def pack_tiles(frames: np.ndarray, grid: list[Tile]) -> np.ndarray:
-    """(n, h, w) -> one flat uint8 buffer, tile after tile, each tile (n, th, tw) C-order."""
-    return np.concatenate([frames[:, t.y0 : t.y1, t.x0 : t.x1].ravel() for t in grid])
+    """(n, h, w) -> one flat uint8 buffer, tile after tile, each tile (n, th, tw) C-order.
+
+    Each tile is copied once, straight into its place in the buffer.
+    """
+    n = frames.shape[0]
+    out = np.empty(n * sum(t.pixels for t in grid), dtype=frames.dtype)
+    for t, (a, b) in zip(grid, tile_offsets(n, grid), strict=True):
+        out[a:b].reshape(n, *t.shape)[...] = frames[:, t.y0 : t.y1, t.x0 : t.x1]
+    return out
 
 
 def tile_offsets(n: int, grid: list[Tile]) -> list[tuple[int, int]]:

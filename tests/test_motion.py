@@ -155,3 +155,59 @@ def test_template_image_shape_for_odd_sizes():
 def test_params_refuse_motion_down_other_than_1_or_2(down):
     with pytest.raises(ValueError, match="motion_down"):
         Params(motion_down=down)
+
+
+def _estimate_float64_full(frames, tmpl, max_shift=20):
+    """The previous ``estimate``: float64 correlation, masked full-array argmax."""
+    f = motion._prep(frames, tmpl.down)
+    n, h, w = f.shape
+    corr = np.fft.irfft2(np.fft.rfft2(f) * np.conj(tmpl.fft)[None], s=(h, w))
+    m = max_shift // tmpl.down
+    fy, fx = np.fft.fftfreq(h) * h, np.fft.fftfreq(w) * w
+    outside = (np.abs(fy)[:, None] > m) | (np.abs(fx)[None] > m)
+    corr[:, outside] = -np.inf
+    iy, ix = np.unravel_index(corr.reshape(n, -1).argmax(axis=1), (h, w))
+    corr[:, outside] = 0.0
+    i = np.arange(n)
+    p = motion._parabolic
+    sy = p(corr[i, (iy - 1) % h, ix], corr[i, iy, ix], corr[i, (iy + 1) % h, ix])
+    sx = p(corr[i, iy, (ix - 1) % w], corr[i, iy, ix], corr[i, iy, (ix + 1) % w])
+    dy = np.where(iy > h // 2, iy - h, iy) + sy
+    dx = np.where(ix > w // 2, ix - w, ix) + sx
+    return tmpl.down * np.stack([dy, dx], axis=1)
+
+
+@pytest.mark.parametrize("max_shift", [6, 20])
+def test_windowed_float32_estimate_matches_float64_full_search(max_shift):
+    movie, _ = _vessels_and_flicker(T=120)
+    reg = preprocess.bandpass(preprocess.denoise(movie, 3), 1.0, 6.0)
+    tmpl = motion.make_template(reg[:60], down=2, max_shift=max_shift)
+    got = motion.estimate(reg, tmpl, max_shift)
+    ref = _estimate_float64_full(reg, tmpl, max_shift)
+    assert np.abs(got - ref).max() < 1e-3  # px; float32 rounding only, same integer peak
+
+
+def test_peak_in_window_matches_masked_argmax_at_the_edge():
+    """A peak on the window edge sees a zeroed neighbour outside, as with the full mask."""
+    rng = np.random.default_rng(1)
+    h = w = 40
+    corr = rng.random((3, h, w))
+    corr[0, 5, 5] = 10.0  # inside, interior
+    corr[1, 5, (-5) % w] = 10.0  # on the edge (m = 5)
+    corr[2, 9, 9] = 10.0  # outside the window: ignored
+    m = 5
+    got = motion._peak_in_window(corr.astype(np.float32), m)
+    fy = np.fft.fftfreq(h) * h
+    outside = (np.abs(fy)[:, None] > m) | (np.abs(fy)[None] > m)
+    c = corr.astype(np.float32).astype(np.float64)
+    c[:, outside] = -np.inf
+    iy, ix = np.unravel_index(c.reshape(3, -1).argmax(axis=1), (h, w))
+    c[:, outside] = 0.0
+    i = np.arange(3)
+    p = motion._parabolic
+    sy = p(c[i, (iy - 1) % h, ix], c[i, iy, ix], c[i, (iy + 1) % h, ix])
+    sx = p(c[i, iy, (ix - 1) % w], c[i, iy, ix], c[i, iy, (ix + 1) % w])
+    ref = np.stack(
+        [np.where(iy > h // 2, iy - h, iy) + sy, np.where(ix > w // 2, ix - w, ix) + sx], 1
+    )
+    assert np.array_equal(got, ref)

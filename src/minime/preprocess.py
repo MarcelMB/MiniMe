@@ -10,7 +10,10 @@ def denoise(frames: np.ndarray, ksize: int = 7) -> np.ndarray:
     """Per-frame median blur (uint8 input); ``ksize <= 1`` returns the frames unchanged."""
     if ksize <= 1:
         return frames
-    return np.stack([cv2.medianBlur(f, ksize) for f in frames])
+    out = np.empty_like(frames)
+    for i, f in enumerate(frames):
+        cv2.medianBlur(f, ksize, dst=out[i])
+    return out
 
 
 def tophat(frames: np.ndarray, wnd: int = 15) -> np.ndarray:
@@ -18,7 +21,10 @@ def tophat(frames: np.ndarray, wnd: int = 15) -> np.ndarray:
     if wnd <= 0:
         return frames
     kernel = np.ones((2 * wnd + 1,) * 2, np.uint8)
-    return np.stack([cv2.morphologyEx(f, cv2.MORPH_TOPHAT, kernel) for f in frames])
+    out = np.empty_like(frames)
+    for i, f in enumerate(frames):
+        cv2.morphologyEx(f, cv2.MORPH_TOPHAT, kernel, dst=out[i])
+    return out
 
 
 def preprocess(frames: np.ndarray, ksize: int = 7, wnd: int = 15) -> np.ndarray:
