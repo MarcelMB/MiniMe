@@ -8,6 +8,7 @@ with ``W_b (P_b, r)``, ``V_b (T, r)``. ``Y`` is never rebuilt in full; the helpe
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,24 @@ class TileFactors:
     @property
     def T(self) -> int:
         return self.V.shape[0]
+
+
+def _tile_yct(tf: TileFactors, Ct: np.ndarray) -> np.ndarray:
+    """``W (V^T Ct)`` of one tile, (P_b, K) float32."""
+    return tf.W @ (tf.V.T @ Ct)
+
+
+def _tile_yct_f64(tf: TileFactors, Ct: np.ndarray, chunk: int = 65536) -> np.ndarray:
+    """``_tile_yct`` in float64, summed over frame chunks (no float64 copy of all of ``Ct``).
+
+    The fallback when the float32 product is not finite: on macOS 26 (M1 Max) Accelerate's
+    float32 products with ~513-575 output columns intermittently returned NaN; a 4 h session
+    failed the spatial update with K = 527 units and passed on rerunning the same input.
+    """
+    VtC = np.zeros((tf.rank, Ct.shape[1]), dtype=np.float64)
+    for t0 in range(0, Ct.shape[0], chunk):
+        VtC += tf.V[t0 : t0 + chunk].astype(np.float64).T @ Ct[t0 : t0 + chunk].astype(np.float64)
+    return (tf.W.astype(np.float64) @ VtC).astype(np.float32)
 
 
 @dataclass
@@ -154,7 +173,15 @@ class Factors:
         Ct = np.ascontiguousarray(np.asarray(Cc, dtype=np.float32).T)  # (T, K)
         out = np.empty((self.P, Ct.shape[1]), dtype=np.float32)
         for b, tf in enumerate(self.tiles):
-            out[self.tile_rows(b)] = tf.W @ (tf.V.T @ Ct)
+            part = _tile_yct(tf, Ct)
+            if not np.isfinite(part).all():
+                warnings.warn(
+                    f"YCt: float32 product of tile {b} is not finite; recomputed in float64",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                part = _tile_yct_f64(tf, Ct)
+            out[self.tile_rows(b)] = part
         return out
 
     # ---- per-pixel statistics ---------------------------------------------------
