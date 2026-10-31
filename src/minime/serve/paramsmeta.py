@@ -25,6 +25,7 @@ GROUPS: dict[str, list[str]] = {
         "svd_power_iter",
         "rank_rho_min",
         "rank_z",
+        "svd_window",
         "noise_frames",
     ],
     "Seeds": [
@@ -69,6 +70,8 @@ HELP: dict[str, str] = {
     "seeds_stp": "Step in frames between seed windows.",
     "seeds_max_wnd": "Window in px of the local-maximum search for seeds.",
     "seeds_diff_thres": "Smallest brightness difference that makes a local maximum a seed.",
+    "svd_window": "Longest time window (frames) pass 2 compresses at once; longer sessions are "
+    "split and merged (0 = whole tile).",
     "noise_frames": "Frames used for the per-pixel noise (0 = all); faster, but changes the units.",
     "noise_freq": "Frequency (fraction of the frame rate) above which a trace counts as noise.",
     "pnr_thres": "Peak-to-noise threshold for seeds; 'auto' picks it from the data.",

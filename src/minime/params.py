@@ -42,6 +42,10 @@ class Params:
     svd_power_iter: int = 1
     rank_rho_min: float = 0.2
     rank_z: float = 4.0
+    # pass 2 compresses a tile of a longer session in time windows of at most this many frames
+    # (each read once) and merges their factors, so a worker holds one window, not the whole
+    # tile (24 h at 600 x 600: ~6 GB per tile); 0 = whole tile. Shorter sessions are unchanged
+    svd_window: int = 144_000
     # per-pixel noise from this many frames (contiguous 1000-frame segments spread over the
     # session) instead of all of them; 0 = all frames (Minian). Pass 2 27 % faster, but it
     # changes the units (near-black pixels; bench/README.md), so off by default

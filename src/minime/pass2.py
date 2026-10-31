@@ -1,10 +1,11 @@
-"""Pass 2: per-tile streamed rSVD in parallel workers, and assembly of ``Factors``."""
+"""Pass 2: per-tile streamed rSVD (in time windows on long sessions) in parallel workers, and
+assembly of ``Factors``."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from minime.compress import compress_tile
+from minime.compress import compress_tile_windows
 from minime.factors import Factors, TileFactors
 from minime.io import RawInfo
 from minime.params import Params
@@ -15,11 +16,14 @@ from minime.tiles import Tile, TileStore
 def pass2_worker(
     store_root: str, grid: list[Tile], n_parts: int, indices: range, params: Params
 ) -> list[TileFactors]:
-    """Compress the tiles ``indices`` (seed = tile index)."""
+    """Compress the tiles ``indices`` (seed = tile index), in time windows of at most
+    ``params.svd_window`` frames."""
     store = TileStore(Path(store_root), grid, n_parts)
     return [
-        compress_tile(
-            store.read_tile(i),
+        compress_tile_windows(
+            lambda t0, t1, i=i: store.read_frames(i, t0, t1),
+            store.tile_frames(i),
+            params.svd_window,
             k0=params.svd_k0,
             n_iter=params.svd_power_iter,
             rho_min=params.rank_rho_min,
