@@ -33,7 +33,7 @@ import cv2
 import numpy as np
 import scipy.sparse as sps
 
-from minime import init
+from minime import init, traces
 from minime.factors import TIME_CHUNK, Factors
 from minime.params import Params
 from minime.seeds import disk
@@ -360,7 +360,7 @@ def compute_trace(
     fb = np.asarray(fb, dtype=np.float64)
     AA = (A @ A.T).toarray()
     A_norm = 1.0 / np.asarray(A.multiply(A).sum(axis=1)).ravel()
-    YrA = np.empty(C.shape, dtype=np.float32)
+    YrA = traces.empty(C.shape)
     for t0, t1, AY in f.AtY_blocks(A, chunk):  # (K, T) float64 a block of frames at a time
         Cb = C[:, t0:t1].astype(np.float64)
         AY -= np.outer(Ab, fb[t0:t1])
@@ -390,7 +390,7 @@ class CnmfResult:
 
 def _check_finite(stage: str, **arrays: np.ndarray) -> None:
     """Raise ``RuntimeError`` naming ``stage`` if any array holds NaN or inf."""
-    bad = [k for k, v in arrays.items() if not np.isfinite(np.asarray(v)).all()]
+    bad = [k for k, v in arrays.items() if not traces.all_finite(v)]
     if bad:
         raise RuntimeError(f"CNMF {stage}: non-finite values in {', '.join(bad)}")
 
@@ -412,13 +412,15 @@ def run_cnmf(
     counts: dict[str, int] = {}
     b, fb = update_background(fac, A, C, clip=params.background_clip)
     _check_finite("initial background", b=b, f=fb)
-    C_sp = np.asarray(C, dtype=np.float32)
-    YrA = C_sp
+    # YrA: the traces the next spatial update fits (C := YrA after each merge)
+    C_sp = YrA = np.asarray(C, dtype=np.float32)
+    del C
     for it in range(params.n_iter):
         A, mask, nf = update_spatial(
-            fac, A, C, sn, params.dl_wnd, params.sparse_snr, params.size_thres
+            fac, A, YrA, sn, params.dl_wnd, params.sparse_snr, params.size_thres
         )
-        C_sp = (np.asarray(C)[mask] * nf[:, None]).astype(np.float32)
+        C_sp = traces.scaled_rows(YrA, np.flatnonzero(mask), nf)
+        del YrA  # drop the loop's hold on the previous traces before new ones are made
         _check_finite(f"spatial update (iteration {it})", A_data=A.data, C=C_sp)
         counts[f"units_after_spatial_{it}"] = A.shape[0]
         if record is not None:
@@ -437,7 +439,6 @@ def run_cnmf(
             min_dist=params.merge_min_dist,
             shape=(fac.H, fac.W_),
         )
-        C = YrA
         counts[f"units_after_merge_{it}"] = A.shape[0]
         if record is not None:
             record(f"merge_{it}", A)
