@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 import scipy.sparse as sps
 
 from minime import compress, corr, tiles
@@ -28,6 +29,15 @@ def test_lowpass_removes_dc_and_high_band():
     x[1] = np.sin(2 * np.pi * 200 * np.arange(T) / T)
     y = corr.lowpass(x, 0.06)
     assert abs(y).max() < 1e-6
+
+
+@pytest.mark.parametrize(("T", "noise_freq"), [(500, 0.06), (501, 0.06), (40, 0.5), (41, 0.5)])
+def test_passband_coefs_give_the_gram_of_the_lowpassed_columns(T, noise_freq):
+    # odd and even T; noise_freq 0.5 keeps the Nyquist bin of an even T (counted once)
+    V = np.random.default_rng(T).standard_normal((T, 37)).astype(np.float32)
+    F = corr.passband_coefs(V, noise_freq, chunk=8)
+    lp = corr.lowpass(V.T, noise_freq)
+    assert np.allclose((F.conj().T @ F).real, lp @ lp.T, rtol=1e-10, atol=1e-10)
 
 
 def test_pair_correlations_track_noise_free_truth():

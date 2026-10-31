@@ -18,7 +18,8 @@ import scipy.sparse as sps
 
 from minime.tiles import Tile, tile_grid
 
-FORMAT_VERSION = 1
+# 2: each tile's V in its own .npy (memory-mappable); 1: V inside the tile's .npz
+FORMAT_VERSION = 2
 
 
 @dataclass
@@ -208,13 +209,9 @@ class Factors:
         dir.mkdir(parents=True, exist_ok=True)
         for b, tf in enumerate(self.tiles):
             np.savez(
-                dir / f"tile_{b:03d}.npz",
-                W=tf.W,
-                V=tf.V,
-                mean=tf.mean,
-                sigma=tf.sigma,
-                energy=tf.energy,
+                dir / f"tile_{b:03d}.npz", W=tf.W, mean=tf.mean, sigma=tf.sigma, energy=tf.energy
             )
+            np.save(dir / f"tile_{b:03d}.V.npy", tf.V)
         np.save(dir / "max_proj.npy", self.max_proj)
         np.save(dir / "block_max.npy", self.block_max)
         np.save(dir / "block_edges.npy", self.block_edges)
@@ -233,10 +230,13 @@ class Factors:
         (dir / "meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
 
     @classmethod
-    def load(cls, dir: Path) -> Factors:
+    def load(cls, dir: Path, mmap: bool = False) -> Factors:
+        """Factors saved by ``save``; ``mmap``: each tile's ``V`` is a read-only memory map
+        of its file instead of an array in RAM (``V`` is T x rank per tile: 23 GB on a 24 h
+        session). Format 1 (``V`` inside the ``.npz``) is always read into RAM."""
         dir = Path(dir)
         m = json.loads((dir / "meta.json").read_text(encoding="utf-8"))
-        if m["format_version"] != FORMAT_VERSION:
+        if m["format_version"] not in (1, FORMAT_VERSION):
             raise ValueError(f"unsupported factors format {m['format_version']}")
         grid = tile_grid(m["H"], m["W"], m["tile"])
         if len(grid) != m["n_tiles"]:
@@ -244,7 +244,12 @@ class Factors:
         tiles = []
         for b in range(m["n_tiles"]):
             with np.load(dir / f"tile_{b:03d}.npz") as z:
-                tiles.append(TileFactors(z["W"], z["V"], z["mean"], z["sigma"], z["energy"]))
+                V = (
+                    z["V"]
+                    if m["format_version"] == 1
+                    else np.load(dir / f"tile_{b:03d}.V.npy", mmap_mode="r" if mmap else None)
+                )
+                tiles.append(TileFactors(z["W"], V, z["mean"], z["sigma"], z["energy"]))
         return cls(
             m["H"],
             m["W"],
