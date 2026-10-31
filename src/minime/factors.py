@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import warnings
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -43,22 +44,23 @@ class TileFactors:
         return self.V.shape[0]
 
 
-def _tile_yct(tf: TileFactors, Ct: np.ndarray) -> np.ndarray:
-    """``W (V^T Ct)`` of one tile, (P_b, K) float32."""
-    return tf.W @ (tf.V.T @ Ct)
+# frames per block when a product over the whole session (``A Y``, ``Y C^T``) is formed
+# piecewise: a (K, T) float64 array of 1569 units on a 24 h session is 22 GB
+TIME_CHUNK = 65_536
 
 
-def _tile_yct_f64(tf: TileFactors, Ct: np.ndarray, chunk: int = 65536) -> np.ndarray:
-    """``_tile_yct`` in float64, summed over frame chunks (no float64 copy of all of ``Ct``).
+def _tile_vtc(tf: TileFactors, t0: int, t1: int, Ct: np.ndarray) -> np.ndarray:
+    """``V[t0:t1]^T Ct`` of one tile, (r, K) float32."""
+    return tf.V[t0:t1].T @ Ct
 
-    The fallback when the float32 product is not finite: on macOS 26 (M1 Max) Accelerate's
-    float32 products with ~513-575 output columns intermittently returned NaN; a 4 h session
-    failed the spatial update with K = 527 units and passed on rerunning the same input.
+
+def _tile_vtc_f64(tf: TileFactors, t0: int, t1: int, Ct: np.ndarray) -> np.ndarray:
+    """``_tile_vtc`` in float64: the fallback when the float32 product is not finite. On
+    macOS 26 (M1 Max) Accelerate's float32 products with ~513-575 output columns
+    intermittently returned NaN; a 4 h session failed the spatial update with K = 527 units
+    and passed on rerunning the same input.
     """
-    VtC = np.zeros((tf.rank, Ct.shape[1]), dtype=np.float64)
-    for t0 in range(0, Ct.shape[0], chunk):
-        VtC += tf.V[t0 : t0 + chunk].astype(np.float64).T @ Ct[t0 : t0 + chunk].astype(np.float64)
-    return (tf.W.astype(np.float64) @ VtC).astype(np.float32)
+    return tf.V[t0:t1].astype(np.float64).T @ Ct.astype(np.float64)
 
 
 @dataclass
@@ -157,32 +159,72 @@ class Factors:
             out[sel] = tf.W[loc] @ tf.V.T + tf.mean[loc, None]
         return out
 
-    def AtY(self, A: sps.csr_matrix) -> np.ndarray:
-        """``A Y`` for a sparse ``A`` (K, P): (K, T) float64 accumulated tile by tile."""
+    def _aty_parts(self, A: sps.csr_matrix) -> list[tuple[int, np.ndarray, np.ndarray]]:
+        """``(tile, A_b W_b, A_b mean_b)`` of every tile that ``A`` touches."""
         Acsc = sps.csc_matrix(A)
-        out = np.zeros((Acsc.shape[0], self.T), dtype=np.float64)
+        parts = []
         for b, tf in enumerate(self.tiles):
             Ab = Acsc[:, self.tile_rows(b)]
-            if Ab.nnz == 0:
-                continue
-            out += (Ab @ tf.W) @ tf.V.T
-            out += (Ab @ tf.mean.astype(np.float64))[:, None]
+            if Ab.nnz:
+                parts.append((b, Ab @ tf.W, Ab @ tf.mean.astype(np.float64)))
+        return parts
+
+    def _aty(self, parts: list, K: int, t0: int, t1: int) -> np.ndarray:
+        out = np.zeros((K, t1 - t0), dtype=np.float64)
+        for b, AW, Am in parts:
+            out += AW @ self.tiles[b].V[t0:t1].T
+            out += Am[:, None]
         return out
 
-    def YCt(self, Cc: np.ndarray) -> np.ndarray:
-        """``Y Cc^T`` as (P, K) float32; ``Cc`` rows must sum to zero (mean term dropped)."""
-        Ct = np.ascontiguousarray(np.asarray(Cc, dtype=np.float32).T)  # (T, K)
-        out = np.empty((self.P, Ct.shape[1]), dtype=np.float32)
+    def AtY(self, A: sps.csr_matrix, t0: int = 0, t1: int | None = None) -> np.ndarray:
+        """``A Y[:, t0:t1]`` for a sparse ``A`` (K, P): (K, t1 - t0) float64, tile by tile."""
+        return self._aty(self._aty_parts(A), A.shape[0], t0, self.T if t1 is None else t1)
+
+    def AtY_blocks(
+        self, A: sps.csr_matrix, chunk: int = TIME_CHUNK
+    ) -> Iterator[tuple[int, int, np.ndarray]]:
+        """``(t0, t1, A Y[:, t0:t1])`` over the session, ``chunk`` frames at a time: for
+        callers that reduce ``A Y`` block by block instead of holding all of it."""
+        parts = self._aty_parts(A)
+        for t0 in range(0, self.T, chunk):
+            t1 = min(self.T, t0 + chunk)
+            yield t0, t1, self._aty(parts, A.shape[0], t0, t1)
+
+    def YCt(
+        self,
+        C: np.ndarray,
+        center: np.ndarray | None = None,
+        scale: np.ndarray | None = None,
+        chunk: int = TIME_CHUNK,
+    ) -> np.ndarray:
+        """``Y Cc^T`` as (P, K) float32 with ``Cc = (C - center) / scale`` row by row (each
+        default: none). ``Cc`` rows must sum to zero (mean term dropped). ``Cc`` is formed
+        ``chunk`` frames at a time (float32 products, float64 sums), never all of it.
+        """
+        K = C.shape[0]
+        VtC = [np.zeros((tf.rank, K), dtype=np.float64) for tf in self.tiles]
+        for t0 in range(0, self.T, chunk):
+            t1 = min(self.T, t0 + chunk)
+            Cc = np.asarray(C[:, t0:t1], dtype=np.float64)
+            if center is not None:
+                Cc = Cc - np.asarray(center, dtype=np.float64)[:, None]
+            if scale is not None:
+                Cc = Cc / np.asarray(scale, dtype=np.float64)[:, None]
+            Ct = np.ascontiguousarray(Cc.T, dtype=np.float32)  # (t1 - t0, K)
+            for b, tf in enumerate(self.tiles):
+                part = _tile_vtc(tf, t0, t1, Ct)
+                if not np.isfinite(part).all():
+                    warnings.warn(
+                        f"YCt: float32 product of tile {b} (frames {t0}:{t1}) is not finite; "
+                        "recomputed in float64",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    part = _tile_vtc_f64(tf, t0, t1, Ct)
+                VtC[b] += part
+        out = np.empty((self.P, K), dtype=np.float32)
         for b, tf in enumerate(self.tiles):
-            part = _tile_yct(tf, Ct)
-            if not np.isfinite(part).all():
-                warnings.warn(
-                    f"YCt: float32 product of tile {b} is not finite; recomputed in float64",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-                part = _tile_yct_f64(tf, Ct)
-            out[self.tile_rows(b)] = part
+            out[self.tile_rows(b)] = tf.W.astype(np.float64) @ VtC[b]
         return out
 
     # ---- per-pixel statistics ---------------------------------------------------

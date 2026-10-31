@@ -78,6 +78,24 @@ def test_window_is_clipped_disk_and_matches_pairs():
     np.testing.assert_allclose(cw, fc.pairs(np.full(idx.size, seed), idx))
 
 
+def test_traces_corr_is_the_pearson_correlation_of_the_lowpassed_rows():
+    T = 1000
+    fc = corr.FactorCorr(_session(T=T)[3], 0.06)
+    rng = np.random.default_rng(1)
+    C = rng.standard_normal((6, T)).cumsum(1)
+    C[3] = 2.0  # flat: correlation 0 with the others, 1 with itself
+    lp = corr.lowpass(C, 0.06)
+    lp -= lp.mean(1, keepdims=True)
+    nrm = np.sqrt((lp**2).sum(1))
+    Z = np.where(nrm[:, None] > 1e-9, lp / np.where(nrm > 1e-9, nrm, 1)[:, None], 0)
+    ref = Z @ Z.T
+    np.fill_diagonal(ref, 1.0)
+    R = fc.traces_corr(C)
+    keep = np.r_[0:3, 4:6]
+    assert np.allclose(R[np.ix_(keep, keep)], ref[np.ix_(keep, keep)], atol=1e-10)
+    assert R[3, 3] == 1.0
+
+
 def test_traces_corr_and_merge_labels():
     rng = np.random.default_rng(0)
     T = 600
