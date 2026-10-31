@@ -282,3 +282,28 @@ def test_run_cnmf_raises_on_non_finite_stage_output(monkeypatch, target, stage):
     p = Params(dl_wnd=5, size_thres=(9, None), n_iter=2)
     with pytest.raises(RuntimeError, match=stage):
         cnmf.run_cnmf(f, A, C, p, fc.traces_corr)
+
+
+def test_time_blocks_do_not_change_the_k_by_t_steps():
+    # every (K, T) step runs block by block over time on long sessions; 37-frame blocks
+    # (not a divisor of T) give the one-block result
+    f, fc, A, C = _setup()
+    Cs = C[np.argsort(-C.std(1))]
+    assert np.allclose(init.initC(f, A, chunk=37), C, rtol=1e-5, atol=1e-4 * abs(C).max())
+    AY = np.concatenate([B for _, _, B in f.AtY_blocks(A, 37)], axis=1)
+    assert np.allclose(AY, f.AtY(A), rtol=1e-6)  # float32 A: float32 products
+    mean, scale, G = cnmf.centred_gram(C, chunk=37)
+    Cc = (C.astype(np.float64) - C.mean(1, keepdims=True)) / cnmf.column_norms(
+        C.astype(np.float64) - C.mean(1, keepdims=True)
+    )[:, None]
+    assert np.allclose(G, Cc @ Cc.T, atol=1e-10) and np.allclose(scale * 0 + mean, C.mean(1))
+    YC = f.YCt(C, center=mean, scale=scale, chunk=37)
+    assert np.allclose(YC, f.YCt(Cc), rtol=1e-4, atol=1e-4 * abs(YC).max())
+    b, fb = cnmf.update_background(f, A, C, clip=False)
+    b2, fb2 = cnmf._background_unclipped(f, A, C, None, chunk=37)
+    assert np.allclose(b2, b) and np.allclose(fb2, fb, rtol=1e-6)
+    ref = cnmf.compute_trace(f, A, b, C, fb)
+    got = cnmf.compute_trace(f, A, b, C, fb, chunk=37)
+    assert np.allclose(got, ref, rtol=1e-5, atol=1e-5 * abs(ref).max())
+    M = sps.random(3, C.shape[0], density=0.5, format="csr", random_state=0)
+    assert np.allclose(init.mean_rows(M, Cs, chunk=37), M @ Cs, rtol=1e-6)

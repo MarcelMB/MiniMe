@@ -283,9 +283,11 @@ def test_yct_recomputes_a_non_finite_float32_tile_in_float64(monkeypatch):
     ref = f.YCt(Cc)
     # the float32 product of one tile turns non-finite (Accelerate, macOS 26): that tile is
     # redone in float64 with a warning instead of NaN reaching the spatial update
-    true_part = fm._tile_yct
+    true_part = fm._tile_vtc
     monkeypatch.setattr(
-        fm, "_tile_yct", lambda tf, Ct: true_part(tf, Ct) * (np.nan if tf is f.tiles[2] else 1)
+        fm,
+        "_tile_vtc",
+        lambda tf, t0, t1, Ct: true_part(tf, t0, t1, Ct) * (np.nan if tf is f.tiles[2] else 1),
     )
     with pytest.warns(RuntimeWarning, match="tile 2"):
         got = f.YCt(Cc)

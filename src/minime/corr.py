@@ -141,14 +141,19 @@ class FactorCorr:
         return idx, self.pairs(np.full(idx.size, int(seed), dtype=np.int64), idx)
 
     def traces_corr(self, C: np.ndarray) -> np.ndarray:
-        """(K, K) Pearson correlation of the low-passed rows of ``C``; 0 for flat rows."""
-        Clp = lowpass(np.atleast_2d(C), self.noise_freq)
-        Clp -= Clp.mean(axis=1, keepdims=True)
-        nrm = np.sqrt((Clp**2).sum(axis=1))
-        good = nrm > 0
-        Z = np.zeros_like(Clp)
-        Z[good] = Clp[good] / nrm[good, None]
-        R = np.clip(Z @ Z.T, -1.0, 1.0)
+        """(K, K) Pearson correlation of the low-passed rows of ``C``; 0 for flat rows.
+
+        On the passband Fourier coefficients (the low-passed rows have mean 0, as ``lowpass``
+        drops the DC bin): 2 x noise_freq of the memory of the low-passed rows, which are
+        K x T float64 (22 GB for 1569 units on a 24 h session).
+        """
+        F = passband_coefs(np.atleast_2d(C).T, self.noise_freq)
+        G = (F.conj().T @ F).real
+        d = np.diag(G).copy()
+        good = d > 0
+        nrm = np.sqrt(np.where(good, d, 1.0))
+        R = np.where(np.outer(good, good), G / np.outer(nrm, nrm), 0.0)
+        R = np.clip(R, -1.0, 1.0)
         np.fill_diagonal(R, 1.0)
         return R
 

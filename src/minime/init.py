@@ -18,7 +18,7 @@ from scipy.linalg import LinAlgError, cho_factor, cho_solve
 from scipy.spatial.distance import cdist
 
 from minime.corr import FactorCorr, merge_labels
-from minime.factors import Factors
+from minime.factors import TIME_CHUNK, Factors
 
 COND_MAX = 1e12  # above this, G is treated as rank-deficient and pinv is used
 PINV_RCOND = 1e-12  # relative cutoff on eigenvalues of G (~1e-6 on singular values of A)
@@ -78,25 +78,45 @@ def centroids(A: sps.csr_matrix, H: int, W: int) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def _solve_normal(G: np.ndarray, B: np.ndarray) -> np.ndarray:
-    """``G X = B`` by Cholesky; ``pinv(G) @ B`` when ``G`` is ill-conditioned or singular."""
+def _normal_solver(G: np.ndarray) -> Callable[[np.ndarray], np.ndarray]:
+    """``B -> X`` with ``G X = B``: Cholesky, or ``pinv(G) @ B`` when ``G`` is ill-conditioned
+    or singular. ``G`` is factorised once for all the blocks of ``B``."""
     if np.linalg.cond(G) <= COND_MAX:
         try:
             cf = cho_factor(G, lower=True, check_finite=False)
         except LinAlgError:
             pass
         else:
-            return cho_solve(cf, B, check_finite=False)
-    return np.linalg.pinv(G, rcond=PINV_RCOND, hermitian=True) @ B
+            return lambda B: cho_solve(cf, B, check_finite=False)
+    P = np.linalg.pinv(G, rcond=PINV_RCOND, hermitian=True)
+    return lambda B: P @ B
 
 
-def initC(f: Factors, A: sps.csr_matrix) -> np.ndarray:
-    """(K, T) float32 least-squares traces of footprints ``A`` (K, P), no sign constraint."""
+def initC(f: Factors, A: sps.csr_matrix, chunk: int = TIME_CHUNK) -> np.ndarray:
+    """(K, T) float32 least-squares traces of footprints ``A`` (K, P), no sign constraint.
+
+    Solved block by block over time (``Factors.AtY_blocks``): only the float32 result is held
+    for all frames.
+    """
     A = sps.csr_matrix(A)
     A64 = A.astype(np.float64)
     G = (A64 @ A64.T).toarray()
-    G = 0.5 * (G + G.T)
-    return _solve_normal(G, f.AtY(A)).astype(np.float32)
+    solve = _normal_solver(0.5 * (G + G.T))
+    C = np.empty((A.shape[0], f.T), dtype=np.float32)
+    for t0, t1, B in f.AtY_blocks(A, chunk):
+        C[:, t0:t1] = solve(B)
+    return C
+
+
+def mean_rows(M: sps.spmatrix, X: np.ndarray, chunk: int = TIME_CHUNK) -> np.ndarray:
+    """``M @ X`` in the dtype of ``X``, ``chunk`` columns at a time (a float64 ``M`` would
+    otherwise make a float64 copy of all of a (K, T) ``X``)."""
+    if X.ndim != 2:
+        return np.asarray(M @ X).astype(X.dtype, copy=False)
+    out = np.empty((M.shape[0], X.shape[1]), dtype=X.dtype)
+    for t0 in range(0, X.shape[1], chunk):
+        out[:, t0 : t0 + chunk] = M @ X[:, t0 : t0 + chunk]
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +171,6 @@ def unit_merge(
     labels = merge_labels(sps.csr_matrix(adj))
     M = _group_mean_matrix(labels)
     A2 = sps.csr_matrix(M @ A, dtype=A.dtype)
-    C2 = np.asarray(M @ C).astype(C.dtype, copy=False)
-    extra2 = [np.asarray(M @ e).astype(e.dtype, copy=False) for e in (extra or [])]
+    C2 = mean_rows(M, np.asarray(C))
+    extra2 = [mean_rows(M, np.asarray(e)) for e in (extra or [])]
     return A2, C2, extra2
