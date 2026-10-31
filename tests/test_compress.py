@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 import scipy.sparse as sps
 
 from minime import compress, pass2, tiles
@@ -236,3 +237,30 @@ def test_energy_one_pass_matches_centred_sum():
     X = raw.reshape(len(raw), -1).astype(np.float64)
     assert np.allclose(Y.energy, ((X - X.mean(0)) ** 2).sum(0), rtol=1e-9)
     assert np.allclose(Y.mean, X.mean(0), rtol=1e-6)
+
+
+def test_yct_recomputes_a_non_finite_float32_tile_in_float64(monkeypatch):
+    H = W = 32
+    T = 200
+    grid = tiles.tile_grid(H, W, 16)
+    movie = synth.synth_movie(H, W, T, 1)
+    tf = [
+        compress.compress_tile(np.ascontiguousarray(movie[:, t.y0 : t.y1, t.x0 : t.x1]), k0=8)
+        for t in grid
+    ]
+    f = fm.Factors(
+        H, W, T, grid, tf, movie.max(0), movie[:100].max(0)[None], np.array([0, 100, 200]), {}
+    )
+    C = np.random.default_rng(0).standard_normal((5, T)).astype(np.float32)
+    Cc = C - C.mean(1, keepdims=True)
+    ref = f.YCt(Cc)
+    # the float32 product of one tile turns non-finite (Accelerate, macOS 26): that tile is
+    # redone in float64 with a warning instead of NaN reaching the spatial update
+    true_part = fm._tile_yct
+    monkeypatch.setattr(
+        fm, "_tile_yct", lambda tf, Ct: true_part(tf, Ct) * (np.nan if tf is f.tiles[2] else 1)
+    )
+    with pytest.warns(RuntimeWarning, match="tile 2"):
+        got = f.YCt(Cc)
+    assert np.isfinite(got).all()
+    assert np.allclose(got, ref, rtol=1e-4, atol=1e-3)
