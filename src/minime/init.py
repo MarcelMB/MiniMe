@@ -17,6 +17,7 @@ import scipy.sparse as sps
 from scipy.linalg import LinAlgError, cho_factor, cho_solve
 from scipy.spatial.distance import cdist
 
+from minime import traces
 from minime.corr import FactorCorr, merge_labels
 from minime.factors import TIME_CHUNK, Factors
 
@@ -96,13 +97,13 @@ def initC(f: Factors, A: sps.csr_matrix, chunk: int = TIME_CHUNK) -> np.ndarray:
     """(K, T) float32 least-squares traces of footprints ``A`` (K, P), no sign constraint.
 
     Solved block by block over time (``Factors.AtY_blocks``): only the float32 result is held
-    for all frames.
+    for all frames (on disk when large, ``traces.empty``).
     """
     A = sps.csr_matrix(A)
     A64 = A.astype(np.float64)
     G = (A64 @ A64.T).toarray()
     solve = _normal_solver(0.5 * (G + G.T))
-    C = np.empty((A.shape[0], f.T), dtype=np.float32)
+    C = traces.empty((A.shape[0], f.T))
     for t0, t1, B in f.AtY_blocks(A, chunk):
         C[:, t0:t1] = solve(B)
     return C
@@ -113,7 +114,7 @@ def mean_rows(M: sps.spmatrix, X: np.ndarray, chunk: int = TIME_CHUNK) -> np.nda
     otherwise make a float64 copy of all of a (K, T) ``X``)."""
     if X.ndim != 2:
         return np.asarray(M @ X).astype(X.dtype, copy=False)
-    out = np.empty((M.shape[0], X.shape[1]), dtype=X.dtype)
+    out = traces.empty((M.shape[0], X.shape[1]), X.dtype)
     for t0 in range(0, X.shape[1], chunk):
         out[:, t0 : t0 + chunk] = M @ X[:, t0 : t0 + chunk]
     return out
