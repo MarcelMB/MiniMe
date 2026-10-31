@@ -164,6 +164,33 @@ def test_run_pass2_parallel_matches_serial_and_builds_factors(tmp_path):
     assert back.meta["pass1_seconds"] == {"denoise": 1.0} and len(back.tiles) == 4
 
 
+def test_factors_load_memory_maps_v_and_reads_format_1(tmp_path):
+    H = W = 32
+    T = 200
+    grid = tiles.tile_grid(H, W, 16)
+    movie = synth.synth_movie(H, W, T, 1)
+    tf = [
+        compress.compress_tile(np.ascontiguousarray(movie[:, t.y0 : t.y1, t.x0 : t.x1]), k0=8)
+        for t in grid
+    ]
+    f = fm.Factors(H, W, T, grid, tf, movie.max(0), movie.max(0)[None], np.array([0, T]), {})
+    f.save(tmp_path / "factors")
+    g = fm.Factors.load(tmp_path / "factors", mmap=True)
+    assert all(isinstance(t.V, np.memmap) for t in g.tiles)
+    assert all(np.array_equal(a.V, b.V) for a, b in zip(g.tiles, tf, strict=True))
+    A = sps.random(5, H * W, density=0.05, format="csr", random_state=0, dtype=np.float32)
+    assert np.array_equal(g.AtY(A), f.AtY(A))
+    # format 1: V inside each tile's .npz
+    d = tmp_path / "factors"
+    for b, t in enumerate(tf):
+        np.savez(d / f"tile_{b:03d}.npz", W=t.W, V=t.V, mean=t.mean, sigma=t.sigma, energy=t.energy)
+        (d / f"tile_{b:03d}.V.npy").unlink()
+    meta = json.loads((d / "meta.json").read_text())
+    (d / "meta.json").write_text(json.dumps({**meta, "format_version": 1}))
+    old = fm.Factors.load(d, mmap=True)
+    assert all(np.array_equal(a.V, b.V) for a, b in zip(old.tiles, tf, strict=True))
+
+
 def _truth_metrics(Y_truth, S, grid, tfs):
     """Spec section 7 metrics (prototype ``bench_opt._truth_group``), dense.
 

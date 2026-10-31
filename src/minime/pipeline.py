@@ -407,6 +407,10 @@ def run(
         fac = pass2.build_factors(info, grid, p1, tiles, params)
         with timer("factors_save"):
             fac.save(out / "factors")
+        # the later stages read V from its file, not from RAM: V is T x rank per tile (8 GB on
+        # an 8 h session, 23 GB on 24 h), more than the RAM left next to CNMF on a 32 GB Mac
+        del tiles
+        fac = Factors.load(out / "factors", mmap=True)
         store_peak = store.nbytes()
     finally:  # a failed run must not leave a raw-sized tile store behind
         if not keep_store:

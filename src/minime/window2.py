@@ -59,7 +59,7 @@ LINKED = ("factors", "motion")
 
 
 def load_factors(run_dir: Path) -> Factors:
-    return Factors.load(Path(run_dir) / "factors")
+    return Factors.load(Path(run_dir) / "factors", mmap=True)
 
 
 def run_params(run_dir: Path, override: Path | None = None) -> Params:
