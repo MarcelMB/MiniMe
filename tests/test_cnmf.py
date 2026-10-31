@@ -7,7 +7,7 @@ import pytest
 import scipy.sparse as sps
 from numba import njit, prange
 
-from minime import cnmf, compress, corr, init, tiles
+from minime import cnmf, compress, corr, init, tiles, traces
 from minime import factors as fm
 from minime.params import Params
 from minime.testing import synth
@@ -307,3 +307,23 @@ def test_time_blocks_do_not_change_the_k_by_t_steps():
     assert np.allclose(got, ref, rtol=1e-5, atol=1e-5 * abs(ref).max())
     M = sps.random(3, C.shape[0], density=0.5, format="csr", random_state=0)
     assert np.allclose(init.mean_rows(M, Cs, chunk=37), M @ Cs, rtol=1e-6)
+
+
+def test_traces_on_disk_give_the_same_units(tmp_path, monkeypatch):
+    # long sessions keep the (K, T) traces in temporary memory-mapped files: same results
+    p = Params(dl_wnd=5, size_thres=(9, None), n_iter=2)
+
+    def window2():
+        f, fc, A, C = _setup()
+        A, C, _ = init.unit_merge(A, C, fc.traces_corr, 0.8)
+        return C, cnmf.run_cnmf(f, A, C, p, fc.traces_corr)
+
+    C_ram, ram = window2()
+    monkeypatch.setattr(traces, "RAM_FRACTION", 0.0)
+    with traces.spill_to(tmp_path):
+        C_disk, disk = window2()
+    assert isinstance(C_disk, np.memmap) and isinstance(disk.YrA, np.memmap)
+    assert np.array_equal(C_disk, C_ram)
+    assert (disk.A != ram.A).nnz == 0
+    assert np.array_equal(disk.C, ram.C) and np.array_equal(disk.YrA, ram.YrA)
+    assert np.array_equal(disk.f, ram.f) and disk.counts == ram.counts

@@ -23,7 +23,7 @@ from typing import Any
 import scipy.sparse as sps
 
 import minime
-from minime import corr, io, pipeline, seeds
+from minime import corr, io, pipeline, seeds, traces
 from minime.factors import Factors
 from minime.params import Params
 from minime.report import StageTimer
@@ -198,7 +198,8 @@ class Window2Session:
         timer.attach_progress(out / "progress.jsonl")  # the serve job runner follows it
         try:
             fc = self.factor_corr(params.noise_freq, timer)
-            w2 = pipeline.run_window2(self.fac, params, timer, fc)
+            with traces.spill_to(out):  # large (units, frames) arrays as temporary files
+                w2 = pipeline.run_window2(self.fac, params, timer, fc)
             with timer("write_outputs"):
                 pipeline._write_cnmf(out / "cnmf", w2.cnmf, self.fac.H, self.fac.W_)
                 _write_stages(out / "stages", w2)
