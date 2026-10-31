@@ -168,3 +168,26 @@ def test_probe_falls_back_to_bgr_when_raw_decode_fails(tmp_path):
     assert info.bgr is True and info.frames == 20 and (info.height, info.width) == (32, 32)
     got = io.read_avi(avi, bgr=True).astype(int)
     assert np.abs(got - ref.reshape(20, 32, 32)).max() <= 1
+
+
+def test_store_reads_frame_ranges_across_parts(tmp_path):
+    grid = tiles.tile_grid(70, 100, tile=32)
+    rng = np.random.default_rng(1)
+    parts = [
+        rng.integers(0, 255, (7, 70, 100), dtype=np.uint8),
+        rng.integers(0, 255, (5, 70, 100), dtype=np.uint8),
+    ]
+    store = tiles.TileStore(tmp_path / "tiles", grid, n_parts=2)
+    for p, frames in enumerate(parts):
+        packed = tiles.pack_tiles(frames, grid)
+        for f, (a, b) in zip(
+            store.open_part(p), tiles.tile_offsets(frames.shape[0], grid), strict=True
+        ):
+            with f:
+                f.write(memoryview(packed[a:b]))
+    full = np.concatenate(parts)
+    for t in grid:
+        assert store.tile_frames(t.index) == 12
+        for a, b in [(0, 12), (0, 3), (5, 9), (7, 12), (6, 8), (11, 12)]:
+            got = store.read_frames(t.index, a, b)
+            assert np.array_equal(got, full[a:b, t.y0 : t.y1, t.x0 : t.x1])

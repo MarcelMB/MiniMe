@@ -264,3 +264,69 @@ def test_yct_recomputes_a_non_finite_float32_tile_in_float64(monkeypatch):
         got = f.YCt(Cc)
     assert np.isfinite(got).all()
     assert np.allclose(got, ref, rtol=1e-4, atol=1e-3)
+
+
+def _windows(raw, window, **kw):
+    return compress.compress_tile_windows(lambda a, b: raw[a:b], raw.shape[0], window, **kw)
+
+
+def test_compress_tile_windows_one_window_is_compress_tile():
+    raw = _tile_movie(T=300)
+    a = compress.compress_tile(raw, k0=8, seed=5)
+    for window in (0, 300, 1000):
+        b = _windows(raw, window, k0=8, seed=5)
+        for name in ("W", "V", "mean", "sigma", "energy"):
+            assert np.array_equal(getattr(a, name), getattr(b, name))
+
+
+def test_compress_tile_windows_merges_to_the_whole_tile_result():
+    raw = _tile_movie(T=900, seed=7)
+    T = raw.shape[0]
+    whole = compress.compress_tile(raw, k0=8, seed=0)
+    win = _windows(raw, 300, k0=8, seed=0)  # 3 windows
+    Y = raw.reshape(T, -1).T.astype(np.float64)
+    m = Y.mean(1, keepdims=True)
+    assert np.allclose(win.mean, m.ravel(), rtol=1e-6, atol=1e-5)
+    assert np.allclose(win.energy, ((Y - m) ** 2).sum(1), rtol=1e-6)
+    assert win.W.dtype == win.V.dtype == win.mean.dtype == win.sigma.dtype == np.float32
+    assert np.allclose(win.V.T @ win.V, np.eye(win.rank), atol=1e-3)
+    norm = np.linalg.norm(Y - m)
+
+    def err(tf):
+        return np.linalg.norm(Y - m - tf.W @ tf.V.T) / norm
+
+    assert err(win) < err(whole) + 0.02
+    # every kept component passes the same cut at length T, on time courses with noise
+    assert compress.lag1_autocorr(win.V.T).min() > max(4 / np.sqrt(T), 0.2)
+    assert win.rank <= 2 * whole.rank  # moving synthetic movie; real V4 tiles: +15 %
+    assert np.allclose(win.sigma, whole.sigma, rtol=0.1)
+
+
+def test_run_pass2_windows_long_tiles(tmp_path):
+    H = W = 32
+    T = 300
+    grid = tiles.tile_grid(H, W, 16)
+    movie = synth.synth_movie(H, W, T, 4)
+    store = tiles.TileStore(tmp_path / "s", grid, n_parts=2)
+    for p, (a0, b0) in enumerate([(0, 170), (170, T)]):
+        packed = tiles.pack_tiles(movie[a0:b0], grid)
+        for f, (a, b) in zip(store.open_part(p), tiles.tile_offsets(b0 - a0, grid), strict=True):
+            with f:
+                f.write(memoryview(packed[a:b]))
+    whole = pass2.run_pass2(store, grid, Params(svd_k0=6, tile=16, svd_window=0), workers=1)
+    win = pass2.run_pass2(store, grid, Params(svd_k0=6, tile=16, svd_window=100), workers=2)
+    for a, b, t in zip(whole, win, grid, strict=True):
+        Y = movie[:, t.y0 : t.y1, t.x0 : t.x1].reshape(T, -1).T.astype(np.float64)
+        Yc = Y - Y.mean(1, keepdims=True)
+        ea = np.linalg.norm(Yc - a.W @ a.V.T) / np.linalg.norm(Yc)
+        eb = np.linalg.norm(Yc - b.W @ b.V.T) / np.linalg.norm(Yc)
+        assert eb < ea + 0.03 and b.V.shape[0] == T
+
+
+def test_lag1_from_products_matches_the_formed_time_courses():
+    rng = np.random.default_rng(0)
+    P = np.cumsum(rng.standard_normal((500, 6)), axis=0) + rng.standard_normal((500, 6))
+    C = rng.standard_normal((6, 4))
+    G, G1 = P.T @ P, P[1:].T @ P[:-1]
+    rho = compress._lag1_from_products(C, G, G1, P.sum(0), P[0], P[-1], 500)
+    assert np.allclose(rho, compress.lag1_autocorr((P @ C).T), atol=1e-10)

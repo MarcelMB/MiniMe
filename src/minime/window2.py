@@ -43,6 +43,7 @@ FACTOR_PARAMS = (
     "svd_power_iter",
     "rank_rho_min",
     "rank_z",
+    "svd_window",
     "noise_frames",
     "noise_freq",  # also sets pass 2's per-pixel noise (spatial penalty, PNR)
 )
