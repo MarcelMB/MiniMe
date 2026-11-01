@@ -162,6 +162,16 @@ def test_run_pass2_parallel_matches_serial_and_builds_factors(tmp_path):
     expected = json.loads(json.dumps(p.asdict()))  # tuples become lists in JSON
     assert back.meta["params"] == expected and back.meta["params"]["size_thres"] == [25, None]
     assert back.meta["pass1_seconds"] == {"denoise": 1.0} and len(back.tiles) == 4
+    # workers that save each tile themselves: same factors, V read from its file
+    disk = pass2.run_pass2(store, grid, p, workers=2, out_dir=tmp_path / "f2")
+    assert all(isinstance(tf.V, np.memmap) for tf in disk)
+    for a, b in zip(two, disk, strict=True):
+        assert np.array_equal(a.W, b.W) and np.array_equal(a.V, b.V)
+        assert np.array_equal(a.sigma, b.sigma) and np.array_equal(a.energy, b.energy)
+    pass2.build_factors(info, grid, p1, disk, p).save_meta(tmp_path / "f2")
+    back2 = fm.Factors.load(tmp_path / "f2", mmap=True)
+    assert [tf.rank for tf in back2.tiles] == [tf.rank for tf in two]
+    assert np.array_equal(back2.tiles[3].V, two[3].V)
 
 
 def test_factors_load_memory_maps_v_and_reads_format_1(tmp_path):
