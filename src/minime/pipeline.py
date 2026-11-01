@@ -402,15 +402,14 @@ def run(
             )
         with timer("sidecar_save"):
             _save_sidecar(out, p1, template_img, params, raw_hash, workers)
+        # the workers save each tile and every later stage reads V from its file, not from
+        # RAM: V is T x rank per tile (8 GB on an 8 h session, 23 GB on 24 h), more than the
+        # RAM left next to pass 2 or CNMF on a 32 GB Mac
         with timer("pass2"):
-            tiles = pass2.run_pass2(store, grid, params, workers)
+            tiles = pass2.run_pass2(store, grid, params, workers, out / "factors")
         fac = pass2.build_factors(info, grid, p1, tiles, params)
         with timer("factors_save"):
-            fac.save(out / "factors")
-        # the later stages read V from its file, not from RAM: V is T x rank per tile (8 GB on
-        # an 8 h session, 23 GB on 24 h), more than the RAM left next to CNMF on a 32 GB Mac
-        del tiles
-        fac = Factors.load(out / "factors", mmap=True)
+            fac.save_meta(out / "factors")
         store_peak = store.nbytes()
     finally:  # a failed run must not leave a raw-sized tile store behind
         if not keep_store:

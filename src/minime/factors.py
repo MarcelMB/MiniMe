@@ -247,13 +247,14 @@ class Factors:
     # ---- disk -------------------------------------------------------------------
 
     def save(self, dir: Path) -> None:
+        for b, tf in enumerate(self.tiles):
+            save_tile(dir, b, tf)
+        self.save_meta(dir)
+
+    def save_meta(self, dir: Path) -> None:
+        """Everything ``save`` writes except the tiles (pass 2 writes those itself)."""
         dir = Path(dir)
         dir.mkdir(parents=True, exist_ok=True)
-        for b, tf in enumerate(self.tiles):
-            np.savez(
-                dir / f"tile_{b:03d}.npz", W=tf.W, mean=tf.mean, sigma=tf.sigma, energy=tf.energy
-            )
-            np.save(dir / f"tile_{b:03d}.V.npy", tf.V)
         np.save(dir / "max_proj.npy", self.max_proj)
         np.save(dir / "block_max.npy", self.block_max)
         np.save(dir / "block_edges.npy", self.block_edges)
@@ -283,15 +284,7 @@ class Factors:
         grid = tile_grid(m["H"], m["W"], m["tile"])
         if len(grid) != m["n_tiles"]:
             raise ValueError(f"grid has {len(grid)} tiles, meta.json says {m['n_tiles']}")
-        tiles = []
-        for b in range(m["n_tiles"]):
-            with np.load(dir / f"tile_{b:03d}.npz") as z:
-                V = (
-                    z["V"]
-                    if m["format_version"] == 1
-                    else np.load(dir / f"tile_{b:03d}.V.npy", mmap_mode="r" if mmap else None)
-                )
-                tiles.append(TileFactors(z["W"], V, z["mean"], z["sigma"], z["energy"]))
+        tiles = [load_tile(dir, b, mmap, m["format_version"]) for b in range(m["n_tiles"])]
         return cls(
             m["H"],
             m["W"],
@@ -303,3 +296,26 @@ class Factors:
             np.load(dir / "block_edges.npy"),
             m["meta"],
         )
+
+
+def save_tile(dir: Path, b: int, tf: TileFactors) -> None:
+    """Tile ``b`` in format 2: ``tile_NNN.npz`` (W, mean, sigma, energy) and ``tile_NNN.V.npy``."""
+    dir = Path(dir)
+    dir.mkdir(parents=True, exist_ok=True)
+    np.savez(dir / f"tile_{b:03d}.npz", W=tf.W, mean=tf.mean, sigma=tf.sigma, energy=tf.energy)
+    np.save(dir / f"tile_{b:03d}.V.npy", tf.V)
+
+
+def load_tile(
+    dir: Path, b: int, mmap: bool = False, format_version: int = FORMAT_VERSION
+) -> TileFactors:
+    """Tile ``b`` as ``save_tile`` (format 2) or format 1 wrote it; ``mmap``: ``V`` is a
+    read-only memory map of its file (format 2 only)."""
+    dir = Path(dir)
+    with np.load(dir / f"tile_{b:03d}.npz") as z:
+        V = (
+            z["V"]
+            if format_version == 1
+            else np.load(dir / f"tile_{b:03d}.V.npy", mmap_mode="r" if mmap else None)
+        )
+        return TileFactors(z["W"], V, z["mean"], z["sigma"], z["energy"])
