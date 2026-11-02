@@ -369,3 +369,12 @@ def test_lag1_from_products_matches_the_formed_time_courses():
     G, G1 = P.T @ P, P[1:].T @ P[:-1]
     rho = compress._lag1_from_products(C, G, G1, P.sum(0), P[0], P[-1], 500)
     assert np.allclose(rho, compress.lag1_autocorr((P @ C).T), atol=1e-10)
+
+
+def test_check_device_without_a_gpu_explains_the_install(monkeypatch):
+    from minime import gpu
+
+    monkeypatch.setattr(gpu, "available", lambda: False)
+    with pytest.raises(RuntimeError, match="minime-cnmf\\[gpu\\]"):
+        gpu.check_device("gpu")
+    gpu.check_device("cpu")

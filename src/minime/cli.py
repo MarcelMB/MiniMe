@@ -40,6 +40,13 @@ def run(
     ],
     params: Annotated[Path | None, typer.Option(help="Params JSON (default: built-in).")] = None,
     workers: Annotated[int | None, typer.Option(help="Worker processes (default: params).")] = None,
+    device: Annotated[
+        str,
+        typer.Option(
+            help="cpu, or gpu: run the pass-2 SVD products on the GPU through wgpu "
+            "(uv pip install 'minime-cnmf[gpu]')."
+        ),
+    ] = "cpu",
     name: Annotated[str, typer.Option(help="Run name under ../processed/.")] = "minime",
     keep_store: Annotated[bool, typer.Option(help="Keep the temporary tile store.")] = False,
     overwrite: Annotated[
@@ -56,9 +63,13 @@ def run(
     """Run the pipeline on RAW_DIR; outputs go to RAW_DIR/../processed/NAME/."""
     import json
 
-    from minime import io, pipeline
+    from minime import gpu, io, pipeline
     from minime.params import Params
 
+    try:
+        gpu.check_device(device)
+    except (ValueError, RuntimeError) as e:
+        raise typer.BadParameter(str(e), param_hint="--device") from None
     out = pipeline.out_dir_for(raw_dir, name)
     if not overwrite and out.is_dir() and any(out.iterdir()):
         typer.echo(
@@ -77,7 +88,9 @@ def run(
     ):
         typer.echo(line)
     prm = Params.from_json(params) if params is not None else Params()
-    out = pipeline.run(raw_dir, prm, run_name=name, keep_store=keep_store, workers=workers, fps=fps)
+    out = pipeline.run(
+        raw_dir, prm, run_name=name, keep_store=keep_store, workers=workers, fps=fps, device=device
+    )
     counts = json.loads((out / "report.json").read_text(encoding="utf-8"))["counts"]
     typer.echo(str(out))
     typer.echo(json.dumps(counts, indent=1))

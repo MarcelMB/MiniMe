@@ -39,6 +39,15 @@ def gemm_blas(A: np.ndarray, B: np.ndarray, trans_a: bool = False) -> np.ndarray
     return sblas.sgemm(1.0, A, B, trans_a=trans_a)
 
 
+def tile_matrix(raw: np.ndarray, chunk: int = SVD_CHUNK, device: str = "cpu") -> TileMatrix:
+    """``TileMatrix`` of ``raw``; ``device="gpu"`` runs its products on the GPU (``minime.gpu``)."""
+    if device == "gpu":
+        from minime.gpu import WgpuTileMatrix
+
+        return WgpuTileMatrix(raw, chunk)
+    return TileMatrix(raw, chunk)
+
+
 class TileMatrix:
     """``Y`` (P x T, mean removed) of one tile, held as (T, P) uint8, used in float chunks."""
 
@@ -187,14 +196,17 @@ def compress_tile(
     chunk: int = SVD_CHUNK,
     noise_freq: float = 0.06,
     noise_frames: int = 0,
+    device: str = "cpu",
 ) -> TileFactors:
     """(T, th, tw) uint8 -> ``TileFactors``.
+
+    ``device="gpu"``: the products of the randomized SVD run on the GPU (``minime.gpu``).
 
     Start at rank ``k0``; while any of the last ``ADAPT_MARGIN`` components still passes
     the autocorrelation cut, double k (up to ``min(MAX_RANK, P - 1, T - 1)``) and redo.
     If no component passes, keep component 0 only.
     """
-    Y = TileMatrix(raw, chunk)
+    Y = tile_matrix(raw, chunk, device)
     sigma = Y.noise(noise_freq, noise_frames)
     rng = np.random.default_rng(seed)
     U, s, Vt, keep = _adaptive_rsvd(Y, k0, n_iter, rho_min, z, rng)
@@ -251,6 +263,7 @@ def compress_tile_windows(
     chunk: int = SVD_CHUNK,
     noise_freq: float = 0.06,
     noise_frames: int = 0,
+    device: str = "cpu",
 ) -> TileFactors:
     """``compress_tile`` of a tile whose ``T`` frames come from ``read(t0, t1)`` -> (n, th, tw)
     uint8, holding at most ``window`` frames at a time (``window <= 0``: the whole tile).
@@ -272,14 +285,14 @@ def compress_tile_windows(
     """
     if window <= 0 or window >= T:
         return compress_tile(
-            read(0, T), k0, n_iter, rho_min, z, seed, chunk, noise_freq, noise_frames
+            read(0, T), k0, n_iter, rho_min, z, seed, chunk, noise_freq, noise_frames, device
         )
     n = -(-T // window)
     edges = np.linspace(0, T, n + 1).round().astype(int)
     rng = np.random.default_rng(seed)
     wins = []
     for t0, t1 in zip(edges[:-1], edges[1:], strict=True):
-        Y = TileMatrix(read(t0, t1), chunk)
+        Y = tile_matrix(read(t0, t1), chunk, device)
         frames = int(round(noise_frames * Y.T / T)) if noise_frames else 0
         log_sigma = np.log(np.asarray(Y.noise(noise_freq, frames), dtype=np.float64))
         U, s, _, keep = _adaptive_rsvd(Y, k0, n_iter, rho_min, z, rng)
@@ -297,7 +310,7 @@ def compress_tile_windows(
 
     def project(w: _Window, basis: np.ndarray) -> np.ndarray:
         """``(Y - m)^T basis`` of window ``w``: (T_w, k) float64."""
-        Y = TileMatrix(read(w.t0, w.t1), chunk)
+        Y = tile_matrix(read(w.t0, w.t1), chunk, device)
         out = Y.t_matmul(basis).astype(np.float64)
         out += (Y.mean.astype(np.float64) - m) @ basis.astype(np.float64)
         return out

@@ -25,14 +25,15 @@ def pass2_worker(
     indices: range,
     params: Params,
     out_dir: str | None = None,
+    device: str = "cpu",
 ) -> list[TileFactors]:
     """Compress the tiles ``indices`` (seed = tile index), in time windows of at most
     ``params.svd_window`` frames. With ``out_dir`` each tile is saved there (``save_tile``)
-    and the list is empty."""
+    and the list is empty. ``device="gpu"``: the SVD products run on the (shared) GPU."""
     store = TileStore(Path(store_root), grid, n_parts)
     out: list[TileFactors] = []
     for i in indices:
-        tf = _compress(store, i, params)
+        tf = _compress(store, i, params, device)
         if out_dir is None:
             out.append(tf)
         else:
@@ -40,7 +41,7 @@ def pass2_worker(
     return out
 
 
-def _compress(store: TileStore, i: int, params: Params) -> TileFactors:
+def _compress(store: TileStore, i: int, params: Params, device: str = "cpu") -> TileFactors:
     """Factors of tile ``i`` (seed = tile index)."""
     return compress_tile_windows(
         lambda t0, t1: store.read_frames(i, t0, t1),
@@ -53,6 +54,7 @@ def _compress(store: TileStore, i: int, params: Params) -> TileFactors:
         seed=i,
         noise_freq=params.noise_freq,
         noise_frames=params.noise_frames,
+        device=device,
     )
 
 
@@ -62,14 +64,16 @@ def run_pass2(
     params: Params,
     workers: int,
     out_dir: Path | None = None,
+    device: str = "cpu",
 ) -> list[TileFactors]:
     """Compress every tile with ``workers`` single-threaded processes; grid order.
 
     With ``out_dir`` the workers save the tiles there and the result reads each ``V``
-    memory-mapped from its file."""
+    memory-mapped from its file. ``device="gpu"``: each worker runs its SVD products on the
+    (shared) GPU through wgpu."""
     ranges = _split(len(grid), workers)
     od = None if out_dir is None else str(out_dir)
-    jobs = [(str(store.root), grid, store.n_parts, r, params, od) for r in ranges]
+    jobs = [(str(store.root), grid, store.n_parts, r, params, od, device) for r in ranges]
     res = run_workers(pass2_worker, jobs)
     if out_dir is None:
         return [tf for chunk in res for tf in chunk]

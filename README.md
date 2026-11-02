@@ -29,6 +29,11 @@ Development:
     uv venv -p 3.11 && uv pip install -e ".[dev,tune]"
     .venv/bin/pytest
 
+GPU (optional): `uv pip install -e ".[gpu]"`, then `minime run ... --device gpu` runs the pass-2
+SVD products on the GPU through [wgpu](https://github.com/pygfx/wgpu-py) (Metal on macOS, Vulkan
+on Linux, DX12 on Windows: integrated Intel, AMD and Apple GPUs included, no CUDA toolkit).
+Everything else stays on the CPU; GPU results match the CPU path to float32 rounding.
+
 ## Fits your machine
 MiniMe is meant to tune itself to the computer it runs on instead of shipping one setting
 for everyone: an 8 GB lab laptop and a 64 GB workstation should each finish a session as
