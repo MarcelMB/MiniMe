@@ -21,6 +21,13 @@ after the first update the footprints are also fitted from each segment's sums a
     python experiments/streaming/t2_stream.py --footprints stitched \\
         --stitched "/Volumes/Extreme SSD/synth_v4_grin30/processed/stream/t1_fresh/w3000"
 
+``--background mean`` fits ``[A; ymean]`` with the plain mean image as ``b`` instead of
+carving the units' LS share out of it (``stream.TraceModel.build``).
+
+``--project`` runs every pass on projected frames (``stream.TileBasis``, test 5, no gain:
+see the README): ``windows`` (each frame onto its own ``fresh`` window's pass-2 basis) or
+``merged`` (the windows' bases folded into one per tile, ``--cap`` columns).
+
 Shortcuts (marked in ``results.json``): the first pass's background uses the baseline
 factors' mean image, and the spatial update uses the factors' FFT noise unless
 ``--sn diff``. ``--mean-noise windows`` takes both from the stitched windows' pass-2
@@ -71,11 +78,25 @@ def main() -> None:
         help="first mean image and noise: baseline factors, or the --stitched windows' runs",
     )
     ap.add_argument("--merge-corr", type=float, help="default: params.loop_merge_corr")
+    ap.add_argument("--sparse-snr", type=float, help="update penalty; default: params.sparse_snr")
     ap.add_argument(
         "--merge-on",
         choices=("lowpass", "raw"),
         default="lowpass",
         help="traces the merge correlates: causally low-passed at params.noise_freq, or raw",
+    )
+    ap.add_argument(
+        "--project",
+        choices=("none", "windows", "merged"),
+        default="none",
+        help="fit projected frames: the --stitched windows' pass-2 bases, per window or merged",
+    )
+    ap.add_argument("--cap", type=int, default=24, help="merged basis: columns per tile")
+    ap.add_argument(
+        "--background",
+        choices=("fit", "mean"),
+        default="fit",
+        help="b: the mean image minus its LS fit on A (today), or the mean image itself",
     )
     a = ap.parse_args()
 
@@ -94,6 +115,14 @@ def main() -> None:
     # the first runs merged on raw traces and keep their folder names
     suffix = "" if a.merge_on == "raw" or a.n_updates == 0 else "_lp"
     suffix += "_win" if a.mean_noise == "windows" else ""
+    project = None
+    if a.project != "none":
+        spans, bases = st.basis_from_windows(a.stitched / "runs", a.project, a.cap)
+        project = st.WindowProjector(spans, bases)
+        suffix += f"_{a.project}" + (f"{a.cap}" if a.project == "merged" else "")
+    suffix += "_bmean" if a.background == "mean" else ""
+    sparse_snr = params.sparse_snr if a.sparse_snr is None else a.sparse_snr
+    suffix += "" if a.sparse_snr is None else f"_snr{a.sparse_snr:g}"
     out = s.out(f"t2_{a.footprints}_u{a.n_updates}{suffix}")
 
     A = start_footprints(s, a.footprints, a.stitched)
@@ -104,14 +133,19 @@ def main() -> None:
             "first_mean_image": "baseline factors" if a.mean_noise == "factors" else "windows",
             "noise": a.sn if a.mean_noise == "factors" else "windows (quadratic mean)",
         },
+        "project": a.project,
+        "background": a.background,
+        "basis_mb": None if project is None else max(b.nbytes for b in bases) / 2**20,
         "baseline": st.brief(s.baseline_score()),
         "passes": [],
     }
     for it in range(a.n_updates + 1):
         print(f"pass {it}: {A.shape[0]} units", flush=True)
-        model = st.TraceModel.build(A, ymean)
+        model = st.TraceModel.build(A, ymean, a.background)
         sup = st.Support.build(A, H, W, params.dl_wnd)
-        res = st.stream_pass(frames, model, sup, T, a.segment_frames, params.noise_freq)
+        res = st.stream_pass(
+            frames, model, sup, T, a.segment_frames, params.noise_freq, project=project
+        )
         sps.save_npz(out / f"pass{it}_A.npz", sps.csr_matrix(A))
         np.save(out / f"pass{it}_C.npy", res.C)
         rec = {
@@ -139,9 +173,9 @@ def main() -> None:
         tot = st.total(res.stats)
         ymean = tot.ysum / tot.n  # later passes: the streamed mean image
         sn = sn_fft if a.sn == "factors" else st.diff_noise(tot)
-        A_sp, mask, _ = st.spatial_from_stats(A, sup, tot, sn, params.sparse_snr, params.size_thres)
+        A_sp, mask, _ = st.spatial_from_stats(A, sup, tot, sn, sparse_snr, params.size_thres)
         if it == 0:
-            stab = st.segment_stability(A_sp, mask, A, sup, res.stats, sn, params.sparse_snr, H, W)
+            stab = st.segment_stability(A_sp, mask, A, sup, res.stats, sn, sparse_snr, H, W)
             np.savez(out / "stability.npz", **stab)
             results["stability"] = {
                 "cos_median_per_segment": np.nanmedian(stab["cos"], axis=1).tolist(),

@@ -472,6 +472,59 @@ python experiments/streaming/check_stitch.py <ref> <ref>/rust_chain --own-window
 python experiments/streaming/check_chain.py <ref> <ref>/rust_chain <dir with the 6 AVIs>
 ```
 
+## Trace gap result (2026-11-03): the background, not the denoising
+Streamed traces scored 0.77 (stitched footprints) and 0.81 (batch footprints) against the
+batch loop's 0.86. The hypothesis was the denoised movie: the batch traces come from the
+pass-2 factors, the streaming pass fits raw frames. `t2_stream.py --project` (the
+`t3_project.py` script of this test is removed) projects every frame's tiles onto a per-tile spatial basis before the per-frame least squares (`stream.TileBasis`,
+`WindowProjector`), footprints fixed, 30-min GRIN synth, median trace correlation with
+the truth (q25 in brackets):
+
+| frames fitted | basis state | batch footprints (262) | stitched + 1 update (315) |
+|---|---|---|---|
+| raw (today, `b` = mean image minus its LS fit on `A`) | — | 0.808 (0.61) | 0.770 (0.54) |
+| projected, session basis (the batch's own factors; needs all of T) | 11 MB, rank sum 675 | 0.806 (0.59) | 0.768 (0.54) |
+| projected, each frame onto its own `fresh` window's basis | 9 MB per window, one at a time (rank sum 408–513) | 0.815 (0.63) | 0.779 (0.58) |
+| projected, windows folded into one basis per tile (incremental PCA, cap 24) | 34 MB | 0.809 (0.62) | 0.772 (0.56) |
+| raw, **`b = mean image`** (`--background mean`) | — | **0.923 (0.83)** | **0.910 (0.78)** |
+| projected onto each window's basis, `b = mean image` | 9 MB per window | — | 0.913 (0.82) |
+| batch loop (`YrA`) | | 0.855 (0.68) | |
+
+- Projection cannot help a least-squares trace: a footprint that the basis spans has the
+  same inner product with the projected frame as with the raw one (`X U Uᵀ y = X y`), so
+  the noise along the footprint stays. The session basis reproduces the factors'
+  reconstruction to 1e-5 and changes the score by 0.002. Cost, numpy: 0.9 ms/frame
+  (2 GEMVs per tile, `2 P r` flops), 31–34 s of a 110-s pass.
+- The gap is the background vector `b`. On the factors with the batch footprints: LS with
+  the batch's own `b, f` 0.856 (= `YrA`), joint `[A; b_batch]` 0.854, joint `[A; b_stream]`
+  0.806, joint `[A; mean image]` **0.923**. `b_stream = clip(ymean − Aᵀ cbar)` with `cbar`
+  the LS fit of the mean image gives every unit its whole local mean, so `b` keeps only
+  10 % of the mean image under the footprints (batch `b`: 58 %) and the background's
+  fluctuations under a cell (neuropil, hemodynamics, drift) go into its trace. With the
+  plain mean image as `b` the resting levels follow `f`. Rebuilding `b` from the clipped
+  traces' mean, the batch recipe, drifts back toward the batch (0.910, 0.897, 0.889 over
+  three rounds).
+- Every category gains (factors, batch footprints, batch → `b = mean`): dim 0.68 → 0.83,
+  small 0.86 → 0.94, near out-of-focus 0.82 → 0.91, overlap 0.89 → 0.91, late 1.00 → 0.99;
+  after a 1-min high-pass still 0.84 → 0.90, so it is the fast background leak, not drift.
+- Full chain (`t2_stream.py --footprints stitched --n-updates 1 --background mean`, both
+  passes): traces **0.920**, but the update keeps 298 of 365 units instead of 319 (F1 0.714
+  vs 0.740, recall 0.586 vs 0.623, 16 more true cells lost, mostly small): the cleaner
+  traces have a smaller spread, so `sparse_snr` 1.0 prunes harder (nnz median 116 vs 130);
+  footprint stability improves (late-segment cosine 0.98 vs 0.96). With `--sparse-snr 0.7`
+  the chain keeps 339 units: recall 0.664, precision 0.903, **F1 0.765, traces 0.907**
+  (`sparse_snr` 0.5: 346 units, F1 0.766, 0.907), better than today's 0.740 / 0.770 on
+  both counts. Keeping the update on the `fit` pass's sums and `b = mean` only in the trace
+  pass is the other option: F1 0.740, traces 0.910 (the stitched column above).
+- Decision: `b = mean image` in every streaming pass, `sparse_snr` 0.7 for the streamed
+  update (`t2_stitched_u1_lp_bmean_snr0.7`).
+- Extra state and per-frame cost of `b = mean`: none (the same `[A; b]` solve; the `cbar`
+  solve at build time goes away).
+- Rust port: `TraceModel::build` takes `ymean` as `b` (no `cbar` solve); nothing else
+  changes. The tile projection is not needed; if wanted later it is one `(P_b, r_b)` basis
+  per tile in the streaming state and two GEMVs per tile per frame; on top of `b = mean`
+  it adds 0.003 to the median and 0.03 to the lower quartile.
+
 ## Run from the AVIs alone (2026-11-03): no Python involved
 `#/stream` now runs the whole pipeline from the raw AVIs: pick the files, press Run. The
 reference folder is optional and only overrides what it holds.

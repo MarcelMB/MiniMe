@@ -18,6 +18,7 @@ is 0.57, precision 0.94, trace correlation 0.86.
 | `t2_stream.py --footprints baseline_final` | Test 3: are per-frame traces with fixed footprints as good as the batch loop's? |
 | `t2_stream.py --footprints baseline_init --n-updates 1` (and `2`) | Test 2: does a footprint update from streamed sums match the batch loop? |
 | `t2_stream.py --footprints stitched --stitched DIR --n-updates 1` | The whole bounded-memory pipeline. Test 4 (footprint stability per segment) runs after every first update. |
+| `t2_stream.py --footprints stitched_u1 --project windows` | Test 5: do per-frame traces on frames projected onto a per-tile pass-2 basis (session, per window, or merged with a cap) beat raw frames? No: ±0.01. `--background mean` (`[A; mean image]` instead of carving the units' LS share out of `b`) is what closes the gap: 0.77 → 0.91. |
 | `ref_dump.py --footprints stitched --stitched DIR [--frames N]` | Reference for the Rust core: one pass + update, with its inputs as plain `.npy` (`processed/stream/ref_<name>_<T>/`). |
 | `check_rust.py REF_DIR RUST_DIR` | Compares a native or browser Rust run with that reference (bit-exact frames, sums to 1e-9, footprints to 1e-6). |
 | `ref_motion.py` / `check_motion.py` | Reference and check for the Rust motion stage on one window. |
@@ -47,7 +48,10 @@ Cost:
   baseline factors. A browser would collect both in its discovery pass. `--sn diff` uses
   a noise estimate from frame differences instead.
 - Traces are per-frame least squares on `[A; b]`, clipped at 0, with no deconvolution.
-  The batch loop's `YrA` is one correction step from the previous traces.
+  The batch loop's `YrA` is one correction step from the previous traces. By default `b` is
+  the mean image minus its LS fit on `A` (the batch's initial background), which carves a
+  hole per unit and leaks the background into the traces; `--background mean` uses the mean
+  image itself (test 5).
 - The merge uses correlations of the raw per-frame traces from `Σ c cᵀ`. The batch merge
   correlates low-passed traces.
 - `subset` windows flatter discovery: the factors' tile bases were fitted to all frames.

@@ -80,9 +80,14 @@ Batch baseline: 262 units, recall 0.53, precision 0.94, F1 0.68, trace corr 0.86
 
 ## Open actions
 - [x] Honest discovery + full pipeline: done, F1 0.74 vs 0.68.
-- [ ] Main gap is traces: 0.77 with stitched footprints, 0.81 with batch footprints, 0.86 batch.
-- [ ] Close the trace gap (0.81 vs 0.86): the batch traces come from the low-rank, denoised
-  movie. Try projecting each frame onto a running per-tile spatial basis (no deconvolution).
+- [x] Trace gap closed (2026-11-03): it was the background, not the denoising. With
+  `b = mean image` (no LS hole per unit) the streamed traces reach **0.91** on the stitched
+  footprints and **0.92** on the batch footprints (batch 0.86); projecting frames onto the
+  pass-2 basis changes nothing (±0.01). `docs/browser-app.md`, "Trace gap".
+- [x] `b = mean` in the update pass prunes more at `sparse_snr` 1.0 (F1 0.71); at 0.7 the
+  full chain gives F1 **0.765** and traces **0.907** (today 0.740 / 0.770). Use 0.7.
+- [ ] The batch pipeline carves the same holes (`cnmf.update_background`): on its own
+  factors and footprints `b = mean` scores 0.92 vs its 0.86. Not changed here.
 - [ ] Stitch: tune `--cos`, or keep same-cell links only when the footprints also match in
   size, so that overlapping pairs survive.
 - [ ] Align windows to seed windows, so windows the length of `seeds_wnd` work.

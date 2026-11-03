@@ -13,6 +13,9 @@ streamed over the whole session, so the state kept between frames does not grow 
   time, with the baseline's shifts.
 * ``TraceModel``, ``stream_pass``: per-frame least-squares traces with fixed footprints plus
   the running sums the spatial update needs, per segment.
+* ``TileBasis``, ``merge_basis``: a per-tile spatial basis the frames are projected onto
+  before the fit (the denoised movie the batch traces see), from pass-2 factors or folded
+  window by window with a rank cap.
 * ``spatial_from_stats``, ``merge_from_stats``, ``segment_stability``: ``cnmf.update_spatial``
   and the loop's unit merge on those sums, without frames.
 """
@@ -369,14 +372,22 @@ class TraceModel:
     solve_normal: Callable[[np.ndarray], np.ndarray]
 
     @classmethod
-    def build(cls, A: sps.csr_matrix, ymean: np.ndarray) -> TraceModel:
-        """``b = clip(ymean - A^T cbar, 0)``, ``cbar`` the least-squares fit of the mean
-        image: ``cnmf``'s default (unclipped) background, from the mean image alone."""
+    def build(cls, A: sps.csr_matrix, ymean: np.ndarray, background: str = "fit") -> TraceModel:
+        """``background="fit"``: ``b = clip(ymean - A^T cbar, 0)``, ``cbar`` the least-squares
+        fit of the mean image (``cnmf``'s default background from the mean image alone). The
+        fit gives every unit the whole local mean, so ``b`` has a hole at each cell and the
+        background's fluctuations under a cell go into its trace. ``background="mean"``:
+        ``b = ymean``, the cells' resting levels stay in ``b`` and follow ``f``."""
         A64 = sps.csr_matrix(A, dtype=np.float64)
         ymean = np.asarray(ymean, dtype=np.float64)
-        G = (A64 @ A64.T).toarray()
-        cbar = _normal_solver(0.5 * (G + G.T))(A64 @ ymean)
-        b = np.clip(ymean - A64.T @ cbar, 0, None)
+        if background == "mean":
+            b = np.clip(ymean, 0, None)
+        elif background == "fit":
+            G = (A64 @ A64.T).toarray()
+            cbar = _normal_solver(0.5 * (G + G.T))(A64 @ ymean)
+            b = np.clip(ymean - A64.T @ cbar, 0, None)
+        else:
+            raise ValueError(f"background {background!r}: 'fit' or 'mean'")
         X = sps.csr_matrix(sps.vstack([A64, sps.csr_matrix(b[None, :])]))
         GX = (X @ X.T).toarray()
         return cls(A64, b, X, _normal_solver(0.5 * (GX + GX.T)))
@@ -476,8 +487,13 @@ def stream_pass(
     seg_frames: int,
     noise_freq: float,
     chunk: int = 50,
+    project: Callable[[int, np.ndarray], np.ndarray] | None = None,
 ) -> PassResult:
-    """One read of the movie: traces with fixed footprints and per-segment sums."""
+    """One read of the movie: traces with fixed footprints and per-segment sums.
+
+    ``project(t0, Y)``, if given, replaces each batch of frames before the fit and the sums
+    (``WindowProjector``); the noise sum ``dsq`` stays on the raw frames.
+    """
     if seg_frames % frames.batch:
         raise ValueError(f"segment length {seg_frames} is not a multiple of {frames.batch}")
     K, P = model.A.shape
@@ -487,12 +503,16 @@ def stream_pass(
     f_out = np.zeros(T, dtype=np.float32)
     lowpass = LowPass(noise_freq, K)
     prev: np.ndarray | None = None
-    timing = {"read_prep": 0.0, "solve": 0.0, "sums": 0.0}
+    timing = {"read_prep": 0.0, "project": 0.0, "solve": 0.0, "sums": 0.0}
     t_start = t = time.perf_counter()
-    for t0, Y in frames:
-        n = Y.shape[0]
+    for t0, Y_raw in frames:
+        n = Y_raw.shape[0]
         now = time.perf_counter()
         timing["read_prep"] += now - t
+        Y = Y_raw if project is None else project(t0, Y_raw)
+        t = time.perf_counter()
+        timing["project"] += t - now
+        now = t
         C, fb = model.solve(Y)
         Cc = np.clip(C, 0, None)
         C_out[:, t0 : t0 + n] = Cc.T
@@ -509,11 +529,11 @@ def stream_pass(
         st.Mlp += lp.T @ lp
         st.lsum += lp.sum(axis=0)
         st.ysum += Y.sum(axis=0, dtype=np.float64)
-        d = np.diff(Y, axis=0)
+        d = np.diff(Y_raw, axis=0)
         st.dsq += np.einsum("tp,tp->p", d, d, dtype=np.float64)
         if prev is not None:
-            st.dsq += (Y[0] - prev).astype(np.float64) ** 2
-        prev = Y[-1].copy()
+            st.dsq += (Y_raw[0] - prev).astype(np.float64) ** 2
+        prev = Y_raw[-1].copy()
         for c0 in range(0, n, chunk):
             st.L += np.einsum(
                 "tp,tp->p", Y[c0 : c0 + chunk][:, sup.pix], Cc[c0 : c0 + chunk][:, sup.indices]
@@ -526,6 +546,120 @@ def stream_pass(
     )
     state += model.X.data.nbytes + model.X.indices.nbytes + (K + 1) ** 2 * 8 + lowpass.zi.nbytes
     return PassResult(C_out, f_out, stats, time.perf_counter() - t_start, state, timing)
+
+
+# ---------------------------------------------------------------------------
+# Per-tile spatial basis (the denoised movie)
+# ---------------------------------------------------------------------------
+
+
+def orthonormal(W: np.ndarray) -> np.ndarray:
+    """Orthonormal basis of the column span of ``W`` (QR in float64), float32."""
+    if W.shape[1] == 0:
+        return np.zeros(W.shape, dtype=np.float32)
+    q = np.linalg.qr(np.asarray(W, dtype=np.float64))[0]
+    return np.ascontiguousarray(q, dtype=np.float32)
+
+
+@dataclass
+class TileBasis:
+    """Per-tile orthonormal spatial bases: a frame's tile ``y`` is replaced by its
+    projection ``mean + U U^T (y - mean)``, the low-rank movie pass 2 fits, one frame at a
+    time. State ``sum_b P_b (r_b + 1)`` float32, independent of ``T``."""
+
+    rows: list[np.ndarray]  # flat pixel indices of each tile
+    mean: list[np.ndarray]  # (P_b,) float32
+    U: list[np.ndarray]  # (P_b, r_b) float32, orthonormal columns
+
+    @classmethod
+    def from_factors(cls, fac: Factors) -> TileBasis:
+        """The pass-2 basis of ``fac``: ``U`` spans ``W`` (``W = U s`` of the rSVD), so
+        ``U U^T (y_t - mean)`` is the factors' own reconstruction ``W V_t^T`` of frame ``t``."""
+        rows = [fac.tile_rows(b) for b in range(len(fac.tiles))]
+        return cls(rows, [tf.mean for tf in fac.tiles], [orthonormal(tf.W) for tf in fac.tiles])
+
+    @property
+    def ranks(self) -> np.ndarray:
+        return np.array([u.shape[1] for u in self.U])
+
+    @property
+    def nbytes(self) -> int:
+        return sum(u.nbytes + m.nbytes for u, m in zip(self.U, self.mean, strict=True))
+
+    def __call__(self, Y: np.ndarray) -> np.ndarray:
+        """Projected frames ``(n, P) float32`` of ``Y (n, P)``."""
+        out = np.empty_like(Y)
+        for rows, m, U in zip(self.rows, self.mean, self.U, strict=True):
+            Yb = Y[:, rows] - m
+            out[:, rows] = (Yb @ U) @ U.T + m
+        return out
+
+
+def merge_basis(
+    acc: tuple[np.ndarray, np.ndarray, int] | None,
+    W: np.ndarray,
+    mean: np.ndarray,
+    n: int,
+    cap: int,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Fold one window's scaled basis ``W`` (columns ``U s``, mean removed) into the running
+    ``(W_acc, mean_acc, n_acc)`` of one tile (incremental PCA with mean update, Ross et al.
+    2008): the SVD of ``[W_acc, W, sqrt(n_acc n / (n_acc + n)) (mean - mean_acc)]`` keeps
+    its ``cap`` leading columns, so the state is ``(P_b, cap)`` whatever the window count."""
+    W = np.asarray(W, dtype=np.float64)
+    mean = np.asarray(mean, dtype=np.float64)
+    if acc is None:
+        M, mean_new, n_new = W, mean, n
+    else:
+        W_acc, mean_acc, n_acc = acc
+        n_new = n_acc + n
+        mean_new = (n_acc * mean_acc + n * mean) / n_new
+        extra = np.sqrt(n_acc * n / n_new) * (mean - mean_acc)
+        M = np.concatenate([W_acc, W, extra[:, None]], axis=1)
+    u, s, _ = np.linalg.svd(M, full_matrices=False)
+    k = min(cap, int((s > s[0] * 1e-7).sum())) if s.size else 0
+    return u[:, :k] * s[:k], mean_new, n_new
+
+
+def basis_from_windows(
+    runs: Path, mode: str, cap: int
+) -> tuple[list[tuple[int, int]], list[TileBasis]]:
+    """Bases from the ``fresh`` windows' pass-2 factors (``runs/run_<t0>_<t1>/factors``).
+
+    ``mode="windows"``: one ``TileBasis`` per window (its own factors). ``mode="merged"``:
+    every window folded into one basis with ``merge_basis`` at ``cap`` columns per tile,
+    returned once per window for the same interface.
+    """
+    dirs = sorted(runs.glob("run_*_*"), key=lambda d: int(d.name.split("_")[1]))
+    spans = [(int(d.name.split("_")[1]), int(d.name.split("_")[2])) for d in dirs]
+    if mode == "windows":
+        return spans, [TileBasis.from_factors(Factors.load(d / "factors")) for d in dirs]
+    acc: list[tuple[np.ndarray, np.ndarray, int] | None] = []
+    rows: list[np.ndarray] = []
+    for d, (t0, t1) in zip(dirs, spans, strict=True):
+        fac = Factors.load(d / "factors")
+        if not acc:
+            acc = [None] * len(fac.tiles)
+            rows = [fac.tile_rows(b) for b in range(len(fac.tiles))]
+        for b, tf in enumerate(fac.tiles):
+            acc[b] = merge_basis(acc[b], tf.W, tf.mean, t1 - t0, cap)
+    basis = TileBasis(
+        rows,
+        [a[1].astype(np.float32) for a in acc],  # type: ignore[index]
+        [orthonormal(a[0]) for a in acc],  # type: ignore[index]
+    )
+    return spans, [basis] * len(spans)
+
+
+class WindowProjector:
+    """``(t0, Y) -> projected Y`` with the basis of the window frame ``t0`` falls in."""
+
+    def __init__(self, spans: list[tuple[int, int]], bases: list[TileBasis]) -> None:
+        self.starts = np.array([t0 for t0, _ in spans])
+        self.bases = bases
+
+    def __call__(self, t0: int, Y: np.ndarray) -> np.ndarray:
+        return self.bases[int(np.searchsorted(self.starts, t0, side="right")) - 1](Y)
 
 
 # ---------------------------------------------------------------------------
