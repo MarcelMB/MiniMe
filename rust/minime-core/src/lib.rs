@@ -98,8 +98,22 @@ fn csr_files(out: &mut Vec<(String, Vec<u8>)>, name: &str, a: &Csr) {
     out.push((format!("{name}_indptr.npy"), npy::write(&[indptr.len()], &indptr)));
 }
 
+/// (K, n) unit-major copy of `n` frames of (n, K) frame-major traces.
+pub fn unit_major(c: &[f32], k: usize) -> Vec<f32> {
+    let n = c.len().checked_div(k).unwrap_or(0);
+    let mut out = vec![0f32; c.len()];
+    for t in 0..n {
+        for i in 0..k {
+            out[i * n + t] = c[t * k + i];
+        }
+    }
+    out
+}
+
 /// The pass's results as `.npy` files named like `ref_dump.py`'s `ref/` (plus
-/// `summary.json`), so one comparison script checks native and browser runs alike.
+/// `summary.json`), so one comparison script checks native and browser runs alike. The
+/// traces `C.npy` are not among them: the caller keeps what `StreamPass::take_c` hands out
+/// (in memory natively, in a file in the browser).
 pub fn finish(
     pass: &StreamPass,
     inp: &Inputs,
@@ -109,13 +123,6 @@ pub fn finish(
     let t = pass.t;
     let p = pass.params.h * pass.params.w;
     let mut out = Vec::new();
-    let mut c_kt = vec![0f32; k * t];
-    for ti in 0..t {
-        for i in 0..k {
-            c_kt[i * t + ti] = pass.c[ti * k + i];
-        }
-    }
-    out.push(("C.npy".into(), npy::write(&[k, t], &c_kt)));
     out.push(("f.npy".into(), npy::write(&[t], &pass.f)));
     out.push(("b.npy".into(), npy::write(&[p], &pass.model.b)));
     let sup = &pass.support;

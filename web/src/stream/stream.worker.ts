@@ -15,6 +15,8 @@ import type { FromWorker, ToWorker } from "./protocol";
 
 const post = (m: FromWorker, transfer: Transferable[] = []) => self.postMessage(m, transfer);
 const BLOCK = 64; // frames per File.slice read
+const TRACE_DIR = "stream_out";
+const DRAIN = 4096; // frames of traces held in wasm before they go to C.npy in OPFS
 
 async function run({ avis, inputs }: ToWorker): Promise<void> {
   const tl = performance.now();
@@ -31,10 +33,30 @@ async function run({ avis, inputs }: ToWorker): Promise<void> {
   const engine = new Engine(files);
   log("engine built");
   const [T, H, W] = [engine.frames(), engine.height(), engine.width()];
-  post({ type: "start", stage: "stream", frames: T, units: engine.units(), height: H, width: W });
+  const K = engine.units();
+  // traces go to C.npy ((K, T) float32) in OPFS as the pass goes: they grow with T
+  const root = await navigator.storage.getDirectory();
+  await root.removeEntry(TRACE_DIR, { recursive: true }).catch(() => undefined);
+  const cFile = await (await root.getDirectoryHandle(TRACE_DIR, { create: true })).getFileHandle("C.npy", {
+    create: true,
+  });
+  const cOut = await cFile.createSyncAccessHandle();
+  const header = engine.traces_header();
+  cOut.truncate(header.length + 4 * K * T);
+  cOut.write(header, { at: 0 });
+  post({ type: "start", stage: "stream", frames: T, units: K, height: H, width: W });
   const reader = new FileReaderSync();
   const t0 = performance.now();
   let t = 0;
+  let written = 0;
+  const drain = () => {
+    const n = t - written;
+    if (!n) return;
+    const c = engine.take_traces();
+    for (let i = 0; i < K; i++)
+      cOut.write(c.subarray(i * n, (i + 1) * n), { at: header.length + 4 * (i * T + written) });
+    written = t;
+  };
   let lastPost = 0;
   for (const file of orderAvis(avis)) {
     if (t === T) break;
@@ -54,6 +76,7 @@ async function run({ avis, inputs }: ToWorker): Promise<void> {
         engine.push_raw(buf.subarray(o, o + avi.size(k)));
         t++;
       }
+      if (t - written >= DRAIN) drain();
       const now = performance.now();
       if (now - lastPost > 500) {
         lastPost = now;
@@ -63,15 +86,19 @@ async function run({ avis, inputs }: ToWorker): Promise<void> {
     avi.free();
   }
   if (t !== T) throw new Error(`read ${t} frames, inputs say ${T}`);
+  drain();
+  cOut.flush();
+  cOut.close();
   const passSeconds = (performance.now() - t0) / 1e3;
   const heapMb = wasm.memory.buffer.byteLength / 2 ** 20;
   log(`pass done, wasm heap ${heapMb.toFixed(0)} MB`);
   const timing = { pass: passSeconds, where: "browser", wasm_heap_mb: heapMb };
-  const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
+  const out: Map<string, Uint8Array | Blob> = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
   engine.free();
+  out.set("C.npy", await cFile.getFile());
   post(
     { type: "done", files: out, seconds: (performance.now() - t0) / 1e3 },
-    [...out.values()].map((v) => v.buffer),
+    [...out.values()].flatMap((v) => (v instanceof Uint8Array ? [v.buffer] : [])),
   );
 }
 

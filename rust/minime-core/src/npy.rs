@@ -144,6 +144,16 @@ impl NpyElem for bool {
 
 /// Encode `data` with `shape` as `.npy` version 1.0 bytes.
 pub fn write<T: NpyElem>(shape: &[usize], data: &[T]) -> Vec<u8> {
+    let mut out = write_header::<T>(shape);
+    out.reserve(data.len() * 8);
+    for &v in data {
+        v.put(&mut out);
+    }
+    out
+}
+
+/// The `.npy` version 1.0 header of a `shape` array of `T`, for writing the data after it.
+pub fn write_header<T: NpyElem>(shape: &[usize]) -> Vec<u8> {
     let dims = match shape.len() {
         1 => format!("{},", shape[0]),
         _ => shape.iter().map(usize::to_string).collect::<Vec<_>>().join(", "),
@@ -156,13 +166,10 @@ pub fn write<T: NpyElem>(shape: &[usize], data: &[T]) -> Vec<u8> {
     let total = 10 + h.len() + 1;
     h.push_str(&" ".repeat((64 - total % 64) % 64));
     h.push('\n');
-    let mut out = Vec::with_capacity(10 + h.len() + data.len() * 8);
+    let mut out = Vec::with_capacity(10 + h.len());
     out.extend_from_slice(b"\x93NUMPY\x01\x00");
     out.extend_from_slice(&(h.len() as u16).to_le_bytes());
     out.extend_from_slice(h.as_bytes());
-    for &v in data {
-        v.put(&mut out);
-    }
     out
 }
 

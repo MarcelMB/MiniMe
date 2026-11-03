@@ -275,7 +275,32 @@ python experiments/streaming/check_pass2.py <pass2 ref> <ref>/rust_browser
 python experiments/streaming/check_pass1.py <pass1 ref> <ref>/rust_browser
 ```
 
+## 8 h scale run (2026-11-03): motion ok, stream pass fails at the end
+First 8 h (576 files, 576 000 frames) of the real V4 24 h recording in headless Chrome, one
+worker, M1 Max; footprints (503), mean and noise from the 3 h MiniMe run `cafast_3h_fix`.
+
+| | motion | streaming pass |
+|---|---|---|
+| time | 3:08:48, 51 fps flat from start to end | 2:12 for all 576 000 frames, 72–73 fps flat |
+| memory | 65 MB wasm heap | state 1273 MB (the (T, K) traces), wasm heap 2397 MB at the end |
+| result | shifts of the first 3 h match the 3 h Python run within 5.0e-6 px (all 216 000 frames) | `unreachable` trap in `finish()`: writing `C.npy` (1.16 GB) needs a second copy, past wasm32's 4 GB |
+
+- Nothing slows down over 8 h; the only thing that grows with T is the traces.
+- The state also grew: the pass kept every segment's sums (13 MB each for 503 units at
+  600×600, 96 segments) only to add them up at the end.
+- Fixed since: the pass keeps the running segment's sums and the total of the finished ones
+  (added in segment order, so the arithmetic is `stream.total`'s), and the worker writes the
+  traces to `C.npy` ((K, T) float32) in OPFS every 4096 frames (`Engine::take_traces`,
+  `traces_header`); the page gets that file as a `File`, not bytes. State is now 2 segments
+  regardless of T (39 MB for the 365-unit synth). Checked on 3000 synth frames in three
+  1000-frame segments: native and Chrome identical to `ref_dump.py` (C, f and every sum
+  exact or ≤ 2e-15, same masks and footprints). Not rerun on 8 h yet.
+- Harness: `web/e2e/.data/long/` (local, gitignored) saves outputs in 32 MB chunks; one
+  base64 string of a > 512 MB output would exceed V8's string limit.
+
 ## Next
+0. Rerun the 8 h and 24 h streaming pass with the traces in OPFS (8 h scale run above);
+   machine-hours, so overnight.
 1. Discovery port, stage by stage on one 3000-frame window: ~~motion~~, ~~pass 1~~, ~~pass 2~~,
    ~~seeds/PNR/GMM~~, ~~init~~ (done) → CNMF loop → stitch.
 2. Speed: preprocessing in a worker pool (frames are independent), faster median

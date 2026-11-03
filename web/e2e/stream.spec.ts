@@ -20,6 +20,7 @@ test("streams raw AVIs in the browser and saves the outputs", async ({ page }) =
   await page.goto("/#/stream");
   const avis = readdirSync(raw!)
     .filter((f) => /^\d+.*\.avi$/i.test(f))
+    .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10)) // STREAM_FILES takes the first n
     .map((f) => join(raw!, f));
   const nFiles = Number(process.env.STREAM_FILES ?? avis.length);
   await page.getByLabel("Raw AVIs").setInputFiles(avis.slice(0, nFiles));

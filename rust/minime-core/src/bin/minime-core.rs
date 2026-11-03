@@ -450,6 +450,11 @@ fn run() -> Result<(), String> {
     let s = Instant::now();
     let timing = serde_json::json!({"setup": setup, "read": t_read, "prep": t_prep, "push": t_push});
     let mut files = finish(&pass, &inp, timing)?;
+    let k = pass.model.k;
+    files.push((
+        "C.npy".into(),
+        npy::write(&[k, t], &minime_core::unit_major(&pass.take_c(), k)),
+    ));
     let update = s.elapsed().as_secs_f64();
     if !check.is_empty() {
         let n = checked.len() / (h * w);

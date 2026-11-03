@@ -11,6 +11,7 @@ export type FromWorker =
       width: number;
     }
   | { type: "progress"; done: number; frames: number; seconds: number; stateMb: number }
-  | { type: "done"; files: Map<string, Uint8Array>; seconds: number }
+  // large outputs (the traces) come as an OPFS file instead of bytes
+  | { type: "done"; files: Map<string, Uint8Array | Blob>; seconds: number }
   | { type: "log"; message: string }
   | { type: "error"; message: string };

@@ -37,14 +37,13 @@ export function StreamPage() {
       else if (m.type === "progress")
         setSt((s) => (s.phase === "running" ? { ...s, done: m.done, seconds: m.seconds, stateMb: m.stateMb } : s));
       else if (m.type === "done") {
-        const files: [string, string, number][] = [...m.files].map(([name, bytes]) => [
-          name,
-          URL.createObjectURL(new Blob([bytes])),
-          bytes.byteLength,
-        ]);
+        const files: [string, string, number][] = [...m.files].map(([name, bytes]) => {
+          const blob = bytes instanceof Blob ? bytes : new Blob([bytes]);
+          return [name, URL.createObjectURL(blob), blob.size];
+        });
         const json = (name: string) => {
           const b = m.files.get(name);
-          return b ? (JSON.parse(new TextDecoder().decode(b)) as Record<string, unknown>) : null;
+          return b instanceof Uint8Array ? (JSON.parse(new TextDecoder().decode(b)) as Record<string, unknown>) : null;
         };
         setSt({
           phase: "done",

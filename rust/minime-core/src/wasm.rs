@@ -160,7 +160,18 @@ impl Engine {
         Ok(())
     }
 
-    /// Footprint update and merge; returns output name -> `.npy`/`.json` bytes.
+    /// The `.npy` header of `C.npy`, (K, T) float32; the data follows unit by unit.
+    pub fn traces_header(&self) -> Vec<u8> {
+        npy::write_header::<f32>(&[self.pass.model.k, self.inp.params.t])
+    }
+    /// The traces pushed since the last call, (K, n) unit-major: row `i` goes to
+    /// `C.npy`'s unit `i` from the frame after the previous call's last one.
+    pub fn take_traces(&mut self) -> Vec<f32> {
+        crate::unit_major(&self.pass.take_c(), self.pass.model.k)
+    }
+
+    /// Footprint update and merge; returns output name -> `.npy`/`.json` bytes (all but
+    /// `C.npy`, which the worker writes from `take_traces`).
     pub fn finish(&self, timing_json: &str) -> Result<Map, JsError> {
         let timing: serde_json::Value = serde_json::from_str(timing_json).unwrap_or_default();
         let files = finish(&self.pass, &self.inp, timing).map_err(|e| JsError::new(&e))?;

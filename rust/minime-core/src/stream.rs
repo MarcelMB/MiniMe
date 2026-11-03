@@ -245,14 +245,20 @@ impl Stats {
     }
 }
 
-/// The pass's state: model, support, per-segment sums and the traces written so far.
+/// The pass's state: model, support, the sums and the traces not yet taken.
+///
+/// Only the running segment's sums and the total of the finished segments are kept, so the
+/// state does not grow with T; the segments are added in order, as `stream.total` does.
 pub struct StreamPass {
     pub params: Params,
     pub model: TraceModel,
     pub support: Support,
-    pub stats: Vec<Stats>,
+    /// sums of the finished segments
+    pub done: Stats,
+    /// sums of the running segment
+    pub seg: Stats,
     pub lowpass: SosFilter,
-    /// (T, K) frame-major clipped traces, float32 (the YrA analogue)
+    /// (n, K) frame-major clipped traces (the YrA analogue) since the last `take_c`
     pub c: Vec<f32>,
     pub f: Vec<f32>,
     pub t: usize,
@@ -268,16 +274,16 @@ impl StreamPass {
         let p = params.h * params.w;
         let model = TraceModel::build(a, ymean);
         let support = Support::build(a, params.h, params.w, params.dl_wnd);
-        let n_seg = params.t.div_ceil(params.segment_frames);
-        let stats = vec![Stats::zeros(support.pix.len(), k, p); n_seg];
+        let done = Stats::zeros(support.pix.len(), k, p);
         let lowpass = SosFilter::new(butter_lowpass_sos(4, 2.0 * params.noise_freq), k);
         Self {
-            c: Vec::with_capacity(params.t * k),
+            c: Vec::new(),
             f: Vec::with_capacity(params.t),
             params,
             model,
             support,
-            stats,
+            seg: done.clone(),
+            done,
             lowpass,
             t: 0,
             prev: None,
@@ -296,7 +302,11 @@ impl StreamPass {
         }
         self.c.extend(self.cc.iter().map(|&v| v as f32));
         self.f.push(self.sol[k] as f32);
-        let st = &mut self.stats[self.t / self.params.segment_frames];
+        if self.t > 0 && self.t.is_multiple_of(self.params.segment_frames) {
+            self.done.add(&self.seg);
+            self.seg = Stats::zeros(self.seg.l.len(), k, self.seg.ysum.len());
+        }
+        let st = &mut self.seg;
         st.n += 1;
         for i in 0..k {
             let ci = self.cc[i];
@@ -339,22 +349,21 @@ impl StreamPass {
     }
 
     pub fn total(&self) -> Stats {
-        let mut tot = Stats::zeros(
-            self.support.pix.len(),
-            self.model.k,
-            self.params.h * self.params.w,
-        );
-        for s in &self.stats {
-            tot.add(s);
-        }
+        let mut tot = self.done.clone();
+        tot.add(&self.seg);
         tot
+    }
+
+    /// The traces since the last call, (n, K) frame-major; the caller stores them.
+    pub fn take_c(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.c)
     }
 
     /// Bytes a browser keeps between frames (sums, support, model, filter state).
     pub fn state_bytes(&self) -> usize {
         let sup = 8 * (self.support.active.len() + self.support.indptr.len() + 2 * self.support.pix.len());
         let model = 8 * self.model.b.len() + 16 * self.model.x.data.len() + 8 * (self.model.k + 1).pow(2);
-        self.stats.iter().map(Stats::nbytes).sum::<usize>() + sup + model + 32 * self.model.k
+        self.done.nbytes() + self.seg.nbytes() + sup + model + 32 * self.model.k
     }
 }
 
