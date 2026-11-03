@@ -69,7 +69,7 @@ export function StreamPage() {
             </span>
           </label>
           <label className="field" style={{ flex: "1 1 260px" }}>
-            Inputs folder (footprints, shifts, mean, noise)
+            Inputs folder (footprints, shifts, mean, noise; or motion parameters only)
             <input
               type="file"
               multiple
@@ -95,10 +95,17 @@ export function StreamPage() {
       )}
       {st.phase === "done" && (
         <section className="card" aria-label="Results">
-          <p>
-            Done in {fmtDuration(st.seconds)}: {String(st.summary.K)} units in, {String(st.summary.kept)} kept,{" "}
-            {String(st.summary.merged)} after merge; state {Number(st.summary.state_mb).toFixed(0)} MB.
-          </p>
+          {st.summary.stage === "motion" ? (
+            <p>
+              Done in {fmtDuration(st.seconds)}: motion for {String(st.summary.frames)} frames, largest shift{" "}
+              {Number(st.summary.max_abs_shift).toFixed(2)} px.
+            </p>
+          ) : (
+            <p>
+              Done in {fmtDuration(st.seconds)}: {String(st.summary.K)} units in, {String(st.summary.kept)} kept,{" "}
+              {String(st.summary.merged)} after merge; state {Number(st.summary.state_mb).toFixed(0)} MB.
+            </p>
+          )}
           <ul aria-label="Output files">
             {st.files.map(([name, url, n]) => (
               <li key={name}>

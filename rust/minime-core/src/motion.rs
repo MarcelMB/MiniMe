@@ -269,6 +269,79 @@ impl Correlator {
 // Template, estimate, quality
 // ---------------------------------------------------------------------------
 
+/// `motion.make_template` fed one registration frame at a time: the same `n` frames are
+/// pushed twice, in order. Round 1 averages the prepared frames into a first template;
+/// round 2 aligns each frame to it and averages again (numpy's sequential float32 mean).
+pub struct TemplateBuilder {
+    corr: Correlator,
+    n: usize,
+    max_shift: usize,
+    acc: Vec<f32>,
+    pushed: usize,
+    first: Option<Motion>,
+}
+
+impl TemplateBuilder {
+    pub fn new(p: &MotionParams, n: usize) -> Result<Self, String> {
+        if n == 0 {
+            return Err("no frames for the motion template".into());
+        }
+        let corr = Correlator::new(p.h, p.w, p.motion_down)?;
+        let acc = vec![0f32; corr.ph * corr.pw];
+        Ok(Self {
+            corr,
+            n,
+            max_shift: p.motion_max_shift,
+            acc,
+            pushed: 0,
+            first: None,
+        })
+    }
+
+    /// Frames pushed so far, over both rounds (done at `2 n`).
+    pub fn pushed(&self) -> usize {
+        self.pushed
+    }
+
+    pub fn push(&mut self, reg: &Reg) {
+        assert!(
+            self.pushed < 2 * self.n,
+            "template already has 2 x {} frames",
+            self.n
+        );
+        let prep = match &self.first {
+            None => self.corr.prep(reg),
+            Some(m) => {
+                let [dy, dx] = m.estimate(reg);
+                let (h, w) = (self.corr.h, self.corr.w);
+                self.corr.prep(&reg.shifted(h, w, dy as f32, dx as f32))
+            }
+        };
+        for (a, v) in self.acc.iter_mut().zip(prep) {
+            *a += v;
+        }
+        self.pushed += 1;
+        if self.pushed == self.n {
+            let corr = Correlator::new(self.corr.h, self.corr.w, self.corr.down).expect("checked in new");
+            self.first = Some(Motion::from_image(corr, self.mean(), self.max_shift));
+            self.acc.fill(0.0);
+        }
+    }
+
+    fn mean(&self) -> Vec<f32> {
+        let nf = self.n as f32;
+        self.acc.iter().map(|&v| v / nf).collect()
+    }
+
+    pub fn finish(self) -> Result<Motion, String> {
+        if self.pushed != 2 * self.n {
+            return Err(format!("template got {} of 2 x {} frames", self.pushed, self.n));
+        }
+        let img = self.mean();
+        Ok(Motion::from_image(self.corr, img, self.max_shift))
+    }
+}
+
 /// A built template with what `estimate` and `quality` need.
 pub struct Motion {
     corr: Correlator,
@@ -296,40 +369,19 @@ impl Motion {
     }
 
     /// `motion.make_template` from `n` registration frames, fetched twice by `get_reg`
-    /// (mean of the prepared frames, then the mean again after aligning each frame to it),
-    /// so only one frame is held at a time.
+    /// (see `TemplateBuilder`), so only one frame is held at a time.
     pub fn build(
         p: &MotionParams,
         n: usize,
         get_reg: &mut dyn FnMut(usize) -> Result<Reg, String>,
     ) -> Result<Self, String> {
-        if n == 0 {
-            return Err("no frames for the motion template".into());
-        }
-        let mean_prep = |corr: &Correlator,
-                         get: &mut dyn FnMut(usize) -> Result<Reg, String>|
-         -> Result<Vec<f32>, String> {
-            let mut acc = vec![0f32; corr.ph * corr.pw];
+        let mut b = TemplateBuilder::new(p, n)?;
+        for _round in 0..2 {
             for t in 0..n {
-                for (a, v) in acc.iter_mut().zip(corr.prep(&get(t)?)) {
-                    *a += v;
-                }
+                b.push(&get_reg(t)?);
             }
-            let nf = n as f32;
-            Ok(acc.into_iter().map(|v| v / nf).collect())
-        };
-        let corr = Correlator::new(p.h, p.w, p.motion_down)?;
-        let first = mean_prep(&corr, get_reg)?;
-        let t0 = Self::from_image(corr, first, p.motion_max_shift);
-        let (h, w) = (p.h, p.w);
-        let mut aligned = |t: usize| -> Result<Reg, String> {
-            let reg = get_reg(t)?;
-            let [dy, dx] = t0.estimate(&reg);
-            Ok(reg.shifted(h, w, dy as f32, dx as f32))
-        };
-        let img = mean_prep(&t0.corr, &mut aligned)?;
-        let corr = Correlator::new(p.h, p.w, p.motion_down)?;
-        Ok(Self::from_image(corr, img, p.motion_max_shift))
+        }
+        b.finish()
     }
 
     /// `motion.template_image`: the prepared template, `prep_shape()` float32.

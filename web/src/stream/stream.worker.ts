@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-import init, { AviFile, Engine } from "./pkg/minime_core.js";
+import init, { AviFile, Engine, MotionEngine } from "./pkg/minime_core.js";
 import { orderAvis } from "./order";
 import type { FromWorker, ToWorker } from "./protocol";
 
@@ -15,10 +15,12 @@ async function run({ avis, inputs }: ToWorker): Promise<void> {
   const files = new Map<string, Uint8Array>();
   for (const f of inputs) files.set(f.name, new Uint8Array(await f.arrayBuffer()));
   log(`read ${files.size} input files`);
+  // an inputs folder without footprints is ref_motion.py's: run the motion stage
+  if (!files.has("A_data.npy")) return runMotion(avis, files, log, wasm.memory);
   const engine = new Engine(files);
   log("engine built");
   const [T, H, W] = [engine.frames(), engine.height(), engine.width()];
-  post({ type: "start", frames: T, units: engine.units(), height: H, width: W });
+  post({ type: "start", stage: "stream", frames: T, units: engine.units(), height: H, width: W });
   const reader = new FileReaderSync();
   const t0 = performance.now();
   let t = 0;
@@ -58,6 +60,94 @@ async function run({ avis, inputs }: ToWorker): Promise<void> {
   const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
   engine.free();
   post({ type: "done", files: out, seconds: (performance.now() - t0) / 1e3 }, [...out.values()].map((v) => v.buffer));
+}
+
+type Segment = { file: File; avi: AviFile; read: (off: number, len: number) => Uint8Array };
+
+/** Calls `push` on raw frames `[from, to)` of the session, reading `BLOCK` frames per slice. */
+function forFrames(
+  segs: Segment[],
+  from: number,
+  to: number,
+  setStride: (s: number) => void,
+  push: (chunk: Uint8Array) => void,
+): void {
+  let s0 = 0;
+  for (const { avi, read } of segs) {
+    const n = avi.n_frames();
+    const [lo, hi] = [Math.max(from - s0, 0), Math.min(to - s0, n)];
+    if (lo < hi) {
+      setStride(avi.size(0) === avi.height() * avi.width() ? avi.width() : (avi.width() + 3) & ~3);
+      for (let i = lo; i < hi; i += BLOCK) {
+        const j = Math.min(i + BLOCK, hi);
+        const start = avi.offset(i);
+        const buf = read(start, avi.offset(j - 1) + avi.size(j - 1) - start);
+        for (let k = i; k < j; k++) {
+          const o = avi.offset(k) - start;
+          push(buf.subarray(o, o + avi.size(k)));
+        }
+      }
+    }
+    s0 += n;
+    if (s0 >= to) return;
+  }
+  if (s0 < to) throw new Error(`frames ${from}-${to} requested, the files hold ${s0}`);
+}
+
+/** Motion stage (`minime-core motion`): session template, then shift and quality of `[t0, t1)`. */
+function runMotion(
+  avis: File[],
+  files: Map<string, Uint8Array>,
+  log: (what: string) => void,
+  memory: WebAssembly.Memory,
+): void {
+  const reader = new FileReaderSync();
+  const segs: Segment[] = orderAvis(avis).map((file) => {
+    const read = (off: number, len: number) =>
+      new Uint8Array(reader.readAsArrayBuffer(file.slice(off, off + len)));
+    return { file, read, avi: AviFile.parse(read, file.size) };
+  });
+  if (!segs.length) throw new Error("no AVIs");
+  const engine = new MotionEngine(files, segs[0].avi.n_frames());
+  const [H, W, t0, t1, n] = [engine.height(), engine.width(), engine.t0(), engine.t1(), engine.template_n()];
+  for (const { file, avi } of segs)
+    if (avi.height() !== H || avi.width() !== W)
+      throw new Error(`${file.name}: ${avi.height()}x${avi.width()} frames, inputs say ${H}x${W}`);
+  log(`${segs.length} files indexed; template from ${n} frames (read twice), then frames ${t0}-${t1}`);
+  const total = 2 * n + (t1 - t0);
+  post({ type: "start", stage: "motion", frames: total, units: 0, height: H, width: W });
+  const start = performance.now();
+  let done = 0;
+  let lastPost = 0;
+  const tick = () => {
+    done++;
+    const now = performance.now();
+    if (now - lastPost > 500) {
+      lastPost = now;
+      post({ type: "progress", done, frames: total, seconds: (now - start) / 1e3, stateMb: 0 });
+    }
+  };
+  const setStride = (s: number) => engine.set_stride(s);
+  for (let round = 0; round < 2; round++)
+    forFrames(segs, 0, n, setStride, (c) => {
+      engine.push_template_raw(c);
+      tick();
+    });
+  engine.build_template();
+  const tTemplate = (performance.now() - start) / 1e3;
+  log(`template built`);
+  forFrames(segs, t0, t1, setStride, (c) => {
+    engine.push_raw(c);
+    tick();
+  });
+  const seconds = (performance.now() - start) / 1e3;
+  const heapMb = memory.buffer.byteLength / 2 ** 20;
+  log(`motion done, wasm heap ${heapMb.toFixed(0)} MB`);
+  const timing = { where: "browser", template: tTemplate, total: seconds, wasm_heap_mb: heapMb };
+  const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
+  engine.free();
+  for (const s of segs) s.avi.free();
+  post({ type: "done", files: out, seconds }, [...out.values()].map((v) => v.buffer));
 }
 
 self.onmessage = (e: MessageEvent<ToWorker>) => {

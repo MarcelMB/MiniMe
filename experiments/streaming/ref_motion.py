@@ -5,7 +5,8 @@ the first ``template_frames`` frames of segment 0), then estimates the shift of 
 in ``[t0, t1)`` the way ``pass1.Pass1.process`` does, and writes, under
 ``processed/stream/ref_motion_<t0>_<t1>/``:
 
-* ``inputs/params.json``: the motion parameters plus ``H``, ``W``, ``t0``, ``t1``;
+* ``inputs/``: ``params.json`` (the motion parameters plus ``H``, ``W``, ``t0``, ``t1``) and
+  ``check_frames.npy`` (the frames whose images the Rust core also saves);
 * ``ref/``: ``template.npy`` (prepared template image, float32), ``shifts.npy`` ((n, 2)
   float64, before pass 1's float32 cast), ``quality.npy`` (float32), and for the frames
   in ``CHECK_FRAMES`` the registration image ``reg.npy`` (float32) and the prepared,
@@ -70,6 +71,8 @@ def main() -> None:
     inp.mkdir(exist_ok=True)
     ref.mkdir(exist_ok=True)
     (inp / "params.json").write_text(json.dumps(motion_meta(params, H, W, a.t0, a.t1), indent=1))
+    want = [t for t in CHECK_FRAMES if a.t0 <= t < a.t1]
+    np.save(inp / "check_frames.npy", np.asarray(want, np.int64))
 
     t = time.perf_counter()
     tmpl = pass1.build_template(info, params)
