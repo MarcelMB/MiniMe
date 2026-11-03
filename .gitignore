@@ -17,3 +17,5 @@ docs/superpowers/
 .superpowers/
 bench/
 TODO.md
+rust/*/target/
+web/src/stream/pkg/

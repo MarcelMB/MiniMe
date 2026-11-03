@@ -6,12 +6,14 @@ export type Page = (typeof PAGES)[number];
 export type Route =
   | { name: "home" }
   | { name: "new" }
+  | { name: "stream" }
   | { name: "job"; id: string }
   | { name: "run"; id: string; page: Page };
 
 export function parseHash(h: string): Route {
   const parts = h.replace(/^#\/?/, "").split("/").filter(Boolean);
   if (parts[0] === "new") return { name: "new" };
+  if (parts[0] === "stream") return { name: "stream" };
   if (parts[0] === "job" && parts[1]) return { name: "job", id: parts[1] };
   if (parts[0] === "run" && parts[1]) {
     const page = (PAGES as readonly string[]).includes(parts[2] ?? "") ? (parts[2] as Page) : "overview";
@@ -26,6 +28,8 @@ export function href(r: Route): string {
       return "#/";
     case "new":
       return "#/new";
+    case "stream":
+      return "#/stream";
     case "job":
       return `#/job/${r.id}`;
     case "run":

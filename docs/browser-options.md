@@ -86,7 +86,9 @@ Batch baseline: 262 units, recall 0.53, precision 0.94, F1 0.68, trace corr 0.86
 - [ ] Stitch: tune `--cos`, or keep same-cell links only when the footprints also match in
   size, so that overlapping pairs survive.
 - [ ] Align windows to seed windows, so windows the length of `seeds_wnd` work.
-- [ ] Prototype: stream a 30-min raw AVI → summary images on WebGPU → traces from native
-  MiniMe footprints. Pass: heap < 500 MB, ≥ 2× real time on M1 Max, match native to 1e-4.
+- [x] Browser slice 1 (2026-11-02): raw AVI → preprocessing → traces + sums → footprint
+  update, Rust → wasm in a worker (`#/stream`), matches Python exactly; see `docs/browser-app.md`.
+- [ ] Browser: port discovery (full window pipeline), then threads, WebGPU, OPFS checkpoints
+  (`docs/browser-app.md`, Next).
 - [ ] Check: does Pyodide's OpenCV `VideoCapture` read AVI at all (expected no).
 - [ ] Reconcile V size: 1.66 GB (lane 03, measured rank sum, float32) vs ~3 GB (lane 02).

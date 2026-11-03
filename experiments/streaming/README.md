@@ -2,7 +2,8 @@
 
 Can MiniMe find footprints and traces without holding the whole session, not even as
 factors? The design is in `docs/browser-options.md`. This folder tests it in Python on the
-30-min synthetic GRIN session, which has ground truth. There is no browser code yet.
+30-min synthetic GRIN session, which has ground truth. The browser port (Rust core in
+`rust/minime-core`, page `#/stream` in `web/`) is checked against these scripts.
 
 **Inputs:** `/Volumes/Extreme SSD/synth_v4_grin30/` (`raw/`, `meta.json`, `truth.npz`) and
 its batch run `processed/baseline/`. From the baseline the scripts take the motion
@@ -17,6 +18,8 @@ is 0.57, precision 0.94, trace correlation 0.86.
 | `t2_stream.py --footprints baseline_final` | Test 3: are per-frame traces with fixed footprints as good as the batch loop's? |
 | `t2_stream.py --footprints baseline_init --n-updates 1` (and `2`) | Test 2: does a footprint update from streamed sums match the batch loop? |
 | `t2_stream.py --footprints stitched --stitched DIR --n-updates 1` | The whole bounded-memory pipeline. Test 4 (footprint stability per segment) runs after every first update. |
+| `ref_dump.py --footprints stitched --stitched DIR [--frames N]` | Reference for the Rust core: one pass + update, with its inputs as plain `.npy` (`processed/stream/ref_<name>_<T>/`). |
+| `check_rust.py REF_DIR RUST_DIR` | Compares a native or browser Rust run with that reference (bit-exact frames, sums to 1e-9, footprints to 1e-6). |
 
 ## Run
 

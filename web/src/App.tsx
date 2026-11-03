@@ -3,6 +3,7 @@ import { JobPage } from "./launch/JobPage";
 import { NewRun } from "./launch/NewRun";
 import { href, useRoute } from "./router";
 import { RunPage } from "./run/RunPage";
+import { StreamPage } from "./stream/StreamPage";
 
 export function App() {
   const route = useRoute();
@@ -25,10 +26,14 @@ export function App() {
           <a className="btn" href={href({ name: "new" })}>
             New run
           </a>
+          <a className="btn" href={href({ name: "stream" })}>
+            In browser
+          </a>
         </nav>
       </header>
       {route.name === "home" && <Home />}
       {route.name === "new" && <NewRun />}
+      {route.name === "stream" && <StreamPage />}
       {route.name === "job" && <JobPage key={route.id} id={route.id} />}
       {route.name === "run" && (
         <RunPage key={route.id} id={route.id} page={route.page} />
