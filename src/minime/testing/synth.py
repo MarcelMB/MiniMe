@@ -753,6 +753,8 @@ def write_session(
     for f0, chunk in synth_chunks(side, side, T, seed, chunk=segment, options=options):
         seg = f0 // segment
         writer = cv2.VideoWriter(str(out_dir / f"{seg}.avi"), fourcc, fps, (side, side), False)
+        if not writer.isOpened():
+            raise RuntimeError(f"OpenCV {cv2.__version__} cannot write a GREY .avi (no FFmpeg?)")
         for frame in chunk:
             writer.write(frame)
         writer.release()
