@@ -1,0 +1,112 @@
+{
+ "stages": [
+  {
+   "stage": "probe",
+   "seconds": 0.08759479999935138
+  },
+  {
+   "stage": "hash",
+   "seconds": 0.487102799999775
+  },
+  {
+   "stage": "template",
+   "seconds": 2.498623399999815
+  },
+  {
+   "stage": "pass1",
+   "seconds": 50.61124969999946
+  },
+  {
+   "stage": "sidecar_save",
+   "seconds": 0.005102099999930942
+  },
+  {
+   "stage": "pass2",
+   "seconds": 59.552727200000845
+  },
+  {
+   "stage": "factors_save",
+   "seconds": 0.015386600000056205
+  },
+  {
+   "stage": "corr_setup",
+   "seconds": 1.9920257999992828
+  },
+  {
+   "stage": "seeds_init",
+   "seconds": 0.7958844999993744
+  },
+  {
+   "stage": "pnr_refine",
+   "seconds": 0.6950155999993513
+  },
+  {
+   "stage": "seeds_merge",
+   "seconds": 0.3298083999998198
+  },
+  {
+   "stage": "initA",
+   "seconds": 0.19768389999990177
+  },
+  {
+   "stage": "initC",
+   "seconds": 1.0724720999996862
+  },
+  {
+   "stage": "unit_merge",
+   "seconds": 0.35701330000028975
+  },
+  {
+   "stage": "cnmf",
+   "seconds": 10.366498600000341
+  },
+  {
+   "stage": "write_outputs",
+   "seconds": 0.08772140000019135
+  }
+ ],
+ "counts": {
+  "seeds_init": 14999,
+  "seeds_pnr": 9540,
+  "seeds_gmm": 9540,
+  "seeds_merged": 482,
+  "units_initA": 482,
+  "units_init_merge": 482,
+  "units_after_spatial_0": 479,
+  "units_after_merge_0": 479,
+  "units_after_spatial_1": 479,
+  "units_after_merge_1": 479,
+  "iter": 2,
+  "units_final": 479
+ },
+ "motion": {
+  "sidecar_reused": false,
+  "quality_median": 0.5171888470649719,
+  "max_abs_shift_px": 5.405699253082275
+ },
+ "bytes": {
+  "raw": 8536864984,
+  "store_peak": 8535960000,
+  "factors": 328953738,
+  "cnmf": 92881554
+ },
+ "pass1_cpu_seconds": {
+  "read_avi": 19.354977799999688,
+  "denoise": 218.23704930000076,
+  "bandpass": 73.43023179999818,
+  "tophat": 19.48398200000156,
+  "motion_estimate": 141.00278429999798,
+  "motion_apply": 75.5081005999973,
+  "max_proj": 1.2473437000007834,
+  "block_max": 1.179333799998858,
+  "pack": 10.652934900000218,
+  "write_tiles": 15.534165199995186
+ },
+ "peak_rss": 2033184768,
+ "peak_rss_children": null,
+ "wall_total": 129.29340299999967,
+ "workers": 16,
+ "device": "gpu",
+ "gpu": "AMD Radeon(TM) 610M (IntegratedGPU) via Vulkan",
+ "version": "0.0.2"
+}

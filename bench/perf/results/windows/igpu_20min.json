@@ -1,0 +1,60 @@
+{
+ "label": "igpu_20min",
+ "machine": "Windows-10-10.0.26200-SP0",
+ "cpu": "AMD64 Family 26 Model 68 Stepping 0, AuthenticAMD",
+ "adapter": "AMD Radeon(TM) 610M (IntegratedGPU) via Vulkan",
+ "workers": 16,
+ "raw": "D:\\minime-demo\\raw",
+ "rows": [
+  {
+   "device": "gpu",
+   "repeat": 1,
+   "wall_s": 129.29340299999967,
+   "pass1_s": 50.61124969999946,
+   "pass2_s": 59.552727200000845,
+   "cnmf_s": 10.366498600000341,
+   "units": 479,
+   "counts": {
+    "seeds_init": 14999,
+    "seeds_pnr": 9540,
+    "seeds_gmm": 9540,
+    "seeds_merged": 482,
+    "units_initA": 482,
+    "units_init_merge": 482,
+    "units_after_spatial_0": 479,
+    "units_after_merge_0": 479,
+    "units_after_spatial_1": 479,
+    "units_after_merge_1": 479,
+    "iter": 2,
+    "units_final": 479
+   },
+   "peak_rss_children_gb": 0.0,
+   "gpu": "AMD Radeon(TM) 610M (IntegratedGPU) via Vulkan"
+  },
+  {
+   "device": "gpu",
+   "repeat": 2,
+   "wall_s": 128.36777549999988,
+   "pass1_s": 49.25062869999965,
+   "pass2_s": 60.146037599999545,
+   "cnmf_s": 10.271443700000418,
+   "units": 479,
+   "counts": {
+    "seeds_init": 14999,
+    "seeds_pnr": 9540,
+    "seeds_gmm": 9540,
+    "seeds_merged": 482,
+    "units_initA": 482,
+    "units_init_merge": 482,
+    "units_after_spatial_0": 479,
+    "units_after_merge_0": 479,
+    "units_after_spatial_1": 479,
+    "units_after_merge_1": 479,
+    "iter": 2,
+    "units_final": 479
+   },
+   "peak_rss_children_gb": 0.0,
+   "gpu": "AMD Radeon(TM) 610M (IntegratedGPU) via Vulkan"
+  }
+ ]
+}

@@ -1,0 +1,112 @@
+{
+ "stages": [
+  {
+   "stage": "probe",
+   "seconds": 0.06802189999962138
+  },
+  {
+   "stage": "hash",
+   "seconds": 0.4760569999998552
+  },
+  {
+   "stage": "template",
+   "seconds": 2.585496800000328
+  },
+  {
+   "stage": "pass1",
+   "seconds": 49.190049899999394
+  },
+  {
+   "stage": "sidecar_save",
+   "seconds": 0.006052500000805594
+  },
+  {
+   "stage": "pass2",
+   "seconds": 62.17751930000031
+  },
+  {
+   "stage": "factors_save",
+   "seconds": 0.017603499999495398
+  },
+  {
+   "stage": "corr_setup",
+   "seconds": 2.0723962000001848
+  },
+  {
+   "stage": "seeds_init",
+   "seconds": 0.849171099999694
+  },
+  {
+   "stage": "pnr_refine",
+   "seconds": 0.6719425999999658
+  },
+  {
+   "stage": "seeds_merge",
+   "seconds": 0.2918282000000545
+  },
+  {
+   "stage": "initA",
+   "seconds": 0.20170130000042263
+  },
+  {
+   "stage": "initC",
+   "seconds": 1.1090196999994077
+  },
+  {
+   "stage": "unit_merge",
+   "seconds": 0.3767373000000589
+  },
+  {
+   "stage": "cnmf",
+   "seconds": 10.742776300000514
+  },
+  {
+   "stage": "write_outputs",
+   "seconds": 0.0937368000004426
+  }
+ ],
+ "counts": {
+  "seeds_init": 14999,
+  "seeds_pnr": 9540,
+  "seeds_gmm": 9540,
+  "seeds_merged": 482,
+  "units_initA": 482,
+  "units_init_merge": 482,
+  "units_after_spatial_0": 479,
+  "units_after_merge_0": 479,
+  "units_after_spatial_1": 479,
+  "units_after_merge_1": 479,
+  "iter": 2,
+  "units_final": 479
+ },
+ "motion": {
+  "sidecar_reused": false,
+  "quality_median": 0.5171888470649719,
+  "max_abs_shift_px": 5.405699253082275
+ },
+ "bytes": {
+  "raw": 8536864984,
+  "store_peak": 8535960000,
+  "factors": 328953740,
+  "cnmf": 92881552
+ },
+ "pass1_cpu_seconds": {
+  "read_avi": 20.914891800000987,
+  "denoise": 222.31174009998995,
+  "bandpass": 69.73296180000489,
+  "tophat": 18.861044799994488,
+  "motion_estimate": 134.93338679999397,
+  "motion_apply": 72.64742130000286,
+  "max_proj": 1.1001784000036423,
+  "block_max": 1.0285983000057968,
+  "pack": 9.520938900001056,
+  "write_tiles": 13.977615099999639
+ },
+ "peak_rss": 2006339584,
+ "peak_rss_children": null,
+ "wall_total": 131.08089839999957,
+ "workers": 16,
+ "device": "cpu",
+ "gpu": null,
+ "version": "0.0.2"
+}

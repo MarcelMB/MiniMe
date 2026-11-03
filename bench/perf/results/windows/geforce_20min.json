@@ -1,0 +1,110 @@
+{
+ "label": "geforce_20min",
+ "machine": "Windows-10-10.0.26200-SP0",
+ "cpu": "AMD64 Family 26 Model 68 Stepping 0, AuthenticAMD",
+ "adapter": "NVIDIA GeForce RTX 4070 (DiscreteGPU) via Vulkan",
+ "workers": 16,
+ "raw": "D:\\minime-demo\\raw",
+ "rows": [
+  {
+   "device": "gpu",
+   "repeat": 1,
+   "wall_s": 90.42772960000002,
+   "pass1_s": 39.025567599999704,
+   "pass2_s": 34.21103959999982,
+   "cnmf_s": 10.71460130000014,
+   "units": 479,
+   "counts": {
+    "seeds_init": 14999,
+    "seeds_pnr": 9540,
+    "seeds_gmm": 9540,
+    "seeds_merged": 482,
+    "units_initA": 482,
+    "units_init_merge": 482,
+    "units_after_spatial_0": 479,
+    "units_after_merge_0": 479,
+    "units_after_spatial_1": 479,
+    "units_after_merge_1": 479,
+    "iter": 2,
+    "units_final": 479
+   },
+   "peak_rss_children_gb": 0.0,
+   "gpu": "NVIDIA GeForce RTX 4070 (DiscreteGPU) via Vulkan"
+  },
+  {
+   "device": "cpu",
+   "repeat": 1,
+   "wall_s": 131.08089839999957,
+   "pass1_s": 49.190049899999394,
+   "pass2_s": 62.17751930000031,
+   "cnmf_s": 10.742776300000514,
+   "units": 479,
+   "counts": {
+    "seeds_init": 14999,
+    "seeds_pnr": 9540,
+    "seeds_gmm": 9540,
+    "seeds_merged": 482,
+    "units_initA": 482,
+    "units_init_merge": 482,
+    "units_after_spatial_0": 479,
+    "units_after_merge_0": 479,
+    "units_after_spatial_1": 479,
+    "units_after_merge_1": 479,
+    "iter": 2,
+    "units_final": 479
+   },
+   "peak_rss_children_gb": 0.0,
+   "gpu": null
+  },
+  {
+   "device": "gpu",
+   "repeat": 2,
+   "wall_s": 104.78576460000022,
+   "pass1_s": 49.82315490000019,
+   "pass2_s": 35.144251599999734,
+   "cnmf_s": 10.732395300000462,
+   "units": 479,
+   "counts": {
+    "seeds_init": 14999,
+    "seeds_pnr": 9540,
+    "seeds_gmm": 9540,
+    "seeds_merged": 482,
+    "units_initA": 482,
+    "units_init_merge": 482,
+    "units_after_spatial_0": 479,
+    "units_after_merge_0": 479,
+    "units_after_spatial_1": 479,
+    "units_after_merge_1": 479,
+    "iter": 2,
+    "units_final": 479
+   },
+   "peak_rss_children_gb": 0.0,
+   "gpu": "NVIDIA GeForce RTX 4070 (DiscreteGPU) via Vulkan"
+  },
+  {
+   "device": "cpu",
+   "repeat": 2,
+   "wall_s": 132.19406210000034,
+   "pass1_s": 50.78762420000021,
+   "pass2_s": 61.67771469999934,
+   "cnmf_s": 10.717871599999853,
+   "units": 479,
+   "counts": {
+    "seeds_init": 14999,
+    "seeds_pnr": 9540,
+    "seeds_gmm": 9540,
+    "seeds_merged": 482,
+    "units_initA": 482,
+    "units_init_merge": 482,
+    "units_after_spatial_0": 479,
+    "units_after_merge_0": 479,
+    "units_after_spatial_1": 479,
+    "units_after_merge_1": 479,
+    "iter": 2,
+    "units_final": 479
+   },
+   "peak_rss_children_gb": 0.0,
+   "gpu": null
+  }
+ ]
+}

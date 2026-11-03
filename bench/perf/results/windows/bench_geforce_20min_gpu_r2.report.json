@@ -1,0 +1,112 @@
+{
+ "stages": [
+  {
+   "stage": "probe",
+   "seconds": 0.06625160000021424
+  },
+  {
+   "stage": "hash",
+   "seconds": 0.4997238000005382
+  },
+  {
+   "stage": "template",
+   "seconds": 2.642247700000553
+  },
+  {
+   "stage": "pass1",
+   "seconds": 49.82315490000019
+  },
+  {
+   "stage": "sidecar_save",
+   "seconds": 0.00995989999955782
+  },
+  {
+   "stage": "pass2",
+   "seconds": 35.144251599999734
+  },
+  {
+   "stage": "factors_save",
+   "seconds": 0.017879399999401357
+  },
+  {
+   "stage": "corr_setup",
+   "seconds": 2.088674699999501
+  },
+  {
+   "stage": "seeds_init",
+   "seconds": 0.8404004999993049
+  },
+  {
+   "stage": "pnr_refine",
+   "seconds": 0.6812353000004805
+  },
+  {
+   "stage": "seeds_merge",
+   "seconds": 0.30426769999940007
+  },
+  {
+   "stage": "initA",
+   "seconds": 0.19196720000036294
+  },
+  {
+   "stage": "initC",
+   "seconds": 1.1100970999996207
+  },
+  {
+   "stage": "unit_merge",
+   "seconds": 0.37640080000073795
+  },
+  {
+   "stage": "cnmf",
+   "seconds": 10.732395300000462
+  },
+  {
+   "stage": "write_outputs",
+   "seconds": 0.10449359999984154
+  }
+ ],
+ "counts": {
+  "seeds_init": 14999,
+  "seeds_pnr": 9540,
+  "seeds_gmm": 9540,
+  "seeds_merged": 482,
+  "units_initA": 482,
+  "units_init_merge": 482,
+  "units_after_spatial_0": 479,
+  "units_after_merge_0": 479,
+  "units_after_spatial_1": 479,
+  "units_after_merge_1": 479,
+  "iter": 2,
+  "units_final": 479
+ },
+ "motion": {
+  "sidecar_reused": false,
+  "quality_median": 0.5171888470649719,
+  "max_abs_shift_px": 5.405699253082275
+ },
+ "bytes": {
+  "raw": 8536864984,
+  "store_peak": 8535960000,
+  "factors": 328953737,
+  "cnmf": 92881554
+ },
+ "pass1_cpu_seconds": {
+  "read_avi": 20.998602200001187,
+  "denoise": 220.09689589999653,
+  "bandpass": 68.2768401000103,
+  "tophat": 18.930305400002908,
+  "motion_estimate": 131.3980002999997,
+  "motion_apply": 73.44791919999625,
+  "max_proj": 1.0931722999976046,
+  "block_max": 0.99097939999956,
+  "pack": 10.639794800000345,
+  "write_tiles": 16.355842300003133
+ },
+ "peak_rss": 2031558656,
+ "peak_rss_children": null,
+ "wall_total": 104.78576460000022,
+ "workers": 16,
+ "device": "gpu",
+ "gpu": "NVIDIA GeForce RTX 4070 (DiscreteGPU) via Vulkan",
+ "version": "0.0.2"
+}

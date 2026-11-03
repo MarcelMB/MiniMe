@@ -1,0 +1,42 @@
+> C:\Users\marce\Documents\Git\MiniMe\.venv\Scripts\minime run D:\minime-demo\raw --params C:\Users\marce\Documents\Git\MiniMe\params_d12.json --workers 16 --device gpu --fps 20 --name bench_igpu_20min_gpu_r1 --overwrite
+24 video(s), read in this order: 0.avi, 1.avi, 2.avi, ..., 22.avi, 23.avi
+frame rate: 20 fps (--fps)
+D:\minime-demo\processed\bench_igpu_20min_gpu_r1
+{
+ "seeds_init": 14999,
+ "seeds_pnr": 9540,
+ "seeds_gmm": 9540,
+ "seeds_merged": 482,
+ "units_initA": 482,
+ "units_init_merge": 482,
+ "units_after_spatial_0": 479,
+ "units_after_merge_0": 479,
+ "units_after_spatial_1": 479,
+ "units_after_merge_1": 479,
+ "iter": 2,
+ "units_final": 479
+}
+> C:\Users\marce\Documents\Git\MiniMe\.venv\Scripts\minime run D:\minime-demo\raw --params C:\Users\marce\Documents\Git\MiniMe\params_d12.json --workers 16 --device gpu --fps 20 --name bench_igpu_20min_gpu_r2 --overwrite
+24 video(s), read in this order: 0.avi, 1.avi, 2.avi, ..., 22.avi, 23.avi
+frame rate: 20 fps (--fps)
+D:\minime-demo\processed\bench_igpu_20min_gpu_r2
+{
+ "seeds_init": 14999,
+ "seeds_pnr": 9540,
+ "seeds_gmm": 9540,
+ "seeds_merged": 482,
+ "units_initA": 482,
+ "units_init_merge": 482,
+ "units_after_spatial_0": 479,
+ "units_after_merge_0": 479,
+ "units_after_spatial_1": 479,
+ "units_after_merge_1": 479,
+ "iter": 2,
+ "units_final": 479
+}
+
+adapter: AMD Radeon(TM) 610M (IntegratedGPU) via Vulkan
+| device | rep | wall s | pass1 s | pass2 s | cnmf s | units |
+|---|---|---|---|---|---|---|
+| gpu | 1 | 129 | 51 | 60 | 10 | 479 |
+| gpu | 2 | 128 | 49 | 60 | 10 | 479 |
