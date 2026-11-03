@@ -1,13 +1,16 @@
 //! wasm-bindgen API for the browser worker: an AVI index over a synchronous JS read
 //! callback (`FileReaderSync` on `File.slice`), the streaming pass, the motion stage and
 //! pass 1, each fed one raw frame at a time, and pass 2, fed one tile of the tile store at a
-//! time. Results come back as the same `.npy` files the native harness writes.
+//! time, and the seed stage on the factors those two leave. Results come back as the same
+//! `.npy` files the native harness writes.
 
 use crate::avi::{self, AviIndex, ReadAt};
 use crate::compress::{self, Gaussian, Normals, Pass2Params, Recorded, TileFactors};
+use crate::factors::Factors;
 use crate::motion::{self, Motion, MotionParams, Reg, TemplateBuilder};
 use crate::npy;
 use crate::pass1::{self, Pass1, Pass1Params};
+use crate::seeds::{self, SeedParams, SeedsResult};
 use crate::stream::StreamPass;
 use crate::{finish, Inputs};
 use js_sys::{Function, Map, Uint8Array};
@@ -525,5 +528,84 @@ impl Pass2Engine {
             })
             .collect();
         npy_map(files)
+    }
+}
+
+/// The seed stage (`minime-core seeds`) on the window's own factors: pass 1's block maxima
+/// and max projection, pass 2's tiles. `run`, then `finish`.
+#[wasm_bindgen]
+pub struct SeedsEngine {
+    p: SeedParams,
+    f: Factors,
+    res: Option<SeedsResult>,
+}
+
+#[wasm_bindgen]
+impl SeedsEngine {
+    /// `files`: `ref_seeds.py`'s `seeds.json`; `pass1`, `pass2`: the engines that ran on this
+    /// window (pass 2 finished).
+    #[wasm_bindgen(constructor)]
+    pub fn new(files: &Map, pass1: &Pass1Engine, pass2: &Pass2Engine) -> Result<SeedsEngine, JsError> {
+        let err = |e: String| JsError::new(&e);
+        let p: SeedParams = serde_json::from_slice(&map_bytes(files, "seeds.json").map_err(err)?)
+            .map_err(|e| JsError::new(&format!("seeds.json: {e}")))?;
+        let p1 = &pass1.pass;
+        if p1.t != p.t || pass2.p.t != p.t || pass2.done.len() != p1.grid.len() {
+            return Err(JsError::new(&format!(
+                "seeds.json says {} frames; pass 1 ran {}, pass 2 {} on {} of {} tiles",
+                p.t,
+                p1.t,
+                pass2.p.t,
+                pass2.done.len(),
+                p1.grid.len()
+            )));
+        }
+        let f = Factors::new(
+            p.h,
+            p.w,
+            p.t,
+            p.tile,
+            pass2.done.clone(),
+            p1.max_proj.clone(),
+            p1.block_max.clone(),
+            p1.edges.clone(),
+        )
+        .map_err(err)?;
+        Ok(SeedsEngine { p, f, res: None })
+    }
+
+    /// Run the stage; returns the number of merged seeds.
+    pub fn run(&mut self) -> Result<usize, JsError> {
+        let now = || js_sys::Date::now() / 1e3;
+        let r = seeds::run(&self.f, &self.p, &now).map_err(|e| JsError::new(&e))?;
+        let n = r.merged.len();
+        self.res = Some(r);
+        Ok(n)
+    }
+
+    /// Output name -> `.npy` bytes (the names `minime-core seeds` writes; the summary is
+    /// `summary_seeds.json`).
+    pub fn finish(&self, timing_json: &str) -> Result<Map, JsError> {
+        let r = self
+            .res
+            .as_ref()
+            .ok_or_else(|| JsError::new("run the stage first"))?;
+        let mut summary: serde_json::Value = serde_json::from_str(timing_json).unwrap_or_default();
+        summary["stage"] = "seeds".into();
+        summary["frames"] = self.p.t.into();
+        let files = seeds::outputs(r, summary)
+            .into_iter()
+            .map(|(n, b)| {
+                (
+                    if n == "summary.json" {
+                        "summary_seeds.json".into()
+                    } else {
+                        n
+                    },
+                    b,
+                )
+            })
+            .collect();
+        Ok(npy_map(files))
     }
 }

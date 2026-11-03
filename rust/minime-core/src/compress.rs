@@ -488,6 +488,7 @@ pub fn autocorr_keep(vt: &[f32], t: usize, z: f64, rho_min: f64) -> Vec<bool> {
 // ---------------------------------------------------------------------------
 
 /// `factors.TileFactors` of one tile, plus the last rSVD rank `k`.
+#[derive(Clone)]
 pub struct TileFactors {
     pub w: Vec<f32>, // (P, r) row-major: left factors scaled by singular values
     pub v: Vec<f32>, // (T, r) row-major: unit-norm temporal components

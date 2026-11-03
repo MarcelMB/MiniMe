@@ -4,13 +4,17 @@
 pub mod avi;
 pub mod butter;
 pub mod compress;
+pub mod corr;
+pub mod factors;
 pub mod filters;
+pub mod gmm;
 pub mod linalg;
 pub mod motion;
 pub mod nnqp;
 pub mod npy;
 pub mod pass1;
 pub mod preprocess;
+pub mod seeds;
 pub mod stream;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;

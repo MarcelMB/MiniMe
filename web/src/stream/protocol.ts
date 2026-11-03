@@ -4,7 +4,7 @@ export type ToWorker = { avis: File[]; inputs: File[] };
 export type FromWorker =
   | {
       type: "start";
-      stage: "stream" | "motion" | "pass1" | "pass2";
+      stage: "stream" | "motion" | "pass1" | "pass2" | "seeds";
       frames: number;
       units: number;
       height: number;

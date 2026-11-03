@@ -1,7 +1,15 @@
 /// <reference lib="webworker" />
 
 import { orderAvis } from "./order";
-import init, { AviFile, crc32, Engine, MotionEngine, Pass1Engine, Pass2Engine } from "./pkg/minime_core.js";
+import init, {
+  AviFile,
+  crc32,
+  Engine,
+  MotionEngine,
+  Pass1Engine,
+  Pass2Engine,
+  SeedsEngine,
+} from "./pkg/minime_core.js";
 import type { FromWorker, ToWorker } from "./protocol";
 
 const post = (m: FromWorker, transfer: Transferable[] = []) => self.postMessage(m, transfer);
@@ -161,7 +169,8 @@ const FLUSH = 100; // frames buffered before they are appended to the tile files
 
 /** Pass 1 (`minime-core pass1`) on `[t0, t1)`, with the tile store in OPFS: one file per
  * tile, written through sync access handles, read back at the end for its CRC-32s. With
- * `pass2.json` in the inputs, pass 2 follows on the same tile files. */
+ * `pass2.json` in the inputs, pass 2 follows on the same tile files (and with `seeds.json`
+ * the seed stage on the factors). */
 async function runPass1(
   avis: File[],
   files: Map<string, Uint8Array>,
@@ -234,7 +243,7 @@ async function runPass1(
   const tCrc = (performance.now() - s) / 1e3;
   const heapMb = memory.buffer.byteLength / 2 ** 20;
   log(`pass 1 done, ${(storeBytes / 2 ** 20).toFixed(0)} MB in OPFS, wasm heap ${heapMb.toFixed(0)} MB`);
-  const p2 = files.has("pass2.json") ? runPass2(handles, files, log, memory) : null;
+  const p2 = files.has("pass2.json") ? runPass2(handles, files, log, memory, engine) : null;
   for (const h of handles) h.close();
   const timing = {
     where: "browser",
@@ -255,12 +264,14 @@ async function runPass1(
   );
 }
 
-/** Pass 2 (`minime-core pass2`) on pass 1's open tile files, one tile at a time. */
+/** Pass 2 (`minime-core pass2`) on pass 1's open tile files, one tile at a time; then the
+ * seed stage when the inputs hold `seeds.json`. */
 function runPass2(
   handles: FileSystemSyncAccessHandle[],
   files: Map<string, Uint8Array>,
   log: (what: string) => void,
   memory: WebAssembly.Memory,
+  pass1: Pass1Engine,
 ): { files: Map<string, Uint8Array>; seconds: number } {
   const engine = new Pass2Engine(files);
   const n = engine.n_tiles();
@@ -281,6 +292,35 @@ function runPass2(
   const heapMb = memory.buffer.byteLength / 2 ** 20;
   log(`pass 2 done, ${rankTotal} components, wasm heap ${heapMb.toFixed(0)} MB`);
   const timing = { where: "browser", pass2: seconds, read_tiles: tRead / 1e3, wasm_heap_mb: heapMb };
+  const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
+  let total = seconds;
+  if (files.has("seeds.json")) {
+    const s = runSeeds(files, pass1, engine, log, memory);
+    for (const [name, bytes] of s.files) out.set(name, bytes);
+    total += s.seconds;
+  }
+  engine.free();
+  return { files: out, seconds: total };
+}
+
+/** Seeds, PNR/GMM filter and seed merge (`minime-core seeds`) on the window's factors. */
+function runSeeds(
+  files: Map<string, Uint8Array>,
+  pass1: Pass1Engine,
+  pass2: Pass2Engine,
+  log: (what: string) => void,
+  memory: WebAssembly.Memory,
+): { files: Map<string, Uint8Array>; seconds: number } {
+  post({ type: "start", stage: "seeds", frames: 1, units: 0, height: 0, width: 0 });
+  const start = performance.now();
+  const engine = new SeedsEngine(files, pass1, pass2);
+  const tBuild = (performance.now() - start) / 1e3;
+  const merged = engine.run();
+  const seconds = (performance.now() - start) / 1e3;
+  post({ type: "progress", done: 1, frames: 1, seconds, stateMb: 0 });
+  const heapMb = memory.buffer.byteLength / 2 ** 20;
+  log(`seeds done, ${merged} merged seeds, wasm heap ${heapMb.toFixed(0)} MB`);
+  const timing = { where: "browser", seeds: seconds, build_factors: tBuild, wasm_heap_mb: heapMb };
   const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
   engine.free();
   return { files: out, seconds };

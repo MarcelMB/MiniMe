@@ -80,6 +80,17 @@ pub fn read_f32(bytes: &[u8]) -> Result<Npy<f32>, String> {
     Ok(Npy { shape, data })
 }
 
+/// Read a `uint8` `.npy`.
+pub fn read_u8(bytes: &[u8]) -> Result<Npy<u8>, String> {
+    let (descr, shape, off) = header(bytes)?;
+    if descr != "|u1" {
+        return Err(format!("expected uint8, got {descr}"));
+    }
+    let data = bytes[off..].to_vec();
+    check_len(&shape, data.len())?;
+    Ok(Npy { shape, data })
+}
+
 /// Read an integer `.npy` as `i64`.
 pub fn read_i64(bytes: &[u8]) -> Result<Npy<i64>, String> {
     let (descr, shape, off) = header(bytes)?;

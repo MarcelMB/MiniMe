@@ -35,7 +35,8 @@ browser stage is checked against it. Background and results: `docs/browser-optio
 | motion: bandpass registration image, template, FFT estimate, quality | `motion`, `pass1.build_template` | **done** | reg + prep bit-exact, shifts ≤ 5e-6 px (native and Chrome) |
 | pass 1: max projection, block maxima, quality, tile store (OPFS in the browser) | `pass1` | **done** | max proj, block maxima, every tile bit-exact (native and Chrome) |
 | pass 2: mean, energy, noise, rSVD + rank cut | `compress` | **done** | same rank per tile, mean + energy exact, reconstruction ≤ 6e-5 (numpy's draws replayed; native and Chrome) |
-| seeds, PNR, GMM, initA/initC, CNMF loop | `seeds`, `corr`, `init`, `cnmf` | next | per stage on one window |
+| seeds, PNR + GMM threshold, opt-in `gmm_refine`, seed merge | `seeds`, `gmm`, `corr.seeds_merge` | **done** | same seeds, masks and merge pairs (native on Python's factors: PNR ≤ 1.1e-7 rel; Chrome on its own pass 2: ≤ 1.1e-4) |
+| initA/initC, CNMF loop | `init`, `cnmf` | next | per stage on one window |
 | stitch | `stream.stitch` | next | identical units |
 
 Slice 1 inputs (until discovery is ported): footprints, shifts, mean image and noise come
@@ -171,9 +172,60 @@ python experiments/streaming/check_pass2.py <ref> <ref>/rust_browser
 python experiments/streaming/check_pass1.py <pass1 ref> <ref>/rust_browser
 ```
 
+## Seeds result (2026-11-02): native and Chrome match Python
+The seed stage as `pipeline.run` does it (`FactorCorr`, `seeds_init`, `pnr_refine` with the
+`auto` GMM threshold, `seeds_merge`; `gmm_refine` is off in the session's parameters, so it
+runs once more on the PNR survivors just to check its port) on the factors of frames
+0–3000. `ref_seeds.py` builds those factors from pass 1's and pass 2's references; its
+merged seeds equal the stored `t1_fresh` window run's (191). The native run reads Python's
+factors (`fac_*.npy`); the browser run reads its own pass 1 and pass 2.
+
+| | Rust native vs Python (Python's factors) | Rust → wasm, headless Chrome vs Python (own factors) |
+|---|---|---|
+| initial seeds + window counts (1716), PNR mask (804), merge pairs (1976), merge mask, merged seeds (191), opt-in GMM mask (145) | identical | identical |
+| k-means++ draws (MT19937, seed 0) | identical | identical |
+| PNR | ≤ 1.1e-7 rel | ≤ 1.1e-4 rel |
+| GMM weights, means, variances (PNR and opt-in) | ≤ 6.6e-10 rel | ≤ 1.8e-6 rel |
+| merge correlations | ≤ 2e-15 | ≤ 2.0e-6 |
+| `FactorCorr.norm2` | ≤ 4.6e-15 rel | ≤ 7e-5 rel (123 constant pixels: ≤ 4e-13 of the median) |
+| time, 1 thread, M1 Max | 0.38 s (local maxima 0.27 s) | 0.97 s (local maxima 0.70 s); 95 MB wasm heap; pass 1 + 2 + seeds in one run: 1:38 |
+| Python, 1 thread | 0.29 s (cv2 morphology 0.22 s) | |
+
+- `seeds.rs`: rolling windows (shared with pass 1's block edges), local maxima without
+  morphology (disks are nested, so the union over kernels is "maximum of the radius-2 disk,
+  and the contrast at the largest radius where it stays the maximum exceeds `diff`"; checked
+  against `cv2.dilate`/`erode`, which ignore the border), 8-connected components with
+  numpy's integer medians, PNR (`np.percentile` linear, float32 neighbours), the masks.
+- `factors.rs`: the window's `Factors`; a trace is sequential float32 FMAs over the
+  components plus the mean, which reproduces Accelerate's sgemm on 299 of 300 rows.
+- `gmm.rs`: MT19937 as numpy's `RandomState(0)`, k-means++, Lloyd, EM, with numpy's sum
+  orders (pairwise for 1-D sums, sequential over axis 0) and scipy's `logsumexp`.
+- `corr.rs`: `FactorCorr` (brick-wall low-pass with `realfft`, Gram matrices, `norm2`,
+  pair correlations) and `seeds_merge` (`brightest_parent` roots).
+- Margins: the closest seed is 3.3e-3 in log-likelihood from the PNR decision, the closest
+  merge pair 1.3e-3 from the 0.8 threshold, far above both runs' differences.
+- Constant pixels (zero energy) have `norm2` = 0 up to rSVD rounding (Python 2.8e-11, Rust
+  8e-27 for two of them), so `check_seeds.py` compares them against the median. A
+  correlation with such a pixel is rounding over rounding in Python too; initA's windows
+  should not depend on it.
+- Browser: `SeedsEngine` in `wasm.rs` takes the finished `Pass1Engine` and `Pass2Engine`;
+  the worker runs it after pass 2 when the inputs hold `seeds.json`. `ref_seeds.py`'s
+  `inputs/` holds pass 1's and pass 2's inputs too, so one run does all three.
+
+Run it:
+```bash
+python experiments/streaming/ref_seeds.py --t0 0 --t1 3000   # after ref_pass2.py
+minime-core seeds --inputs <ref>/inputs --out <ref>/rust_native
+python experiments/streaming/check_seeds.py <ref> <ref>/rust_native
+STREAM_RAW=<raw dir> STREAM_INPUTS=<ref>/inputs STREAM_OUT=<ref>/rust_browser npm --prefix web run e2e:stream
+python experiments/streaming/check_seeds.py <ref> <ref>/rust_browser --own-factors
+python experiments/streaming/check_pass2.py <pass2 ref> <ref>/rust_browser
+python experiments/streaming/check_pass1.py <pass1 ref> <ref>/rust_browser
+```
+
 ## Next
-1. Discovery port, stage by stage on one 3000-frame window: ~~motion~~, ~~pass 1~~, ~~pass 2~~ (done)
-   → seeds/PNR/GMM → init → CNMF loop → stitch.
+1. Discovery port, stage by stage on one 3000-frame window: ~~motion~~, ~~pass 1~~, ~~pass 2~~,
+   ~~seeds/PNR/GMM~~ (done) → init → CNMF loop → stitch.
 2. Speed: preprocessing in a worker pool (frames are independent), faster median
    (Perreault O(1) or a sorting-network median), then rayon + COOP/COEP.
 3. Save outputs to a folder (`showDirectoryPicker` on Chromium, OPFS elsewhere) and

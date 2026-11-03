@@ -55,19 +55,10 @@ pub fn tile_grid(h: usize, w: usize, tile: usize) -> Vec<Tile> {
 /// (`ceil(t / stp) + 1` centres from `np.linspace(0, t - 1)`, half width `ceil(wnd / 2)`),
 /// plus 0 and `t`.
 pub fn seed_block_edges(t: usize, wnd: usize, stp: usize) -> Vec<usize> {
-    let nstp = t.div_ceil(stp) + 1;
-    let hwnd = (wnd as f64 / 2.0).ceil();
-    let step = (t as f64 - 1.0) / (nstp - 1) as f64;
     let mut edges = vec![0, t];
-    for i in 0..nstp {
-        // np.linspace sets the last point to the stop exactly
-        let c = if i == nstp - 1 {
-            t as f64 - 1.0
-        } else {
-            i as f64 * step
-        };
-        edges.push((c - hwnd).floor().max(0.0) as usize);
-        edges.push(((c + hwnd).ceil() as usize).min(t));
+    for (a, b) in crate::seeds::rolling_windows(t, wnd, stp) {
+        edges.push(a);
+        edges.push(b);
     }
     edges.sort_unstable();
     edges.dedup();
