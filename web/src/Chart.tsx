@@ -38,7 +38,11 @@ export function Chart(p: ChartProps) {
 
   useEffect(() => {
     const el = host.current!;
-    const axis = { stroke: cssVar("--muted"), grid: { stroke: cssVar("--track") }, ticks: { stroke: cssVar("--track") } };
+    const axis = {
+      stroke: cssVar("--muted"),
+      grid: { stroke: cssVar("--track") },
+      ticks: { stroke: cssVar("--track") },
+    };
     const opts: uPlot.Options = {
       width: el.clientWidth || 600,
       height: p.height ?? 180,

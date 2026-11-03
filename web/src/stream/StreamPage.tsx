@@ -44,7 +44,13 @@ export function StreamPage() {
           const b = m.files.get(name);
           return b ? (JSON.parse(new TextDecoder().decode(b)) as Record<string, unknown>) : null;
         };
-        setSt({ phase: "done", files, summary: json("summary.json") ?? {}, pass2: json("summary_pass2.json"), seconds: m.seconds });
+        setSt({
+          phase: "done",
+          files,
+          summary: json("summary.json") ?? {},
+          pass2: json("summary_pass2.json"),
+          seconds: m.seconds,
+        });
         w.terminate();
       } else setSt({ phase: "error", message: m.message });
     };
@@ -58,8 +64,8 @@ export function StreamPage() {
     <main className="page">
       <h1>Stream in the browser</h1>
       <p className="muted">
-        One pass over the raw movie with fixed footprints: per-frame traces, running sums and one footprint
-        update. Files are read from disk in place; nothing is uploaded.
+        One pass over the raw movie with fixed footprints: per-frame traces, running sums and one footprint update.
+        Files are read from disk in place; nothing is uploaded.
       </p>
       <section className="card" aria-label="Inputs">
         <div className="row" style={{ alignItems: "flex-start" }}>
@@ -90,7 +96,7 @@ export function StreamPage() {
           </label>
         </div>
         <div className="row" style={{ marginTop: 12 }}>
-          <button className="btn" disabled={running || !ordered.length || !inputs.length} onClick={start}>
+          <button type="button" className="btn" disabled={running || !ordered.length || !inputs.length} onClick={start}>
             Run
           </button>
         </div>

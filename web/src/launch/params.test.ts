@@ -16,9 +16,7 @@ describe("parameter values", () => {
     expect(parseValue("bool", true)).toBe(true);
     expect(parseValue("float | str", "auto")).toBe("auto");
     expect(parseValue("float | str", "3.5")).toBe(3.5);
-    expect(parseValue("tuple[float | None, float | None]", ["25", ""])).toEqual(
-      [25, null],
-    );
+    expect(parseValue("tuple[float | None, float | None]", ["25", ""])).toEqual([25, null]);
     expect(parseValue("tuple[float, float]", ["1", "6"])).toEqual([1, 6]);
   });
   it("rejects bad numbers", () => {
@@ -39,9 +37,7 @@ describe("parameter values", () => {
 
 describe("launcher helpers", () => {
   it("names runs by date", () => {
-    expect(defaultRunName(new Date(2026, 9, 21, 14, 5))).toBe(
-      "minime_2026-10-21_1405",
-    );
+    expect(defaultRunName(new Date(2026, 9, 21, 14, 5))).toBe("minime_2026-10-21_1405");
   });
   it("turns progress events into stage rows", () => {
     const rows = stageRows([
@@ -59,9 +55,7 @@ describe("launcher helpers", () => {
       { stage: "pass1", event: "start", t: 2 },
       { stage: "pass1", event: "error", t: 5, seconds: 3 },
     ]);
-    expect(rows).toEqual([
-      { stage: "pass1", seconds: 3, running: false, failed: true },
-    ]);
+    expect(rows).toEqual([{ stage: "pass1", seconds: 3, running: false, failed: true }]);
   });
 });
 
@@ -69,19 +63,11 @@ describe("launcher state rules", () => {
   it("knows final job states", () => {
     expect(isFinal("running")).toBe(false);
     expect(isFinal("queued")).toBe(false);
-    for (const s of ["done", "failed", "cancelled", "interrupted"])
-      expect(isFinal(s)).toBe(true);
+    for (const s of ["done", "failed", "cancelled", "interrupted"]) expect(isFinal(s)).toBe(true);
   });
   it("keeps overwrite only after the already-holds-a-run refusal", () => {
-    expect(
-      overwriteAfterError(
-        "x already holds a run; choose another name or overwrite",
-        true,
-      ),
-    ).toBe(true);
-    expect(
-      overwriteAfterError("a queued or running job already writes to x", true),
-    ).toBe(false);
+    expect(overwriteAfterError("x already holds a run; choose another name or overwrite", true)).toBe(true);
+    expect(overwriteAfterError("a queued or running job already writes to x", true)).toBe(false);
     expect(overwriteAfterError("network down", true)).toBe(false);
   });
   it("counts invalid parameters", () => {

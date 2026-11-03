@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
-    "e2e:stream": "playwright test -c playwright.stream.config.ts"
+    "e2e:stream": "playwright test -c playwright.stream.config.ts",
+    "format": "biome format --write .",
+    "check": "biome check ."
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.1.0",
@@ -20,6 +22,7 @@
     "uplot": "1.6.31"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.15",
     "@playwright/test": "1.48.2",
     "@types/node": "22.9.0",
     "@types/react": "18.3.12",

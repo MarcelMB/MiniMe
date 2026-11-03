@@ -23,7 +23,11 @@ describe("pollResource", () => {
 
   it("stops on an error and after cancel", async () => {
     const states: Resource<number>[] = [];
-    pollResource(() => Promise.reject(new ApiError(500, "boom")), (s) => states.push(s), 1000);
+    pollResource(
+      () => Promise.reject(new ApiError(500, "boom")),
+      (s) => states.push(s),
+      1000,
+    );
     await vi.runAllTimersAsync();
     expect(states.at(-1)!.error).toBe("boom");
 

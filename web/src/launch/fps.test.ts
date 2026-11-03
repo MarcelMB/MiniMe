@@ -10,7 +10,6 @@ describe("fpsOverride", () => {
   });
 
   it("rejects values outside (0, 1000] Hz", () => {
-    for (const t of ["0", "-5", "2000", "abc"])
-      expect(fpsOverride(t, null).error).not.toBe("");
+    for (const t of ["0", "-5", "2000", "abc"]) expect(fpsOverride(t, null).error).not.toBe("");
   });
 });

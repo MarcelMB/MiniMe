@@ -51,7 +51,12 @@ export function Units() {
   const tableRows = useMemo(
     () =>
       rows.map((u) => (
-        <tr key={u.id} className="clickable" aria-current={u.id === sel ? "true" : undefined} onClick={() => setSel(u.id)}>
+        <tr
+          key={u.id}
+          className="clickable"
+          aria-current={u.id === sel ? "true" : undefined}
+          onClick={() => setSel(u.id)}
+        >
           <td className="mono">
             <button type="button" aria-pressed={u.id === sel} onClick={() => setSel(u.id)}>
               {u.id}

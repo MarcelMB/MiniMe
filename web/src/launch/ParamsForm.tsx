@@ -13,15 +13,7 @@ function toRaw(m: ParamMeta, v: unknown): Raw {
   return String(v);
 }
 
-function Field({
-  m,
-  value,
-  onChange,
-}: {
-  m: ParamMeta;
-  value: unknown;
-  onChange: (v: unknown, err: string) => void;
-}) {
+function Field({ m, value, onChange }: { m: ParamMeta; value: unknown; onChange: (v: unknown, err: string) => void }) {
   const [raw, setRaw] = useState<Raw>(() => toRaw(m, value));
   const [err, setErr] = useState("");
   const set = (r: Raw) => {
@@ -76,18 +68,14 @@ function Field({
             {...aria}
             aria-label={`${m.name} first`}
             value={(raw as [string, string])[0]}
-            onChange={(e) =>
-              set([e.target.value, (raw as [string, string])[1]])
-            }
+            onChange={(e) => set([e.target.value, (raw as [string, string])[1]])}
           />
           <input
             type="text"
             {...aria}
             aria-label={`${m.name} second`}
             value={(raw as [string, string])[1]}
-            onChange={(e) =>
-              set([(raw as [string, string])[0], e.target.value])
-            }
+            onChange={(e) => set([(raw as [string, string])[0], e.target.value])}
           />
         </div>
       ) : (
@@ -127,17 +115,9 @@ export function ParamsForm(p: {
   const common = p.metas.filter((m) => m.common);
   return (
     <>
-      <div
-        className="bento"
-        style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}
-      >
+      <div className="bento" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
         {common.map((m) => (
-          <Field
-            key={m.name}
-            m={m}
-            value={p.values[m.name]}
-            onChange={(v, e) => p.onChange(m.name, v, e)}
-          />
+          <Field key={m.name} m={m} value={p.values[m.name]} onChange={(v, e) => p.onChange(m.name, v, e)} />
         ))}
       </div>
       <details open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
@@ -156,12 +136,7 @@ export function ParamsForm(p: {
               {p.metas
                 .filter((m) => m.group === g && !m.common)
                 .map((m) => (
-                  <Field
-                    key={m.name}
-                    m={m}
-                    value={p.values[m.name]}
-                    onChange={(v, e) => p.onChange(m.name, v, e)}
-                  />
+                  <Field key={m.name} m={m} value={p.values[m.name]} onChange={(v, e) => p.onChange(m.name, v, e)} />
                 ))}
             </div>
           </fieldset>

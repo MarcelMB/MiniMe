@@ -3,8 +3,8 @@ import "@fontsource-variable/geist-mono";
 import "./theme.css";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { initToken } from "./api";
 import { App } from "./App";
+import { initToken } from "./api";
 
 initToken();
 createRoot(document.getElementById("root")!).render(

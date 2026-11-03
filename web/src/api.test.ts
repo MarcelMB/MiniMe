@@ -62,7 +62,10 @@ describe("requests", () => {
   });
 
   it("explains a 401", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "bad token" }), { status: 401 })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "bad token" }), { status: 401 })),
+    );
     await expect(getJSON("/a")).rejects.toMatchObject({
       status: 401,
       message: "This page's access key is no longer valid. Open the link that `minime serve` printed again.",
@@ -73,9 +76,7 @@ describe("requests", () => {
     const body = new Uint8Array([1, 2, 3, 4]);
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(body, { status: 200, headers: { "X-Shape": "2,2", "X-Dtype": "uint8" } }),
-      ),
+      vi.fn().mockResolvedValue(new Response(body, { status: 200, headers: { "X-Shape": "2,2", "X-Dtype": "uint8" } })),
     );
     const a = await getArray("/frame");
     expect(a.shape).toEqual([2, 2]);

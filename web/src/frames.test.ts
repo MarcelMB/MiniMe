@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { NDArray } from "./api";
-import { FrameCache, STALE, latest } from "./frames";
+import { FrameCache, latest, STALE } from "./frames";
 
 const arr = (t: number): NDArray => ({ shape: [1], dtype: "uint8", data: new Uint8Array([t]) });
 
@@ -23,7 +23,12 @@ describe("FrameCache", () => {
     await expect(c.get("raw", 0)).rejects.toThrow();
     expect(c.has("raw", 0)).toBe(false);
     c.prefetch("raw", 1, 5, 12, 3);
-    expect(f.mock.calls.slice(1).map((x) => x[1]).sort()).toEqual([0, 2, 3, 4]);
+    expect(
+      f.mock.calls
+        .slice(1)
+        .map((x) => x[1])
+        .sort(),
+    ).toEqual([0, 2, 3, 4]);
   });
 });
 

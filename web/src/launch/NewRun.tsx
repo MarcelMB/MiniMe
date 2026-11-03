@@ -8,20 +8,12 @@ import { useResource } from "../poll";
 import { go } from "../router";
 import type { Job, ParamMeta, RawInfo } from "../types";
 import { fpsOverride } from "./fps";
-import {
-  changedOnly,
-  defaultRunName,
-  failingCount,
-  offersOverwrite,
-  overwriteAfterError,
-} from "./params";
 import { ParamsForm } from "./ParamsForm";
 import { Preview } from "./Preview";
+import { changedOnly, defaultRunName, failingCount, offersOverwrite, overwriteAfterError } from "./params";
 
 export function NewRun() {
-  const defaults = useResource("params", () =>
-    getJSON<{ groups: string[]; params: ParamMeta[] }>("/params/defaults"),
-  );
+  const defaults = useResource("params", () => getJSON<{ groups: string[]; params: ParamMeta[] }>("/params/defaults"));
   const [raw, setRaw] = useState("");
   const [picking, setPicking] = useState(true);
   const folders = useFolders();
@@ -67,9 +59,7 @@ export function NewRun() {
     setOffered(false);
     setSubmitErr("");
   };
-  const outDir = raw
-    ? `${raw.replace(/\/+$/, "").split("/").slice(0, -1).join("/")}/processed/${name}`
-    : "";
+  const outDir = raw ? `${raw.replace(/\/+$/, "").split("/").slice(0, -1).join("/")}/processed/${name}` : "";
 
   const start = () => {
     setBusy(true);
@@ -101,19 +91,14 @@ export function NewRun() {
         <section className="card span4" aria-label="1. Raw videos">
           <span className="label">1 · Folder with the raw videos</span>
           <span className="muted">
-            Each video's file name must start with a number (0.avi, 1.avi, … or
-            0_session.avi). The videos are read in the order of that number, so
-            2.avi comes before 10.avi; .avi files whose name does not start with
-            a number are ignored.
+            Each video's file name must start with a number (0.avi, 1.avi, … or 0_session.avi). The videos are read in
+            the order of that number, so 2.avi comes before 10.avi; .avi files whose name does not start with a number
+            are ignored.
           </span>
           <div className="row">
             <span className="mono">{raw || "none chosen"}</span>
             <span className="spacer" />
-            <button
-              className="btn"
-              type="button"
-              onClick={() => setPicking(true)}
-            >
+            <button className="btn" type="button" onClick={() => setPicking(true)}>
               Choose folder
             </button>
           </div>
@@ -122,19 +107,15 @@ export function NewRun() {
               {(i) => (
                 <>
                   <span className="muted">
-                    {i.segments} files · {fmtInt(i.frames)} frames · {i.width} ×{" "}
-                    {i.height}
-                    {shownFps
-                      ? ` · ${shownFps} fps · ${fmtDuration(i.frames / shownFps)}`
-                      : " · frame rate unknown"}{" "}
-                    · {fmtBytes(i.bytes)}
+                    {i.segments} files · {fmtInt(i.frames)} frames · {i.width} × {i.height}
+                    {shownFps ? ` · ${shownFps} fps · ${fmtDuration(i.frames / shownFps)}` : " · frame rate unknown"} ·{" "}
+                    {fmtBytes(i.bytes)}
                   </span>
                   <span className="label">Read in this order</span>
                   <span className="mono video-order">{i.names.join(" → ")}</span>
                   {i.skipped.length > 0 && (
                     <span className="muted">
-                      Ignored (name does not start with a number):{" "}
-                      <span className="mono">{i.skipped.join(", ")}</span>
+                      Ignored (name does not start with a number): <span className="mono">{i.skipped.join(", ")}</span>
                     </span>
                   )}
                   <label className="field">
@@ -234,19 +215,12 @@ export function NewRun() {
         </section>
       </div>
       {submitErr && <ErrorNote message={submitErr} />}
-      {offered && (
-        <Toggle
-          label="Overwrite the existing run"
-          checked={overwrite}
-          onChange={setOverwrite}
-        />
-      )}
+      {offered && <Toggle label="Overwrite the existing run" checked={overwrite} onChange={setOverwrite} />}
       <div className="row">
         <span className="spacer" />
         {invalid && (
           <span className="error" role="status">
-            {failing} {failing === 1 ? "parameter needs" : "parameters need"}{" "}
-            fixing
+            {failing} {failing === 1 ? "parameter needs" : "parameters need"} fixing
           </span>
         )}
         <button

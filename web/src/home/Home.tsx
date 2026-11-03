@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getJSON } from "../api";
 import { Loading } from "../controls";
 import { fmtDuration, fmtInt } from "../format";
-import { pollResource, useResource, type Resource } from "../poll";
+import { pollResource, type Resource, useResource } from "../poll";
 import { href } from "../router";
 import type { Job, Place, RunListing } from "../types";
 import { FolderPicker } from "./FolderPicker";
@@ -51,9 +51,7 @@ export function Home() {
   const shownRoot = root || known[0]?.path || "";
   const ready = root !== "" || folders.data !== undefined || folders.error !== undefined;
   const runs = useResource(ready ? `runs:${shownRoot}` : null, () =>
-    getJSON<{ root: string; runs: RunListing[] }>(
-      `/runs${shownRoot ? `?root=${encodeURIComponent(shownRoot)}` : ""}`,
-    ),
+    getJSON<{ root: string; runs: RunListing[] }>(`/runs${shownRoot ? `?root=${encodeURIComponent(shownRoot)}` : ""}`),
   );
   const jobs = useJobs();
   const choose = (p: string) => {

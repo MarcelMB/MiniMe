@@ -1,6 +1,6 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 
 const root = resolve(fileURLToPath(new URL(".", import.meta.url)), ".data");
 const pages: [string, (page: Page) => Locator][] = [

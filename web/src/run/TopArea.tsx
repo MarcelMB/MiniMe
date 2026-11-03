@@ -2,11 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Computing } from "../api";
 import { Segmented, Slider, Toggle } from "../controls";
 import type { Img } from "../draw";
-import { STALE, latest } from "../frames";
 import { fmtClock } from "../format";
+import { latest, STALE } from "../frames";
 import { ImageView } from "../ImageView";
 import { playStep, prefetchTiming } from "../playback";
-import { rerunOptions, sourceOptions, useRun, type Source } from "./RunContext";
+import { rerunOptions, type Source, sourceOptions, useRun } from "./RunContext";
 
 const SPEEDS = ["1", "4", "16"] as const;
 
@@ -115,7 +115,11 @@ export function TopArea() {
   const base = source === "max" ? run.maxProj : frame;
   const shown = useMemo(() => base && { ...base, hi: base.lo + (base.hi - base.lo) / gain }, [base, gain]);
   return (
-    <section className="map" aria-label="Field of view" style={{ aspectRatio: `${summary.W} / ${summary.H}`, maxHeight: "72vh" }}>
+    <section
+      className="map"
+      aria-label="Field of view"
+      style={{ aspectRatio: `${summary.W} / ${summary.H}`, maxHeight: "72vh" }}
+    >
       <ImageView
         image={shown}
         units={run.units}
@@ -127,7 +131,13 @@ export function TopArea() {
       />
       <div className="overlay">
         <div className="row">
-          <Segmented label="Image" glass options={sourceOptions(summary.available)} value={source} onChange={setSource} />
+          <Segmented
+            label="Image"
+            glass
+            options={sourceOptions(summary.available)}
+            value={source}
+            onChange={setSource}
+          />
           <span className="spacer" />
           {run.reruns.length > 0 && (
             <Segmented
@@ -153,7 +163,13 @@ export function TopArea() {
               if (!playing && t >= summary.T - 1) setT(0);
               setPlaying(!playing);
             }}
-            style={{ background: "rgba(255,255,255,0.92)", color: "#0b1220", width: 44, padding: 0, justifyContent: "center" }}
+            style={{
+              background: "rgba(255,255,255,0.92)",
+              color: "#0b1220",
+              width: 44,
+              padding: 0,
+              justifyContent: "center",
+            }}
           >
             {playing ? "❚❚" : "▶"}
           </button>
@@ -168,9 +184,23 @@ export function TopArea() {
             value={t}
             onChange={(e) => setT(Number(e.target.value))}
           />
-          <Segmented label="Speed" glass options={SPEEDS.map((s) => ({ value: s, label: `${s}×` }))} value={speed} onChange={setSpeed} />
+          <Segmented
+            label="Speed"
+            glass
+            options={SPEEDS.map((s) => ({ value: s, label: `${s}×` }))}
+            value={speed}
+            onChange={setSpeed}
+          />
           <div style={{ minWidth: 180 }}>
-            <Slider label="Contrast" min={0.5} max={4} step={0.1} value={gain} onChange={setGain} format={(v) => `${v.toFixed(1)}×`} />
+            <Slider
+              label="Contrast"
+              min={0.5}
+              max={4}
+              step={0.1}
+              value={gain}
+              onChange={setGain}
+              format={(v) => `${v.toFixed(1)}×`}
+            />
           </div>
         </div>
         {note && (

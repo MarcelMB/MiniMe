@@ -4,7 +4,7 @@ import { ErrorNote } from "../controls";
 import { fmtDuration, stageLabel } from "../format";
 import { go } from "../router";
 import type { Job, RunListing } from "../types";
-import { isFinal, stageRows, type ProgressEvent } from "./params";
+import { isFinal, type ProgressEvent, stageRows } from "./params";
 
 export function JobPage({ id }: { id: string }) {
   const [job, setJob] = useState<Job | null>(null);
@@ -27,12 +27,8 @@ export function JobPage({ id }: { id: string }) {
       (e: Error) => setErr(e.message),
     );
     const es = new EventSource(`/api/jobs/${id}/events?${tokenQuery()}`);
-    es.addEventListener("stage", (e) =>
-      setEvents((x) => [...x, JSON.parse((e as MessageEvent).data)]),
-    );
-    es.addEventListener("log", (e) =>
-      setLog((x) => [...x.slice(-299), JSON.parse((e as MessageEvent).data)]),
-    );
+    es.addEventListener("stage", (e) => setEvents((x) => [...x, JSON.parse((e as MessageEvent).data)]));
+    es.addEventListener("log", (e) => setLog((x) => [...x.slice(-299), JSON.parse((e as MessageEvent).data)]));
     es.addEventListener("status", (e) => {
       const j = JSON.parse((e as MessageEvent).data) as Job;
       gotStatus.current = true;
@@ -61,9 +57,7 @@ export function JobPage({ id }: { id: string }) {
 
   // a rerun or auto-tune job opens its source run on the Tune page
   const openRun = () =>
-    getJSON<{ runs: RunListing[] }>(
-      `/runs?root=${encodeURIComponent(job!.run_dir || job!.out_dir)}`,
-    ).then(
+    getJSON<{ runs: RunListing[] }>(`/runs?root=${encodeURIComponent(job!.run_dir || job!.out_dir)}`).then(
       (r) => go({ name: "run", id: r.runs[0].id, page: job!.kind !== "run" || job!.tune ? "tune" : "overview" }),
       (e: Error) => setErr(e.message),
     );
@@ -86,8 +80,14 @@ export function JobPage({ id }: { id: string }) {
       <div className="row">
         <div>
           <span className="label">
-            {job.kind === "rerun" ? "Window-2 rerun" : job.kind === "autotune" ? "Auto-tune" : job.tune ? "Run + auto-tune" : "Run"} ·{" "}
-            {job.status}
+            {job.kind === "rerun"
+              ? "Window-2 rerun"
+              : job.kind === "autotune"
+                ? "Auto-tune"
+                : job.tune
+                  ? "Run + auto-tune"
+                  : "Run"}{" "}
+            · {job.status}
           </span>
           <h1>{job.name}</h1>
         </div>
@@ -101,9 +101,7 @@ export function JobPage({ id }: { id: string }) {
           <button
             className="btn"
             type="button"
-            onClick={() =>
-              postJSON<Job>(`/jobs/${id}/cancel`, {}).then(setJob, (e: Error) => setErr(e.message))
-            }
+            onClick={() => postJSON<Job>(`/jobs/${id}/cancel`, {}).then(setJob, (e: Error) => setErr(e.message))}
           >
             Cancel
           </button>
@@ -144,17 +142,11 @@ export function JobPage({ id }: { id: string }) {
                 )}
               </span>
               <span className="spacer" />
-              <span className="mono">
-                {r.seconds === null ? "" : fmtDuration(r.seconds)}
-              </span>
+              <span className="mono">{r.seconds === null ? "" : fmtDuration(r.seconds)}</span>
             </div>
           ))}
           {events.length === 0 && (
-            <span className="muted">
-              {job.status === "queued"
-                ? "Waiting for the run before it."
-                : "Starting…"}
-            </span>
+            <span className="muted">{job.status === "queued" ? "Waiting for the run before it." : "Starting…"}</span>
           )}
         </section>
         <section className="card span2" aria-label="Log">
@@ -162,12 +154,8 @@ export function JobPage({ id }: { id: string }) {
           <pre className="log">{log.slice(-40).join("\n")}</pre>
         </section>
       </div>
-      {lost && !final && (
-        <ErrorNote message="Live updates lost — reload to reconnect." />
-      )}
-      {job.status === "failed" && (
-        <ErrorNote message={job.error || "the run failed"} />
-      )}
+      {lost && !final && <ErrorNote message="Live updates lost — reload to reconnect." />}
+      {job.status === "failed" && <ErrorNote message={job.error || "the run failed"} />}
       {job.status === "interrupted" && <ErrorNote message={job.error} />}
       <span className="muted mono">{job.out_dir}</span>
     </div>

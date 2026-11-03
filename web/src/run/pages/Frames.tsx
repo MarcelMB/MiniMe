@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Computing } from "../../api";
 import type { Img } from "../../draw";
-import { STALE, latest } from "../../frames";
+import { latest, STALE } from "../../frames";
 import { ImageView } from "../../ImageView";
 import { sourceOptions, useRun } from "../RunContext";
 

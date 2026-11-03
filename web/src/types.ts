@@ -83,7 +83,15 @@ export type Rerun = {
   error?: string[];
 };
 
-export type Checks = { diameter: number; pnr_min: number; piece_frac: number; size_lo: number; size_hi: number; dup_corr: number; keep_dist: number };
+export type Checks = {
+  diameter: number;
+  pnr_min: number;
+  piece_frac: number;
+  size_lo: number;
+  size_hi: number;
+  dup_corr: number;
+  keep_dist: number;
+};
 export type CurvePoint = { value: unknown; good: number; flagged: number };
 export type Score = { good: number; flagged: number; lost?: number; score: number } & Record<string, number>;
 /** ``autotune.json`` of ``reruns/auto`` plus the sweep curves. */

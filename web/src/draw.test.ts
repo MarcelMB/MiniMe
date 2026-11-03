@@ -19,10 +19,11 @@ const unit = (id: number, poly: number[][], c: [number, number]): Unit => ({
 
 describe("draw helpers", () => {
   it("maps lo..hi to 0..255 and clamps", () => {
-    const out = fillImageData(
-      { data: [0, 5, 10, 20], W: 4, H: 1, lo: 0, hi: 10 },
-      { data: new Uint8ClampedArray(16), width: 4, height: 1 } as ImageData,
-    );
+    const out = fillImageData({ data: [0, 5, 10, 20], W: 4, H: 1, lo: 0, hi: 10 }, {
+      data: new Uint8ClampedArray(16),
+      width: 4,
+      height: 1,
+    } as ImageData);
     expect(Array.from(out.data.filter((_, i) => i % 4 === 0))).toEqual([0, 128, 255, 255]);
     expect(out.data[3]).toBe(255);
   });

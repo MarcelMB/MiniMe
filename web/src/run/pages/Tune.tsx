@@ -11,10 +11,23 @@ import type { Checks, CurvePoint, Flags, Job, Pairs, ParamMeta, Proposal, Rerun,
 import { rerunQuery, useRun } from "../RunContext";
 
 /** The parameters auto-tune searches, in its order (also the common ones of the form). */
-export const SEARCHED = ["seeds_diff_thres", "pnr_thres", "merge_corr", "init_merge_corr", "inita_corr", "sparse_snr", "loop_merge_corr"];
+export const SEARCHED = [
+  "seeds_diff_thres",
+  "pnr_thres",
+  "merge_corr",
+  "init_merge_corr",
+  "inita_corr",
+  "sparse_snr",
+  "loop_merge_corr",
+];
 export const REASONS = ["low_pnr", "duplicate", "in_pieces", "bad_size"] as const;
 type Reason = (typeof REASONS)[number];
-const REASON_LABEL: Record<Reason, string> = { low_pnr: "low PNR", duplicate: "duplicate", in_pieces: "in pieces", bad_size: "bad size" };
+const REASON_LABEL: Record<Reason, string> = {
+  low_pnr: "low PNR",
+  duplicate: "duplicate",
+  in_pieces: "in pieces",
+  bad_size: "bad size",
+};
 
 export function fmtValue(v: unknown): string {
   if (v === null || v === undefined) return "";
@@ -60,7 +73,9 @@ function Curve({ points, chosen }: { points: CurvePoint[]; chosen: unknown }) {
   const hit = points.findIndex((p) => fmtValue(p.value) === fmtValue(chosen));
   return (
     <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: H }} role="img" aria-label="sweep curve">
-      {hit >= 0 && <line x1={x(hit)} x2={x(hit)} y1={4} y2={H - 16} style={{ stroke: "var(--muted)" }} strokeDasharray="4 3" />}
+      {hit >= 0 && (
+        <line x1={x(hit)} x2={x(hit)} y1={4} y2={H - 16} style={{ stroke: "var(--muted)" }} strokeDasharray="4 3" />
+      )}
       <polyline points={line("good")} fill="none" strokeWidth={2} style={{ stroke: "var(--accent)" }} />
       <polyline points={line("flagged")} fill="none" strokeWidth={2} style={{ stroke: "var(--bad)" }} />
       {points.map((p, i) => (
@@ -72,12 +87,20 @@ function Curve({ points, chosen }: { points: CurvePoint[]; chosen: unknown }) {
   );
 }
 
-function Hist(p: { bins: number[]; series: { counts: number[]; color: string; outline?: boolean }[]; lines: { x: number; color: string }[]; label: string }) {
+function Hist(p: {
+  bins: number[];
+  series: { counts: number[]; color: string; outline?: boolean }[];
+  lines: { x: number; color: string }[];
+  label: string;
+}) {
   const [lo, hi] = [p.bins[0], p.bins[p.bins.length - 1]];
   const px = (v: number) => ((v - lo) / (hi - lo)) * W;
   // each series as a fraction of its own total, so a sparse run and a dense proposal compare
   const norm = (s: number[]) => {
-    const total = Math.max(1, s.reduce((a, b) => a + b, 0));
+    const total = Math.max(
+      1,
+      s.reduce((a, b) => a + b, 0),
+    );
     return s.map((c) => c / total);
   };
   const top = Math.max(1e-9, ...p.series.flatMap((s) => norm(s.counts)));
@@ -166,12 +189,18 @@ function RerunsTable({ reruns, hasChecks }: { reruns: Rerun[]; hasChecks: boolea
             <tr key={r.name} aria-current={rerun === r.name ? "true" : undefined}>
               <td>{r.name}</td>
               <td style={{ color: "var(--hot)" }}>
-                {r.status === "done" ? changedText(r.changed) || <span className="muted">—</span> : <span className="muted">{r.status}</span>}
+                {r.status === "done" ? (
+                  changedText(r.changed) || <span className="muted">—</span>
+                ) : (
+                  <span className="muted">{r.status}</span>
+                )}
                 {r.status === "failed" && r.error && <span className="error"> {r.error.join(" ")}</span>}
               </td>
               <td className="mono">{counts(r.counts)}</td>
               <td className="mono">{r.counts ? fmtInt(r.counts.units_final ?? 0) : ""}</td>
-              <td className="mono">{r.status === "done" ? <ScoreCell id={s.id} rerun={r.name} enabled={hasChecks} /> : ""}</td>
+              <td className="mono">
+                {r.status === "done" ? <ScoreCell id={s.id} rerun={r.name} enabled={hasChecks} /> : ""}
+              </td>
               <td className="mono">{r.wall_total ? fmtDuration(r.wall_total) : ""}</td>
               <td>{r.status === "done" && shown(r.name)}</td>
             </tr>
@@ -191,7 +220,9 @@ function ProposalTile({ doc }: { doc: Proposal }) {
   return (
     <section className="card" aria-label="Proposal">
       <span className="label">Proposal · auto</span>
-      <span className="big" style={{ color: "var(--accent)" }}>{fmtInt(s.good)}</span>
+      <span className="big" style={{ color: "var(--accent)" }}>
+        {fmtInt(s.good)}
+      </span>
       <span className="muted">
         good units · <span style={{ color: "var(--bad)" }}>{s.flagged} flagged</span>
         {reasons.length ? ` (${reasons.join(", ")})` : ""}
@@ -227,10 +258,19 @@ function SweepTile({ doc }: { doc: Proposal }) {
   return (
     <section className="card span4" aria-label="Sweep">
       <span className="label">
-        Sweep · best <span style={{ color: "var(--accent)" }}>good</span> and <span style={{ color: "var(--bad)" }}>flagged</span> count at each
-        value · dashed = proposed · <span style={{ color: "var(--hot)" }}>at edge</span> = the best value sits at the end of the grid
+        Sweep · best <span style={{ color: "var(--accent)" }}>good</span> and{" "}
+        <span style={{ color: "var(--bad)" }}>flagged</span> count at each value · dashed = proposed ·{" "}
+        <span style={{ color: "var(--hot)" }}>at edge</span> = the best value sits at the end of the grid
       </span>
-      <div style={{ display: "grid", gridTemplateColumns: "150px 70px 70px 1fr 110px", gap: 12, alignItems: "center", fontSize: 13 }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "150px 70px 70px 1fr 110px",
+          gap: 12,
+          alignItems: "center",
+          fontSize: 13,
+        }}
+      >
         <span className="label">parameter</span>
         <span className="label">run</span>
         <span className="label">proposed</span>
@@ -249,8 +289,18 @@ function SweepTile({ doc }: { doc: Proposal }) {
             <span key={`${k}-b`} className="mono" style={a !== b ? { color: "var(--hot)" } : undefined}>
               {b}
             </span>,
-            <div key={`${k}-c`}>{doc.curves[k] ? <Curve points={doc.curves[k]} chosen={doc.proposed[k]} /> : <span className="muted">not searched</span>}</div>,
-            <span key={`${k}-e`} className="chip" style={doc.at_edge.includes(k) ? { color: "var(--hot)", cursor: "default" } : { visibility: "hidden" }}>
+            <div key={`${k}-c`}>
+              {doc.curves[k] ? (
+                <Curve points={doc.curves[k]} chosen={doc.proposed[k]} />
+              ) : (
+                <span className="muted">not searched</span>
+              )}
+            </div>,
+            <span
+              key={`${k}-e`}
+              className="chip"
+              style={doc.at_edge.includes(k) ? { color: "var(--hot)", cursor: "default" } : { visibility: "hidden" }}
+            >
               at edge
             </span>,
           ];
@@ -262,7 +312,9 @@ function SweepTile({ doc }: { doc: Proposal }) {
 
 function ThresholdsTile() {
   const { summary: s, rerun } = useRun();
-  const res = useResource(`pairs:${s.id}:${rerun ?? ""}`, () => getJSON<Pairs>(`/runs/${s.id}/pairs${rerunQuery(rerun)}`));
+  const res = useResource(`pairs:${s.id}:${rerun ?? ""}`, () =>
+    getJSON<Pairs>(`/runs/${s.id}/pairs${rerunQuery(rerun)}`),
+  );
   return (
     <section className="card span2" aria-label="Thresholds">
       <span className="label">Thresholds against the data · {rerun ?? "run"}</span>
@@ -289,9 +341,9 @@ function ThresholdsTile() {
             />
             <span className="muted" style={{ fontSize: 12 }}>
               {p.n_near} pairs within D, {p.n_near_above} above dup_corr {p.dup_corr}
-              {p.far_p99 !== null ? `; far pairs reach ${p.far_p99.toFixed(2)}` : ""}. {p.n_closer} units closer than {p.min_dist_frac} D. A split
-              cell shows as a bump of highly correlated near pairs and very short neighbour distances; real neighbours sit near D with low
-              correlation.
+              {p.far_p99 !== null ? `; far pairs reach ${p.far_p99.toFixed(2)}` : ""}. {p.n_closer} units closer than{" "}
+              {p.min_dist_frac} D. A split cell shows as a bump of highly correlated near pairs and very short neighbour
+              distances; real neighbours sit near D with low correlation.
             </span>
           </>
         )}
@@ -302,7 +354,9 @@ function ThresholdsTile() {
 
 function FlaggedTile() {
   const { summary: s, rerun, units, maxProj, sel, setSel } = useRun();
-  const res = useResource(`flags:${s.id}:${rerun ?? ""}`, () => getJSON<Flags>(`/runs/${s.id}/flags${rerunQuery(rerun)}`));
+  const res = useResource(`flags:${s.id}:${rerun ?? ""}`, () =>
+    getJSON<Flags>(`/runs/${s.id}/flags${rerunQuery(rerun)}`),
+  );
   const [reason, setReason] = useState<Reason>("low_pnr");
   const flagged = useMemo(() => {
     const ids = new Set(res.data?.reasons[reason] ?? []);
@@ -323,7 +377,14 @@ function FlaggedTile() {
             <span className="muted" style={{ fontSize: 12 }}>
               {criterion(reason, f.checks)}
             </span>
-            <ImageView image={maxProj} units={flagged} contours sel={sel} onPick={setSel} label={`units flagged ${REASON_LABEL[reason]}`} />
+            <ImageView
+              image={maxProj}
+              units={flagged}
+              contours
+              sel={sel}
+              onPick={setSel}
+              label={`units flagged ${REASON_LABEL[reason]}`}
+            />
           </>
         )}
       </Loading>
@@ -398,7 +459,10 @@ function Window2Form({ metas, groups, doc }: { metas: ParamMeta[]; groups: strin
     const shown = reruns.find((r) => r.name === rerun);
     return { ...s.params, ...(shown?.params ?? {}) } as Record<string, unknown>;
   }, [s.params, reruns, rerun]);
-  const w2 = useMemo(() => metas.filter((m) => m.window2).map((m) => ({ ...m, common: SEARCHED.includes(m.name) })), [metas]);
+  const w2 = useMemo(
+    () => metas.filter((m) => m.window2).map((m) => ({ ...m, common: SEARCHED.includes(m.name) })),
+    [metas],
+  );
   const w2groups = groups.filter((g) => w2.some((m) => m.group === g && !m.common));
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -411,7 +475,10 @@ function Window2Form({ metas, groups, doc }: { metas: ParamMeta[]; groups: strin
   const start = () => {
     setBusy(true);
     setErr("");
-    const params = changedOnly(merged, w2.map((m) => ({ name: m.name, default: s.params[m.name] })));
+    const params = changedOnly(
+      merged,
+      w2.map((m) => ({ name: m.name, default: s.params[m.name] })),
+    );
     postJSON<Job>("/jobs/rerun", { run_dir: s.path, name: name || next, params }).then(
       (job) => go({ name: "job", id: job.id }),
       (e: Error) => {
@@ -423,8 +490,8 @@ function Window2Form({ metas, groups, doc }: { metas: ParamMeta[]; groups: strin
   return (
     <section className="card span4" aria-label="Window-2 parameters">
       <span className="label">
-        Seed, init and CNMF parameters · prefilled from <b>{rerun ?? "the run"}</b> · a rerun starts from the saved factors, so passes 1 and 2
-        are skipped
+        Seed, init and CNMF parameters · prefilled from <b>{rerun ?? "the run"}</b> · a rerun starts from the saved
+        factors, so passes 1 and 2 are skipped
       </span>
       <ParamsForm
         key={rerun ?? "run"}
@@ -485,7 +552,9 @@ export function Tune() {
         <section className="card" aria-label="Proposal">
           <span className="label">Proposal</span>
           <span className="big">–</span>
-          <span className="muted">no auto-tune of this run yet; start one below, or rerun window 2 with your own parameters</span>
+          <span className="muted">
+            no auto-tune of this run yet; start one below, or rerun window 2 with your own parameters
+          </span>
         </section>
       )}
       <section className="card span3" aria-label="Reruns">

@@ -1,6 +1,6 @@
-import { expect, test } from "@playwright/test";
 import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { expect, test } from "@playwright/test";
 
 // Runs one streaming pass in the browser and saves its outputs for
 // experiments/streaming/check_rust.py:
@@ -18,13 +18,18 @@ test("streams raw AVIs in the browser and saves the outputs", async ({ page }) =
   page.on("console", (m) => m.text().startsWith("[worker]") && console.log(m.text()));
   page.on("console", (m) => m.text().startsWith("[stream]") && console.log(m.text()));
   await page.goto("/#/stream");
-  const avis = readdirSync(raw!).filter((f) => /^\d+.*\.avi$/i.test(f)).map((f) => join(raw!, f));
+  const avis = readdirSync(raw!)
+    .filter((f) => /^\d+.*\.avi$/i.test(f))
+    .map((f) => join(raw!, f));
   const nFiles = Number(process.env.STREAM_FILES ?? avis.length);
   await page.getByLabel("Raw AVIs").setInputFiles(avis.slice(0, nFiles));
   await page.getByLabel("Inputs folder").setInputFiles(inputs!);
   await page.getByRole("button", { name: "Run" }).click();
   const progress = setInterval(async () => {
-    const t = await page.getByRole("region", { name: "Progress" }).textContent().catch(() => null);
+    const t = await page
+      .getByRole("region", { name: "Progress" })
+      .textContent()
+      .catch(() => null);
     if (t) console.log(t);
   }, 30_000);
   const results = page.getByRole("region", { name: "Results" });

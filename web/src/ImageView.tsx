@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { clientToPixel, drawPoints, drawPolygons, fillImageData, pickUnit, type Img } from "./draw";
+import { clientToPixel, drawPoints, drawPolygons, fillImageData, type Img, pickUnit } from "./draw";
 import type { Unit } from "./types";
 
 const NO_UNITS: Unit[] = [];

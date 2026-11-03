@@ -25,13 +25,17 @@ export function Overview() {
     <div className="bento">
       <section className="card">
         <span className="label">Units</span>
-        <span className="big" style={{ color: "var(--accent)" }}>{fmtInt(s.counts.units_final ?? 0)}</span>
+        <span className="big" style={{ color: "var(--accent)" }}>
+          {fmtInt(s.counts.units_final ?? 0)}
+        </span>
         <span className="muted">after merging {fmtInt(s.counts.seeds_merged ?? 0)} candidates</span>
       </section>
       <section className="card">
         <span className="label">Run time</span>
         <span className="big">{s.wall_total ? fmtDuration(s.wall_total) : "–"}</span>
-        <span className="muted">{fmtInt(s.T)} frames{s.workers ? ` · ${s.workers} workers` : ""}</span>
+        <span className="muted">
+          {fmtInt(s.T)} frames{s.workers ? ` · ${s.workers} workers` : ""}
+        </span>
       </section>
       <section className="card">
         <span className="label">Peak memory</span>
@@ -43,7 +47,13 @@ export function Overview() {
       </section>
       <section className="card">
         <span className="label">Motion</span>
-        <span className="big">{s.motion.max_abs_shift_px?.toFixed(1) ?? "–"}<span className="muted" style={{ fontSize: 18 }}> px</span></span>
+        <span className="big">
+          {s.motion.max_abs_shift_px?.toFixed(1) ?? "–"}
+          <span className="muted" style={{ fontSize: 18 }}>
+            {" "}
+            px
+          </span>
+        </span>
         <span className="muted">largest shift · median quality {s.motion.quality_median?.toFixed(2) ?? "–"}</span>
       </section>
       <section className="card span2" aria-label="Seed funnel">
@@ -51,20 +61,26 @@ export function Overview() {
         {f.map((x) => (
           <div className="barrow" key={x.name}>
             <span>{x.name}</span>
-            <div className="bar"><span style={{ width: `${Math.max(1.5, (x.value / top) * 100)}%` }} /></div>
+            <div className="bar">
+              <span style={{ width: `${Math.max(1.5, (x.value / top) * 100)}%` }} />
+            </div>
             <span className="mono">{fmtInt(x.value)}</span>
           </div>
         ))}
       </section>
       <section className="card span2" aria-label="Stage timings">
         <span className="label">Where the time goes</span>
-        {stageBars(s.stages).filter((b) => b.seconds >= 0.5).map((b) => (
-          <div className="barrow" key={b.name}>
-            <span>{stageLabel(b.name)}</span>
-            <div className="bar"><span style={{ width: `${b.pct}%`, background: "var(--text)" }} /></div>
-            <span className="mono">{fmtDuration(b.seconds)}</span>
-          </div>
-        ))}
+        {stageBars(s.stages)
+          .filter((b) => b.seconds >= 0.5)
+          .map((b) => (
+            <div className="barrow" key={b.name}>
+              <span>{stageLabel(b.name)}</span>
+              <div className="bar">
+                <span style={{ width: `${b.pct}%`, background: "var(--text)" }} />
+              </div>
+              <span className="mono">{fmtDuration(b.seconds)}</span>
+            </div>
+          ))}
       </section>
       <section className="card span4" aria-label="Changed parameters">
         <span className="label">Parameters changed from the defaults</span>
@@ -72,10 +88,20 @@ export function Overview() {
           <span className="muted">None: this run used the defaults.</span>
         ) : (
           <table className="data">
-            <thead><tr><th>Parameter</th><th>This run</th><th>Default</th></tr></thead>
+            <thead>
+              <tr>
+                <th>Parameter</th>
+                <th>This run</th>
+                <th>Default</th>
+              </tr>
+            </thead>
             <tbody>
               {changed.map(([k, v]) => (
-                <tr key={k}><td className="mono">{k}</td><td className="mono">{JSON.stringify(v.value)}</td><td className="mono muted">{JSON.stringify(v.default)}</td></tr>
+                <tr key={k}>
+                  <td className="mono">{k}</td>
+                  <td className="mono">{JSON.stringify(v.value)}</td>
+                  <td className="mono muted">{JSON.stringify(v.default)}</td>
+                </tr>
               ))}
             </tbody>
           </table>

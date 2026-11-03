@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
-import init, { AviFile, Engine, MotionEngine, Pass1Engine, Pass2Engine, crc32 } from "./pkg/minime_core.js";
+
 import { orderAvis } from "./order";
+import init, { AviFile, crc32, Engine, MotionEngine, Pass1Engine, Pass2Engine } from "./pkg/minime_core.js";
 import type { FromWorker, ToWorker } from "./protocol";
 
 const post = (m: FromWorker, transfer: Transferable[] = []) => self.postMessage(m, transfer);
@@ -28,8 +29,7 @@ async function run({ avis, inputs }: ToWorker): Promise<void> {
   let lastPost = 0;
   for (const file of orderAvis(avis)) {
     if (t === T) break;
-    const read = (off: number, len: number) =>
-      new Uint8Array(reader.readAsArrayBuffer(file.slice(off, off + len)));
+    const read = (off: number, len: number) => new Uint8Array(reader.readAsArrayBuffer(file.slice(off, off + len)));
     const avi = AviFile.parse(read, file.size);
     log(`${file.name}: ${avi.n_frames()} frames indexed`);
     if (avi.height() !== H || avi.width() !== W)
@@ -60,7 +60,10 @@ async function run({ avis, inputs }: ToWorker): Promise<void> {
   const timing = { pass: passSeconds, where: "browser", wasm_heap_mb: heapMb };
   const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
   engine.free();
-  post({ type: "done", files: out, seconds: (performance.now() - t0) / 1e3 }, [...out.values()].map((v) => v.buffer));
+  post(
+    { type: "done", files: out, seconds: (performance.now() - t0) / 1e3 },
+    [...out.values()].map((v) => v.buffer),
+  );
 }
 
 type Segment = { file: File; avi: AviFile; read: (off: number, len: number) => Uint8Array };
@@ -104,8 +107,7 @@ function runMotion(
 ): void {
   const reader = new FileReaderSync();
   const segs: Segment[] = orderAvis(avis).map((file) => {
-    const read = (off: number, len: number) =>
-      new Uint8Array(reader.readAsArrayBuffer(file.slice(off, off + len)));
+    const read = (off: number, len: number) => new Uint8Array(reader.readAsArrayBuffer(file.slice(off, off + len)));
     return { file, read, avi: AviFile.parse(read, file.size) };
   });
   if (!segs.length) throw new Error("no AVIs");
@@ -148,7 +150,10 @@ function runMotion(
   const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
   engine.free();
   for (const s of segs) s.avi.free();
-  post({ type: "done", files: out, seconds }, [...out.values()].map((v) => v.buffer));
+  post(
+    { type: "done", files: out, seconds },
+    [...out.values()].map((v) => v.buffer),
+  );
 }
 
 const TILE_DIR = "pass1_tiles";
@@ -165,8 +170,7 @@ async function runPass1(
 ): Promise<void> {
   const reader = new FileReaderSync();
   const segs: Segment[] = orderAvis(avis).map((file) => {
-    const read = (off: number, len: number) =>
-      new Uint8Array(reader.readAsArrayBuffer(file.slice(off, off + len)));
+    const read = (off: number, len: number) => new Uint8Array(reader.readAsArrayBuffer(file.slice(off, off + len)));
     return { file, read, avi: AviFile.parse(read, file.size) };
   });
   const engine = new Pass1Engine(files);
@@ -200,15 +204,21 @@ async function runPass1(
     tWrite += performance.now() - s;
   };
   let lastPost = 0;
-  forFrames(segs, t0, t1, (s) => engine.set_stride(s), (c) => {
-    engine.push_raw(c);
-    if (engine.buffered() === FLUSH) flush();
-    const now = performance.now();
-    if (now - lastPost > 500) {
-      lastPost = now;
-      post({ type: "progress", done: engine.done(), frames: t1 - t0, seconds: (now - start) / 1e3, stateMb: 0 });
-    }
-  });
+  forFrames(
+    segs,
+    t0,
+    t1,
+    (s) => engine.set_stride(s),
+    (c) => {
+      engine.push_raw(c);
+      if (engine.buffered() === FLUSH) flush();
+      const now = performance.now();
+      if (now - lastPost > 500) {
+        lastPost = now;
+        post({ type: "progress", done: engine.done(), frames: t1 - t0, seconds: (now - start) / 1e3, stateMb: 0 });
+      }
+    },
+  );
   flush();
   const passSeconds = (performance.now() - start) / 1e3;
   const s = performance.now();
@@ -239,7 +249,10 @@ async function runPass1(
   for (const sg of segs) sg.avi.free();
   if (p2) for (const [name, bytes] of p2.files) out.set(name, bytes);
   const seconds = passSeconds + (p2?.seconds ?? 0);
-  post({ type: "done", files: out, seconds }, [...out.values()].map((v) => v.buffer));
+  post(
+    { type: "done", files: out, seconds },
+    [...out.values()].map((v) => v.buffer),
+  );
 }
 
 /** Pass 2 (`minime-core pass2`) on pass 1's open tile files, one tile at a time. */
@@ -274,5 +287,7 @@ function runPass2(
 }
 
 self.onmessage = (e: MessageEvent<ToWorker>) => {
-  run(e.data).catch((err: unknown) => post({ type: "error", message: err instanceof Error ? err.message : String(err) }));
+  run(e.data).catch((err: unknown) =>
+    post({ type: "error", message: err instanceof Error ? err.message : String(err) }),
+  );
 };

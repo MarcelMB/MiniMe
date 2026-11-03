@@ -4,11 +4,7 @@ import { Computing } from "./api";
 export type Resource<T> = { data?: T; error?: string; computing: boolean; elapsed: number };
 
 /** Call ``load`` until it stops throwing ``Computing``; report every state. Returns cancel. */
-export function pollResource<T>(
-  load: () => Promise<T>,
-  onState: (s: Resource<T>) => void,
-  delayMs = 1500,
-): () => void {
+export function pollResource<T>(load: () => Promise<T>, onState: (s: Resource<T>) => void, delayMs = 1500): () => void {
   let alive = true;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const attempt = () => {

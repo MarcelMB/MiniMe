@@ -52,7 +52,12 @@ export function rerunOptions(reruns: Rerun[]): SegOption<string>[] {
 export function sourceOptions(a: Available): SegOption<Source>[] {
   return [
     { value: "max", label: "Max projection" },
-    { value: "raw", label: "Raw", disabled: !a.raw, title: a.raw ? undefined : "raw videos not found (moved or unplugged)" },
+    {
+      value: "raw",
+      label: "Raw",
+      disabled: !a.raw,
+      title: a.raw ? undefined : "raw videos not found (moved or unplugged)",
+    },
     {
       value: "pre",
       label: "Preprocessed",

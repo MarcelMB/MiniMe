@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getJSON, postArray, postJSON, type NDArray } from "../api";
+import { getJSON, type NDArray, postArray, postJSON } from "../api";
 import { Slider } from "../controls";
 import { useDebounced } from "../debounce";
-import { fillImageData, imgFrom, type Img } from "../draw";
+import { fillImageData, type Img, imgFrom } from "../draw";
 import { fmtDuration } from "../format";
-import { STALE, latest } from "../frames";
+import { latest, STALE } from "../frames";
 import { ImageView } from "../ImageView";
 import type { RawInfo } from "../types";
-import { diameterOf, dragCircle, toImagePixel, type Circle } from "./circle";
+import { type Circle, diameterOf, dragCircle, toImagePixel } from "./circle";
 
 /** Fractions of the session shown as thumbnails: one row, the start included so the
  * bleaching transient is visible. */
@@ -59,7 +59,15 @@ function Inset({ img, c }: { img: Img; c: Circle }) {
     ctx.stroke();
   }, [img, c]);
   return (
-    <canvas ref={ref} width={200} height={200} className="imageview" style={{ width: 200 }} role="img" aria-label="zoom on the circle" />
+    <canvas
+      ref={ref}
+      width={200}
+      height={200}
+      className="imageview"
+      style={{ width: 200 }}
+      role="img"
+      aria-label="zoom on the circle"
+    />
   );
 }
 
@@ -89,14 +97,22 @@ function Steps({ values }: { values: Record<string, unknown> }) {
       {steps.map((s) => (
         <span key={s.label} className="row" style={{ gap: 6 }}>
           <span className="muted">›</span>
-          <span className="chip" aria-pressed={s.shown} style={{ cursor: "default" }} title={s.shown ? "computed on this frame" : "decided here, done in the run"}>
+          <span
+            className="chip"
+            aria-pressed={s.shown}
+            style={{ cursor: "default" }}
+            title={s.shown ? "computed on this frame" : "decided here, done in the run"}
+          >
             {s.label}
           </span>
         </span>
       ))}
       <span className="muted" style={{ flexBasis: "100%" }}>
-        Dark chips are computed on the frame below. The others are set here but run on the whole session: motion correction
-        {values.motion_before_tophat ? " is estimated on the band-passed frame (vessels stay as landmarks), then the tophat is applied to the registered frames" : " is estimated on the tophat frame"}
+        Dark chips are computed on the frame below. The others are set here but run on the whole session: motion
+        correction
+        {values.motion_before_tophat
+          ? " is estimated on the band-passed frame (vessels stay as landmarks), then the tophat is applied to the registered frames"
+          : " is estimated on the tophat frame"}
         . "Check motion here" runs it on 150 frames around the chosen one.
       </span>
     </div>
@@ -125,12 +141,12 @@ export function Preview(p: {
   useEffect(() => {
     let cancelled = false;
     setThumbs(POSITIONS.map(() => null));
-    ts.forEach((ti, i) =>
+    ts.forEach((ti, i) => {
       postArray("/raw/preview", { raw_dir: p.raw, t: ti, params: {} }).then(
         (a) => !cancelled && setThumbs((x) => x.map((v, j) => (j === i ? planes(a)[0] : v))),
         () => undefined, // the main view reports the error
-      ),
-    );
+      );
+    });
     return () => {
       cancelled = true;
     };
@@ -184,7 +200,11 @@ export function Preview(p: {
   const tophat = Number(p.values.tophat_wnd);
   const median = Number(p.values.median_ksize);
   const lw = Math.max(1, W / 300);
-  const labels = ["raw", `median ${median}`, p.values.motion_before_tophat ? "band-pass (registration image)" : "registration image"];
+  const labels = [
+    "raw",
+    `median ${median}`,
+    p.values.motion_before_tophat ? "band-pass (registration image)" : "registration image",
+  ];
   return (
     <section className="card span4" aria-label="2. Preprocessing preview">
       <span className="label">2 · Look at the frames and the preprocessing</span>
@@ -199,7 +219,15 @@ export function Preview(p: {
           </button>
         ))}
       </div>
-      <Slider label="Frame" min={0} max={frames - 1} step={1} value={t} onChange={setT} format={(v) => `${v} · ${time(v)}`} />
+      <Slider
+        label="Frame"
+        min={0}
+        max={frames - 1}
+        step={1}
+        value={t}
+        onChange={setT}
+        format={(v) => `${v} · ${time(v)}`}
+      />
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 3fr) minmax(0, 1fr)", gap: 12 }}>
         <div style={{ gridRow: "span 3", display: "flex", flexDirection: "column", gap: 6 }}>
           <span className="label">tophat {tophat} px · drag the circle onto a cell, its edge sets the size</span>
@@ -250,8 +278,22 @@ export function Preview(p: {
       </div>
       {err && <span className="error">{err}</span>}
       <div className="row">
-        <Slider label="median_ksize" min={1} max={21} step={2} value={median} onChange={(v) => p.onChange("median_ksize", v)} />
-        <Slider label="tophat_wnd" min={0} max={60} step={1} value={tophat} onChange={(v) => p.onChange("tophat_wnd", v)} />
+        <Slider
+          label="median_ksize"
+          min={1}
+          max={21}
+          step={2}
+          value={median}
+          onChange={(v) => p.onChange("median_ksize", v)}
+        />
+        <Slider
+          label="tophat_wnd"
+          min={0}
+          max={60}
+          step={1}
+          value={tophat}
+          onChange={(v) => p.onChange("tophat_wnd", v)}
+        />
       </div>
       <div className="row" style={{ alignItems: "flex-start" }}>
         {imgs && <Inset img={imgs[3]} c={circle} />}
@@ -271,8 +313,8 @@ export function Preview(p: {
           </button>
           {motion.result && (
             <span className="muted">
-              max shift {motion.result.max_shift_px.toFixed(1)} px, template match {motion.result.quality_median.toFixed(2)},{" "}
-              {motion.result.frames} frames from {time(motion.result.t0)}
+              max shift {motion.result.max_shift_px.toFixed(1)} px, template match{" "}
+              {motion.result.quality_median.toFixed(2)}, {motion.result.frames} frames from {time(motion.result.t0)}
             </span>
           )}
           {motion.err && <span className="error">{motion.err}</span>}

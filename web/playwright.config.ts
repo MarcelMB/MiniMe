@@ -1,6 +1,6 @@
-import { defineConfig } from "@playwright/test";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { defineConfig } from "@playwright/test";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const py = process.env.MINIME_PYTHON ?? resolve(here, "../.venv/bin/python");

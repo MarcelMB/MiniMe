@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { Computing, getArray, getJSON, postJSON, type NDArray } from "../../api";
+import { Computing, getArray, getJSON, type NDArray, postJSON } from "../../api";
 import { Chart } from "../../Chart";
-import { useDebounced } from "../../debounce";
 import { Loading, Segmented, Slider, Toggle } from "../../controls";
+import { useDebounced } from "../../debounce";
 import { fmtClock, fmtDuration, fmtInt } from "../../format";
 import { useResource } from "../../poll";
 import type { Zooms } from "../../types";
 import { rerunQuery, useRun } from "../RunContext";
-import { FULL_RES_MAX, clampRange, lowpassState, overviewColumns, traceMode } from "../traceMode";
+import { clampRange, FULL_RES_MAX, lowpassState, overviewColumns, traceMode } from "../traceMode";
 
 type Kind = "C" | "YrA";
 type Range = [number, number];
@@ -229,7 +229,10 @@ export function Traces() {
                   key={w.start}
                   className="chip"
                   type="button"
-                  onClick={() => (setRange([w.start, w.stop]), setT(w.start))}
+                  onClick={() => {
+                    setRange([w.start, w.stop]);
+                    setT(w.start);
+                  }}
                 >
                   {fmtClock(w.start, s.fps)}
                 </button>
@@ -242,9 +245,7 @@ export function Traces() {
                   type="button"
                   aria-pressed={shown.includes(u)}
                   onClick={() =>
-                    sel === null
-                      ? setSel(u)
-                      : setExtra((x) => (x.includes(u) ? x.filter((y) => y !== u) : [...x, u]))
+                    sel === null ? setSel(u) : setExtra((x) => (x.includes(u) ? x.filter((y) => y !== u) : [...x, u]))
                   }
                 >
                   {u}

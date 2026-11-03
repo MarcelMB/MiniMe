@@ -3,7 +3,15 @@ import type { Checks } from "../../types";
 import { rerunOptions, rerunQuery } from "../RunContext";
 import { changedText, criterion, fmtValue } from "./Tune";
 
-const checks: Checks = { diameter: 8, pnr_min: 12, piece_frac: 0.9, size_lo: 0.3, size_hi: 3, dup_corr: 0.8, keep_dist: 0.5 };
+const checks: Checks = {
+  diameter: 8,
+  pnr_min: 12,
+  piece_frac: 0.9,
+  size_lo: 0.3,
+  size_hi: 3,
+  dup_corr: 0.8,
+  keep_dist: 0.5,
+};
 
 describe("tune page helpers", () => {
   it("formats values the way the form shows them", () => {
@@ -13,7 +21,9 @@ describe("tune page helpers", () => {
     expect(fmtValue(0.8)).toBe("0.8");
   });
   it("lists the changed parameters as run→rerun", () => {
-    expect(changedText({ sparse_snr: [3.74, 0.96], merge_corr: [0.85, 0.8] })).toBe("sparse_snr 3.74→0.96 · merge_corr 0.85→0.8");
+    expect(changedText({ sparse_snr: [3.74, 0.96], merge_corr: [0.85, 0.8] })).toBe(
+      "sparse_snr 3.74→0.96 · merge_corr 0.85→0.8",
+    );
     expect(changedText(undefined)).toBe("");
   });
   it("spells out every flag criterion with the thresholds", () => {

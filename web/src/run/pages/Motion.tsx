@@ -17,9 +17,25 @@ function MotionCharts({ m, xs, cursor, xLabel }: { m: NDArray; xs: Float64Array;
   const quality = useMemo(() => [xs, q] as [Float64Array, Float64Array], [xs, q]);
   return (
     <>
-      <Chart data={shifts} series={[{ stroke: "--accent", width: 1 }, { stroke: "--hot", width: 1 }]} cursorX={cursor} xLabel={xLabel} sync="motion" />
+      <Chart
+        data={shifts}
+        series={[
+          { stroke: "--accent", width: 1 },
+          { stroke: "--hot", width: 1 },
+        ]}
+        cursorX={cursor}
+        xLabel={xLabel}
+        sync="motion"
+      />
       <span className="label">Motion quality (correlation with the template)</span>
-      <Chart data={quality} series={[{ stroke: "--ok", width: 1 }]} height={140} cursorX={cursor} xLabel={xLabel} sync="motion" />
+      <Chart
+        data={quality}
+        series={[{ stroke: "--ok", width: 1 }]}
+        height={140}
+        cursorX={cursor}
+        xLabel={xLabel}
+        sync="motion"
+      />
     </>
   );
 }
@@ -36,7 +52,15 @@ function ResidualCharts({ r }: { r: NDArray }) {
   }, [r]);
   return (
     <>
-      <Chart data={pos} series={[{ stroke: "--accent", width: 1 }, { stroke: "--hot", width: 1 }]} xLabel="block" height={160} />
+      <Chart
+        data={pos}
+        series={[
+          { stroke: "--accent", width: 1 },
+          { stroke: "--hot", width: 1 },
+        ]}
+        xLabel="block"
+        height={160}
+      />
       <Chart data={conf} series={[{ stroke: "--ok", width: 1 }]} xLabel="block" height={120} />
     </>
   );

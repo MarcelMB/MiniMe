@@ -17,7 +17,9 @@ const STEPS: { value: Step; label: string }[] = [
 export function Seeds() {
   const { summary: s, maxProj, rerun } = useRun();
   const [step, setStep] = useState<Step>("merged");
-  const res = useResource(`seeds:${s.id}:${rerun ?? ""}`, () => getJSON<SeedsT>(`/runs/${s.id}/seeds${rerunQuery(rerun)}`));
+  const res = useResource(`seeds:${s.id}:${rerun ?? ""}`, () =>
+    getJSON<SeedsT>(`/runs/${s.id}/seeds${rerunQuery(rerun)}`),
+  );
   return (
     <div className="bento">
       <section className="card span3" aria-label="Seeds on the max projection">

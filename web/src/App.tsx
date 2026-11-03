@@ -12,10 +12,7 @@ export function App() {
       <header className="topbar">
         <a className="brand" href={href({ name: "home" })}>
           <picture>
-            <source
-              media="(prefers-color-scheme: dark)"
-              srcSet="./minime-logo-dark.svg"
-            />
+            <source media="(prefers-color-scheme: dark)" srcSet="./minime-logo-dark.svg" />
             <img src="./minime-logo.svg" alt="MiniMe" />
           </picture>
         </a>
@@ -35,9 +32,7 @@ export function App() {
       {route.name === "new" && <NewRun />}
       {route.name === "stream" && <StreamPage />}
       {route.name === "job" && <JobPage key={route.id} id={route.id} />}
-      {route.name === "run" && (
-        <RunPage key={route.id} id={route.id} page={route.page} />
-      )}
+      {route.name === "run" && <RunPage key={route.id} id={route.id} page={route.page} />}
     </>
   );
 }

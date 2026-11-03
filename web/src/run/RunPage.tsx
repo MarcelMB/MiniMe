@@ -2,13 +2,13 @@ import { useMemo, useRef, useState } from "react";
 import { getArray, getJSON } from "../api";
 import { ComputingNote, ErrorNote, Segmented } from "../controls";
 import { imgFrom } from "../draw";
-import { FrameCache } from "../frames";
 import { fmtDuration, fmtInt } from "../format";
+import { FrameCache } from "../frames";
 import { useResource } from "../poll";
 import { go, PAGES, type Page } from "../router";
 import type { Rerun, Summary, UnitsResponse } from "../types";
+import { RunCtx, type RunState, rerunQuery } from "./RunContext";
 import { PAGE_LABELS, PAGE_VIEWS } from "./registry";
-import { RunCtx, rerunQuery, type RunState } from "./RunContext";
 import { TopArea } from "./TopArea";
 
 export function RunPage({ id, page }: { id: string; page: Page }) {
@@ -31,10 +31,7 @@ export function RunPage({ id, page }: { id: string; page: Page }) {
     setSel(null); // unit ids differ between reruns
     setRerunState(name);
   };
-  const cache = useMemo(
-    () => new FrameCache((source, f) => getArray(`/runs/${id}/frame/${f}?source=${source}`)),
-    [id],
-  );
+  const cache = useMemo(() => new FrameCache((source, f) => getArray(`/runs/${id}/frame/${f}?source=${source}`)), [id]);
   const maxImg = useMemo(() => (maxProj.data ? imgFrom(maxProj.data) : null), [maxProj.data]);
   const state = useMemo<RunState | null>(
     () =>
@@ -58,9 +55,24 @@ export function RunPage({ id, page }: { id: string; page: Page }) {
     [summary.data, unitList, maxImg, t, sel, cache, rerun, list],
   );
 
-  if (summary.error) return <div className="page"><ErrorNote message={summary.error} /></div>;
-  if (units.error && !rerun) return <div className="page"><ErrorNote message={units.error} /></div>;
-  if (maxProj.error) return <div className="page"><ErrorNote message={maxProj.error} /></div>;
+  if (summary.error)
+    return (
+      <div className="page">
+        <ErrorNote message={summary.error} />
+      </div>
+    );
+  if (units.error && !rerun)
+    return (
+      <div className="page">
+        <ErrorNote message={units.error} />
+      </div>
+    );
+  if (maxProj.error)
+    return (
+      <div className="page">
+        <ErrorNote message={maxProj.error} />
+      </div>
+    );
   if (!state) {
     return (
       <div className="page">

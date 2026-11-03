@@ -14,13 +14,7 @@ export function toImagePixel(rect: Box, W: number, H: number, clientX: number, c
 
 /** ``c`` after a drag to image point (x, y): the whole circle keeps the grab offset,
  * the edge handle sets the radius (at least half a pixel). */
-export function dragCircle(
-  c: Circle,
-  mode: "move" | "resize",
-  x: number,
-  y: number,
-  grab: [number, number],
-): Circle {
+export function dragCircle(c: Circle, mode: "move" | "resize", x: number, y: number, grab: [number, number]): Circle {
   if (mode === "move") return { ...c, cx: x - grab[0], cy: y - grab[1] };
   return { ...c, r: Math.max(0.5, Math.hypot(x - c.cx, y - c.cy)) };
 }
