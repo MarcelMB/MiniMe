@@ -1,11 +1,12 @@
 //! wasm-bindgen API for the browser worker: an AVI index over a synchronous JS read
-//! callback (`FileReaderSync` on `File.slice`), the streaming pass and the motion stage,
-//! each fed one raw frame at a time. Results come back as the same `.npy` files the
+//! callback (`FileReaderSync` on `File.slice`), the streaming pass, the motion stage and
+//! pass 1, each fed one raw frame at a time. Results come back as the same `.npy` files the
 //! native harness writes.
 
 use crate::avi::{self, AviIndex, ReadAt};
 use crate::motion::{self, Motion, MotionParams, Reg, TemplateBuilder};
 use crate::npy;
+use crate::pass1::{self, Pass1, Pass1Params};
 use crate::stream::StreamPass;
 use crate::{finish, Inputs};
 use js_sys::{Function, Map, Uint8Array};
@@ -329,4 +330,110 @@ impl MotionEngine {
         files.push(("summary.json".into(), serde_json::to_vec_pretty(&timing).unwrap()));
         Ok(npy_map(files))
     }
+}
+
+/// Pass 1 on frames `[t0, t1)` (`minime-core pass1`): `push_raw` each frame, append
+/// `take_tiles()` to the tile files whenever `buffered()` is large enough, then `finish`
+/// with the CRC-32 of every tile file as stored. Without `shifts.npy` in the inputs the
+/// shifts are estimated against `template.npy`.
+#[wasm_bindgen]
+pub struct Pass1Engine {
+    p: Pass1Params,
+    pass: Pass1,
+    shifts: Option<Vec<f32>>,
+    stride: usize,
+}
+
+#[wasm_bindgen]
+impl Pass1Engine {
+    /// `files`: `ref_pass1.py`'s inputs (`params.json`, `template.npy`, `shifts.npy`).
+    #[wasm_bindgen(constructor)]
+    pub fn new(files: &Map) -> Result<Pass1Engine, JsError> {
+        let err = |e: String| JsError::new(&e);
+        let p: Pass1Params = serde_json::from_slice(&map_bytes(files, "params.json").map_err(err)?)
+            .map_err(|e| JsError::new(&format!("params.json: {e}")))?;
+        let template = npy::read_f32(&map_bytes(files, "template.npy").map_err(err)?)
+            .map_err(err)?
+            .data;
+        let shifts = match map_bytes(files, "shifts.npy") {
+            Ok(b) => Some(npy::read_f32(&b).map_err(err)?.data),
+            Err(_) => None,
+        };
+        if let Some(s) = &shifts {
+            if s.len() != 2 * (p.t1 - p.t0) {
+                return Err(JsError::new(&format!(
+                    "{} shifts for {} frames",
+                    s.len() / 2,
+                    p.t1 - p.t0
+                )));
+            }
+        }
+        let m = Motion::from_template_image(&p.motion, template).map_err(err)?;
+        let pass = Pass1::new(&p, Some(m));
+        Ok(Pass1Engine {
+            stride: p.motion.w,
+            p,
+            pass,
+            shifts,
+        })
+    }
+    pub fn height(&self) -> usize {
+        self.p.motion.h
+    }
+    pub fn width(&self) -> usize {
+        self.p.motion.w
+    }
+    pub fn t0(&self) -> usize {
+        self.p.t0
+    }
+    pub fn t1(&self) -> usize {
+        self.p.t1
+    }
+    pub fn done(&self) -> usize {
+        self.pass.t
+    }
+    pub fn n_tiles(&self) -> usize {
+        self.pass.grid.len()
+    }
+    pub fn tile_pixels(&self, k: usize) -> usize {
+        self.pass.grid[k].pixels()
+    }
+    pub fn set_stride(&mut self, stride: usize) {
+        self.stride = stride;
+    }
+    pub fn buffered(&self) -> usize {
+        self.pass.buffered()
+    }
+
+    /// Correct the next frame of `t0..t1` and fold it in.
+    pub fn push_raw(&mut self, chunk: &[u8]) -> Result<(), JsError> {
+        let (h, w) = (self.p.motion.h, self.p.motion.w);
+        let i = self.pass.t;
+        let given = self.shifts.as_ref().map(|s| [s[2 * i], s[2 * i + 1]]);
+        let raw = unpad(chunk, h, w, self.stride);
+        self.pass.push(&raw, given).map_err(|e| JsError::new(&e))?;
+        Ok(())
+    }
+
+    /// The buffered frames, tile after tile (`buffered() * tile_pixels(k)` bytes each).
+    pub fn take_tiles(&mut self) -> Vec<u8> {
+        self.pass.take_tiles().concat()
+    }
+
+    /// Output name -> `.npy`/`.json` bytes (the names `minime-core pass1` writes).
+    pub fn finish(&self, timing_json: &str, tile_crc: &[u32]) -> Result<Map, JsError> {
+        let mut summary: serde_json::Value = serde_json::from_str(timing_json).unwrap_or_default();
+        summary["stage"] = "pass1".into();
+        summary["frames"] = self.pass.t.into();
+        summary["blocks"] = self.pass.n_blocks().into();
+        summary["tiles"] = self.pass.grid.len().into();
+        summary["estimate"] = self.shifts.is_none().into();
+        Ok(npy_map(pass1::outputs(&self.pass, tile_crc, summary)))
+    }
+}
+
+/// CRC-32 of `bytes` continuing from `crc` (`zlib.crc32`).
+#[wasm_bindgen]
+pub fn crc32(bytes: &[u8], crc: u32) -> u32 {
+    pass1::crc32(bytes, crc)
 }

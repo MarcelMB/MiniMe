@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-import init, { AviFile, Engine, MotionEngine } from "./pkg/minime_core.js";
+import init, { AviFile, Engine, MotionEngine, Pass1Engine, crc32 } from "./pkg/minime_core.js";
 import { orderAvis } from "./order";
 import type { FromWorker, ToWorker } from "./protocol";
 
@@ -15,7 +15,8 @@ async function run({ avis, inputs }: ToWorker): Promise<void> {
   const files = new Map<string, Uint8Array>();
   for (const f of inputs) files.set(f.name, new Uint8Array(await f.arrayBuffer()));
   log(`read ${files.size} input files`);
-  // an inputs folder without footprints is ref_motion.py's: run the motion stage
+  // an inputs folder with a template is ref_pass1.py's, one without footprints ref_motion.py's
+  if (files.has("template.npy")) return runPass1(avis, files, log, wasm.memory);
   if (!files.has("A_data.npy")) return runMotion(avis, files, log, wasm.memory);
   const engine = new Engine(files);
   log("engine built");
@@ -148,6 +149,93 @@ function runMotion(
   engine.free();
   for (const s of segs) s.avi.free();
   post({ type: "done", files: out, seconds }, [...out.values()].map((v) => v.buffer));
+}
+
+const TILE_DIR = "pass1_tiles";
+const FLUSH = 100; // frames buffered before they are appended to the tile files
+
+/** Pass 1 (`minime-core pass1`) on `[t0, t1)`, with the tile store in OPFS: one file per
+ * tile, written through sync access handles, read back at the end for its CRC-32s. */
+async function runPass1(
+  avis: File[],
+  files: Map<string, Uint8Array>,
+  log: (what: string) => void,
+  memory: WebAssembly.Memory,
+): Promise<void> {
+  const reader = new FileReaderSync();
+  const segs: Segment[] = orderAvis(avis).map((file) => {
+    const read = (off: number, len: number) =>
+      new Uint8Array(reader.readAsArrayBuffer(file.slice(off, off + len)));
+    return { file, read, avi: AviFile.parse(read, file.size) };
+  });
+  const engine = new Pass1Engine(files);
+  const [H, W, t0, t1, nTiles] = [engine.height(), engine.width(), engine.t0(), engine.t1(), engine.n_tiles()];
+  for (const { file, avi } of segs)
+    if (avi.height() !== H || avi.width() !== W)
+      throw new Error(`${file.name}: ${avi.height()}x${avi.width()} frames, inputs say ${H}x${W}`);
+  const root = await navigator.storage.getDirectory();
+  await root.removeEntry(TILE_DIR, { recursive: true }).catch(() => undefined);
+  const dir = await root.getDirectoryHandle(TILE_DIR, { create: true });
+  const handles: FileSystemSyncAccessHandle[] = [];
+  for (let k = 0; k < nTiles; k++) {
+    const name = `tile_${String(k).padStart(3, "0")}.part00`;
+    handles.push(await (await dir.getFileHandle(name, { create: true })).createSyncAccessHandle());
+  }
+  const tileBytes = Array.from({ length: nTiles }, (_, k) => engine.tile_pixels(k));
+  log(`${segs.length} files indexed; ${nTiles} tile files in OPFS; frames ${t0}-${t1}`);
+  post({ type: "start", stage: "pass1", frames: t1 - t0, units: 0, height: H, width: W });
+  const start = performance.now();
+  let tWrite = 0;
+  const flush = () => {
+    const s = performance.now();
+    const n = engine.buffered();
+    const packed = engine.take_tiles();
+    let o = 0;
+    for (let k = 0; k < nTiles; k++) {
+      const len = n * tileBytes[k];
+      handles[k].write(packed.subarray(o, o + len), { at: handles[k].getSize() });
+      o += len;
+    }
+    tWrite += performance.now() - s;
+  };
+  let lastPost = 0;
+  forFrames(segs, t0, t1, (s) => engine.set_stride(s), (c) => {
+    engine.push_raw(c);
+    if (engine.buffered() === FLUSH) flush();
+    const now = performance.now();
+    if (now - lastPost > 500) {
+      lastPost = now;
+      post({ type: "progress", done: engine.done(), frames: t1 - t0, seconds: (now - start) / 1e3, stateMb: 0 });
+    }
+  });
+  flush();
+  const passSeconds = (performance.now() - start) / 1e3;
+  const s = performance.now();
+  const crc = new Uint32Array(nTiles);
+  let storeBytes = 0;
+  for (let k = 0; k < nTiles; k++) {
+    const h = handles[k];
+    const buf = new Uint8Array(h.getSize());
+    h.read(buf, { at: 0 });
+    crc[k] = crc32(buf, 0);
+    storeBytes += buf.length;
+    h.close();
+  }
+  const tCrc = (performance.now() - s) / 1e3;
+  const heapMb = memory.buffer.byteLength / 2 ** 20;
+  log(`pass 1 done, ${(storeBytes / 2 ** 20).toFixed(0)} MB in OPFS, wasm heap ${heapMb.toFixed(0)} MB`);
+  const timing = {
+    where: "browser",
+    pass: passSeconds,
+    write_tiles: tWrite / 1e3,
+    read_back_crc: tCrc,
+    store_mb: storeBytes / 2 ** 20,
+    wasm_heap_mb: heapMb,
+  };
+  const out = engine.finish(JSON.stringify(timing), crc) as Map<string, Uint8Array>;
+  engine.free();
+  for (const sg of segs) sg.avi.free();
+  post({ type: "done", files: out, seconds: passSeconds }, [...out.values()].map((v) => v.buffer));
 }
 
 self.onmessage = (e: MessageEvent<ToWorker>) => {

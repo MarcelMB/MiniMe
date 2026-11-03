@@ -33,7 +33,7 @@ browser stage is checked against it. Background and results: `docs/browser-optio
 | per-frame LS traces on `[A; b]`, sums Σy·cᵀ, Σc·cᵀ, Σl·lᵀ, Σy, Σdy² | `stream.TraceModel`, `stream_pass` | **done** | rel 1e-9 |
 | footprint update from sums (NNQP), size filter, merge | `spatial_from_stats`, `merge_from_stats` | **done** | rel 1e-6, same kept units |
 | motion: bandpass registration image, template, FFT estimate, quality | `motion`, `pass1.build_template` | **done** | reg + prep bit-exact, shifts ≤ 5e-6 px (native and Chrome) |
-| pass 1 summaries (block maxima), tile store | `pass1` | next | bit-exact |
+| pass 1: max projection, block maxima, quality, tile store (OPFS in the browser) | `pass1` | **done** | max proj, block maxima, every tile bit-exact (native and Chrome) |
 | pass 2 rSVD + rank cut | `compress` | next | same rank; subspace / reconstruction (rSVD RNG injected for the check) |
 | seeds, PNR, GMM, initA/initC, CNMF loop | `seeds`, `corr`, `init`, `cnmf` | next | per stage on one window |
 | stitch | `stream.stitch` | next | identical units |
@@ -104,9 +104,39 @@ STREAM_RAW=<raw dir> STREAM_INPUTS=<ref>/inputs STREAM_OUT=<ref>/rust_browser np
 python experiments/streaming/check_motion.py <ref> <ref>/rust_browser
 ```
 
+## Pass 1 result (2026-11-02): native and Chrome match Python
+Pass 1 as a `fresh` window run does it (`ref_pass1.py`: the window's segments only, the
+baseline sidecar's shifts and template, one worker), frames 0–3000 of the 30-min GRIN synth:
+
+| | Rust native vs Python | Rust → wasm, headless Chrome vs Python |
+|---|---|---|
+| block edges, max projection, 11 block maxima | identical | identical |
+| tile store (100 tiles, 1030 MB) | identical, CRC-32 per tile | identical, CRC-32 of each OPFS file read back |
+| quality | ≤ 1.3e-5 (template FFT round trip: numpy float64, Rust float32) | ≤ 1.3e-5 |
+| time, 1 thread, M1 Max | 54 s (18 ms/frame) | 73 s (41 fps); tile writes 2.9 s, read-back 3.6 s; 92 MB wasm heap |
+| Python, 1 worker (OpenCV) | 15 s | |
+
+- `pass1.rs`: `Pass1` takes one raw frame and a shift (or estimates it against the
+  template: `--estimate`), keeps max projection and block maxima, and buffers the corrected
+  frames per tile; the caller appends `take_tiles()` to the tile files every 100 frames.
+- Browser: `Pass1Engine` in `wasm.rs`; the worker writes one OPFS file per tile
+  (`pass1_tiles/tile_NNN.part00`, sync access handles) and runs pass 1 when the inputs
+  folder has `template.npy`.
+- With `--estimate` (shifts from Rust's own FFT, ≤ 4e-6 px off) 4 of 3.96 M block-max
+  pixels and 17 of 100 tiles differ by one grey level. The check uses the given shifts.
+
+Run it:
+```bash
+python experiments/streaming/ref_pass1.py --t0 0 --t1 3000
+minime-core pass1 --raw <raw dir> --inputs <ref>/inputs --out <ref>/rust_native
+python experiments/streaming/check_pass1.py <ref> <ref>/rust_native
+STREAM_RAW=<raw dir> STREAM_INPUTS=<ref>/inputs STREAM_OUT=<ref>/rust_browser npm --prefix web run e2e:stream
+python experiments/streaming/check_pass1.py <ref> <ref>/rust_browser
+```
+
 ## Next
-1. Discovery port, stage by stage on one 3000-frame window: ~~motion~~ (done) → pass 1 (block maxima, tile store in OPFS) → pass 2 rSVD →
-   seeds/PNR/GMM → init → CNMF loop → stitch.
+1. Discovery port, stage by stage on one 3000-frame window: ~~motion~~, ~~pass 1~~ (done) → pass 2 rSVD
+   (reads the tile store; inject the RNG for the check) → seeds/PNR/GMM → init → CNMF loop → stitch.
 2. Speed: preprocessing in a worker pool (frames are independent), faster median
    (Perreault O(1) or a sorting-network median), then rayon + COOP/COEP.
 3. Save outputs to a folder (`showDirectoryPicker` on Chromium, OPFS elsewhere) and

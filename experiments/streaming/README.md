@@ -20,6 +20,8 @@ is 0.57, precision 0.94, trace correlation 0.86.
 | `t2_stream.py --footprints stitched --stitched DIR --n-updates 1` | The whole bounded-memory pipeline. Test 4 (footprint stability per segment) runs after every first update. |
 | `ref_dump.py --footprints stitched --stitched DIR [--frames N]` | Reference for the Rust core: one pass + update, with its inputs as plain `.npy` (`processed/stream/ref_<name>_<T>/`). |
 | `check_rust.py REF_DIR RUST_DIR` | Compares a native or browser Rust run with that reference (bit-exact frames, sums to 1e-9, footprints to 1e-6). |
+| `ref_motion.py` / `check_motion.py` | Reference and check for the Rust motion stage on one window. |
+| `ref_pass1.py` / `check_pass1.py` | Reference and check for the Rust pass 1 on one window (max projection, block maxima, tile store by CRC-32). |
 
 ## Run
 

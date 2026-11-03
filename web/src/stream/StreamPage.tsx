@@ -95,7 +95,13 @@ export function StreamPage() {
       )}
       {st.phase === "done" && (
         <section className="card" aria-label="Results">
-          {st.summary.stage === "motion" ? (
+          {st.summary.stage === "pass1" ? (
+            <p>
+              Done in {fmtDuration(st.seconds)}: pass 1 on {String(st.summary.frames)} frames,{" "}
+              {String(st.summary.blocks)} seed blocks, {String(st.summary.tiles)} tiles (
+              {Number(st.summary.store_mb).toFixed(0)} MB in browser storage).
+            </p>
+          ) : st.summary.stage === "motion" ? (
             <p>
               Done in {fmtDuration(st.seconds)}: motion for {String(st.summary.frames)} frames, largest shift{" "}
               {Number(st.summary.max_abs_shift).toFixed(2)} px.

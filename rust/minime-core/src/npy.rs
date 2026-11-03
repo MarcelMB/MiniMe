@@ -122,6 +122,7 @@ elem!(f32, "<f4");
 elem!(i64, "<i8");
 elem!(i32, "<i4");
 elem!(u8, "|u1");
+elem!(u32, "<u4");
 
 impl NpyElem for bool {
     const DESCR: &'static str = "|b1";

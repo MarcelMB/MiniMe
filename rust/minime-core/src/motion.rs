@@ -64,12 +64,16 @@ pub fn bandpass(den: &[u8], h: usize, w: usize, lo: f64, hi: f64) -> Vec<f32> {
 
 /// `pass1.registration_image` of one raw frame (median first, as `Pass1.process`).
 pub fn registration_image(raw: &[u8], p: &MotionParams) -> Reg {
-    let den = median_blur(raw, p.h, p.w, p.median_ksize);
+    registration_from_denoised(&median_blur(raw, p.h, p.w, p.median_ksize), p)
+}
+
+/// `pass1.registration_image` of one median-filtered frame.
+pub fn registration_from_denoised(den: &[u8], p: &MotionParams) -> Reg {
     if p.motion_before_tophat {
         let [lo, hi] = p.motion_bandpass;
-        Reg::F32(bandpass(&den, p.h, p.w, lo, hi))
+        Reg::F32(bandpass(den, p.h, p.w, lo, hi))
     } else {
-        Reg::U8(tophat(&den, p.h, p.w, p.tophat_wnd))
+        Reg::U8(tophat(den, p.h, p.w, p.tophat_wnd))
     }
 }
 
@@ -366,6 +370,21 @@ impl Motion {
             win_y,
             win_x,
         }
+    }
+
+    /// A template from a stored prepared template image (`motion.template_image`, as in
+    /// a sidecar), like `pipeline._template_from_sidecar`.
+    pub fn from_template_image(p: &MotionParams, img: Vec<f32>) -> Result<Self, String> {
+        let corr = Correlator::new(p.h, p.w, p.motion_down)?;
+        if img.len() != corr.ph * corr.pw {
+            return Err(format!(
+                "template holds {} pixels, expected {} x {}",
+                img.len(),
+                corr.ph,
+                corr.pw
+            ));
+        }
+        Ok(Self::from_image(corr, img, p.motion_max_shift))
     }
 
     /// `motion.make_template` from `n` registration frames, fetched twice by `get_reg`

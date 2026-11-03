@@ -3,13 +3,17 @@
 //!
 //!     minime-core --raw RAW_DIR --inputs INPUTS_DIR --out OUT_DIR [--check-frames T.npy]
 //!     minime-core motion --raw RAW_DIR --params PARAMS.json --out OUT_DIR [--check-frames T.npy]
+//!     minime-core pass1 --raw RAW_DIR --inputs INPUTS_DIR --out OUT_DIR [--estimate]
 //!
 //! The first is one streaming pass (`ref_dump.py`), the second the motion stage on one
-//! window (`ref_motion.py`).
+//! window (`ref_motion.py`), the third pass 1 on one window (`ref_pass1.py`), with the
+//! tile store written to `OUT_DIR/tiles/`.
 
 use minime_core::avi::{self, AviIndex, FileReader, ReadAt};
 use minime_core::motion::{self, Motion, MotionParams, Reg};
+use minime_core::pass1::{self, Pass1, Pass1Params};
 use minime_core::{finish, npy, Inputs};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -163,10 +167,75 @@ fn run_motion(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Pass 1 on frames `[t0, t1)` with the inputs' shifts (or, with `--estimate`, shifts
+/// estimated against the inputs' template), writing the tile store as `ref_pass1.py` does.
+fn run_pass1(args: &[String]) -> Result<(), String> {
+    let raw = PathBuf::from(arg(args, "--raw").ok_or("--raw RAW_DIR")?);
+    let inputs = PathBuf::from(arg(args, "--inputs").ok_or("--inputs DIR")?);
+    let out = PathBuf::from(arg(args, "--out").ok_or("--out DIR")?);
+    let estimate = args.iter().any(|a| a == "--estimate");
+    let read = |name: &str| std::fs::read(inputs.join(name)).map_err(|e| format!("{name}: {e}"));
+    let p: Pass1Params =
+        serde_json::from_slice(&read("params.json")?).map_err(|e| format!("params.json: {e}"))?;
+    let shifts = npy::read_f32(&read("shifts.npy")?)?.data;
+    let template = npy::read_f32(&read("template.npy")?)?.data;
+    let (h, w, n) = (p.motion.h, p.motion.w, p.t1 - p.t0);
+    if !estimate && shifts.len() != 2 * n {
+        return Err(format!("{} shifts for {n} frames", shifts.len() / 2));
+    }
+    let tiles = out.join("tiles");
+    let _ = std::fs::remove_dir_all(&tiles);
+    std::fs::create_dir_all(&tiles).map_err(|e| e.to_string())?;
+    let mut frames = Frames::open(&raw, h, w)?;
+    let m = Motion::from_template_image(&p.motion, template)?;
+    let mut p1 = Pass1::new(&p, Some(m));
+    let mut files: Vec<std::fs::File> = (0..p1.grid.len())
+        .map(|k| std::fs::File::create(tiles.join(format!("tile_{k:03}.part00"))))
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    let (mut t_read, mut t_push, mut t_write) = (0.0, 0.0, 0.0);
+    let mut write = |p1: &mut Pass1, t_write: &mut f64| -> Result<(), String> {
+        let s = Instant::now();
+        for (f, buf) in files.iter_mut().zip(p1.take_tiles()) {
+            f.write_all(&buf).map_err(|e| e.to_string())?;
+        }
+        *t_write += s.elapsed().as_secs_f64();
+        Ok(())
+    };
+    for t in p.t0..p.t1 {
+        let s0 = Instant::now();
+        let fr = frames.get(t)?;
+        let s1 = Instant::now();
+        let i = t - p.t0;
+        p1.push(&fr, (!estimate).then(|| [shifts[2 * i], shifts[2 * i + 1]]))?;
+        t_read += (s1 - s0).as_secs_f64();
+        t_push += s1.elapsed().as_secs_f64();
+        if p1.buffered() == 100 {
+            write(&mut p1, &mut t_write)?;
+        }
+    }
+    write(&mut p1, &mut t_write)?;
+    let crc: Vec<u32> = (0..p1.grid.len())
+        .map(|k| std::fs::read(tiles.join(format!("tile_{k:03}.part00"))).map(|b| pass1::crc32(&b, 0)))
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    let summary = serde_json::json!({
+        "frames": p1.t, "blocks": p1.n_blocks(), "tiles": p1.grid.len(), "estimate": estimate,
+        "read": t_read, "process": t_push, "write_tiles": t_write,
+    });
+    eprintln!("{summary}");
+    for (name, bytes) in pass1::outputs(&p1, &crc, summary) {
+        std::fs::write(out.join(name), bytes).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some("motion") {
-        return run_motion(&args);
+    match args.get(1).map(String::as_str) {
+        Some("motion") => return run_motion(&args),
+        Some("pass1") => return run_pass1(&args),
+        _ => {}
     }
     let raw = PathBuf::from(arg(&args, "--raw").ok_or("--raw RAW_DIR")?);
     let inputs = PathBuf::from(arg(&args, "--inputs").ok_or("--inputs DIR")?);

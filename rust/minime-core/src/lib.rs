@@ -8,6 +8,7 @@ pub mod linalg;
 pub mod motion;
 pub mod nnqp;
 pub mod npy;
+pub mod pass1;
 pub mod preprocess;
 pub mod stream;
 #[cfg(target_arch = "wasm32")]
