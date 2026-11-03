@@ -35,7 +35,7 @@ def test_pipeline_end_to_end_tiny(tiny_session):
     assert (out / "factors" / "meta.json").exists() and not (out / "tiles").exists()
     A = sps.load_npz(out / "cnmf" / "A.npz")
     C = np.load(out / "cnmf" / "C.npy")
-    rep = json.loads((out / "report.json").read_text())
+    rep = json.loads((out / "report.json").read_text(encoding="utf-8"))
     assert A.shape[1] == 64 * 64 and C.shape == (A.shape[0], 300)
     assert rep["counts"]["units_final"] == A.shape[0]
     cents = synth.true_centroids(tiny_session["setup"])
@@ -52,7 +52,7 @@ def test_pipeline_end_to_end_tiny(tiny_session):
     units = pd.read_csv(out / "cnmf" / "units.csv")
     assert list(units.columns) == ["unit_id", "centroid_h", "centroid_w", "size_px", "peak"]
     assert len(units) == A.shape[0]
-    prm = json.loads((out / "params.json").read_text())
+    prm = json.loads((out / "params.json").read_text(encoding="utf-8"))
     assert prm["tile"] == 32 and prm["raw_dir"] == str(tiny_session["raw_dir"].resolve())
     assert {"raw_hash", "minime_version"} <= set(prm)
     assert (out / "motion" / "meta.json").exists()
@@ -65,13 +65,15 @@ def test_pipeline_end_to_end_tiny(tiny_session):
         assert pos.dtype == np.float32 and pos.shape == (rep["counts"][f"seeds_{k}"], 2)
     A0 = sps.load_npz(out / "init" / "A.npz")
     assert A0.shape == (rep["counts"]["units_init_merge"], 64 * 64)
-    events = [json.loads(s) for s in (out / "progress.jsonl").read_text().splitlines()]
+    events = [
+        json.loads(s) for s in (out / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
     ends = [e["stage"] for e in events if e["event"] == "end"]
     assert ends == [r["stage"] for r in rep["stages"]]
-    (out / "stale.txt").write_text("from a previous run")
+    (out / "stale.txt").write_text("from a previous run", encoding="utf-8")
     # second run reuses the sidecar and overwrites
     out2 = pipeline.run(tiny_session["raw_dir"], p, run_name="t", workers=1)
-    rep2 = json.loads((out2 / "report.json").read_text())
+    rep2 = json.loads((out2 / "report.json").read_text(encoding="utf-8"))
     assert rep2["motion"]["sidecar_reused"] is True
     assert not (out2 / "stale.txt").exists()
     assert np.array_equal(sps.load_npz(out2 / "cnmf" / "A.npz").toarray(), A.toarray())
@@ -86,7 +88,10 @@ def test_stage_timer_progress(tmp_path):
     timer.attach_progress(tmp_path / "progress.jsonl")
     with timer("pass1"):
         pass
-    lines = [json.loads(s) for s in (tmp_path / "progress.jsonl").read_text().splitlines()]
+    lines = [
+        json.loads(s)
+        for s in (tmp_path / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
     assert [(x["stage"], x["event"]) for x in lines] == [
         ("probe", "end"),
         ("pass1", "start"),
@@ -95,7 +100,10 @@ def test_stage_timer_progress(tmp_path):
     assert lines[2]["seconds"] >= 0 and "seconds" not in lines[1]
     with pytest.raises(RuntimeError), timer("cnmf"):
         raise RuntimeError("boom")
-    lines = [json.loads(s) for s in (tmp_path / "progress.jsonl").read_text().splitlines()]
+    lines = [
+        json.loads(s)
+        for s in (tmp_path / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
     assert [(x["stage"], x["event"]) for x in lines[3:]] == [("cnmf", "start"), ("cnmf", "error")]
     assert lines[4]["seconds"] >= 0 and lines[4]["t"] > 0
 
@@ -108,13 +116,22 @@ def test_pipeline_refuses_out_dir_containing_raw(tmp_path):
     assert raw.exists()
 
 
+def test_out_dir_of_relative_raw_dir_lies_beside_it(tmp_path, monkeypatch):
+    raw = tmp_path / "sess" / "raw"
+    raw.mkdir(parents=True)
+    monkeypatch.chdir(raw)
+    assert pipeline.out_dir_for(Path("."), "t") == tmp_path / "sess" / "processed" / "t"
+    with pytest.raises(ValueError, match="inside the raw dir"):
+        pipeline._check_out_dir(Path("."), raw / "processed" / "t")
+
+
 def test_stage_timer(tmp_path):
     timer = report.StageTimer()
     with timer("a"):
         time.sleep(0.01)
     timer.counts["n"] = 3
     timer.to_json(tmp_path / "r.json", {"version": "x"})
-    rep = json.loads((tmp_path / "r.json").read_text())
+    rep = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
     assert rep["stages"][0]["stage"] == "a" and rep["stages"][0]["seconds"] >= 0.01
     assert rep["counts"] == {"n": 3} and rep["version"] == "x"
 
@@ -126,20 +143,43 @@ def test_cli_run_wires_options(tmp_path, monkeypatch):
         seen.update(raw_dir=raw_dir, params=params, **kw)
         out = tmp_path / "out"
         out.mkdir()
-        (out / "report.json").write_text(json.dumps({"counts": {"units_final": 7}}))
+        (out / "report.json").write_text(
+            json.dumps({"counts": {"units_final": 7}}), encoding="utf-8"
+        )
         return out
 
     monkeypatch.setattr(pipeline, "run", fake_run)
     Params(tile=32).to_json(tmp_path / "p.json")
+    for n in ("0_a.avi", "behavior.avi"):
+        (tmp_path / n).touch()
     res = CliRunner().invoke(
         cli.app,
         ["run", str(tmp_path), "--params", str(tmp_path / "p.json"), "--workers", "3"]
-        + ["--name", "x", "--keep-store"],
+        + ["--name", "x", "--keep-store", "--fps", "19.5"],
     )
     assert res.exit_code == 0, res.output
     assert seen["params"].tile == 32 and seen["workers"] == 3
-    assert seen["run_name"] == "x" and seen["keep_store"] is True
+    assert seen["run_name"] == "x" and seen["keep_store"] is True and seen["fps"] == 19.5
+    assert "read in this order: 0_a.avi" in res.output and "behavior.avi" in res.output
     assert "units_final" in res.output and str(tmp_path / "out") in res.output
+
+
+def test_cli_run_refuses_a_folder_without_numbered_videos(tmp_path):
+    (tmp_path / "session.avi").touch()
+    res = CliRunner().invoke(cli.app, ["run", str(tmp_path)])
+    assert res.exit_code != 0 and "start with a number" in res.output
+
+
+def test_cli_run_refuses_existing_run_without_overwrite(tmp_path, monkeypatch):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    out = tmp_path / "processed" / "x"
+    out.mkdir(parents=True)
+    (out / "params.json").write_text("{}", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(pipeline, "run", lambda *a, **kw: calls.append(1))
+    res = CliRunner().invoke(cli.app, ["run", str(raw), "--name", "x"])
+    assert res.exit_code == 1 and "--overwrite" in res.output and not calls
 
 
 @pytest.mark.parametrize("use_gmm", [False, True])
@@ -156,10 +196,12 @@ def test_seeds_stage_runs_gmm_refine_only_when_enabled(monkeypatch, use_gmm):
         return s.assign(mask_gmm=[True, False, True])
 
     monkeypatch.setattr(seeds, "seeds_init", lambda *a: df)
-    monkeypatch.setattr(seeds, "pnr_refine", lambda f, s, thres: s.assign(mask_pnr=True))
+    monkeypatch.setattr(seeds, "pnr_refine", lambda f, s, thres, pnr=None: s.assign(mask_pnr=True))
     monkeypatch.setattr(seeds, "gmm_refine", fake_gmm)
     monkeypatch.setattr(corr, "seeds_merge", lambda fc, s, mp, d, c: s.assign(mask_mrg=True))
-    fac = SimpleNamespace(block_max=None, block_edges=None, T=10, max_proj=None)
+    fac = SimpleNamespace(
+        block_max=None, block_edges=None, T=10, max_proj=None, t0=0, session_T=None
+    )
     assert Params().gmm_refine is False
     timer = report.StageTimer()
     prm = Params(gmm_refine=use_gmm)
@@ -177,7 +219,7 @@ def test_pipeline_rejects_unsafe_run_names(tmp_path, name):
     raw.mkdir()
     keep = tmp_path / "processed" / "other_run"
     keep.mkdir(parents=True)
-    (keep / "params.json").write_text(json.dumps({"minime_version": "0"}))
+    (keep / "params.json").write_text(json.dumps({"minime_version": "0"}), encoding="utf-8")
     with pytest.raises(ValueError, match="run name"):
         pipeline.run(raw, Params(), run_name=name)
     assert (keep / "params.json").exists()
@@ -190,18 +232,20 @@ def test_reset_dir_wipes_only_empty_or_minime_dirs(tmp_path):
     assert empty.is_dir() and not any(empty.iterdir())
     run = tmp_path / "run"
     run.mkdir()
-    (run / "report.json").write_text(json.dumps({"stages": []}))
-    (run / "old.npy").write_text("x")
+    (run / "report.json").write_text(json.dumps({"stages": []}), encoding="utf-8")
+    (run / "old.npy").write_text("x", encoding="utf-8")
     pipeline._reset_dir(run)
     assert run.is_dir() and not any(run.iterdir())
     old = tmp_path / "old"  # run written under the old name cafast
     old.mkdir()
-    (old / "params.json").write_text(json.dumps({"cafast_version": "0"}))
+    (old / "params.json").write_text(json.dumps({"cafast_version": "0"}), encoding="utf-8")
     pipeline._reset_dir(old)
     assert old.is_dir() and not any(old.iterdir())
     fake = tmp_path / "fake"
     fake.mkdir()
-    (fake / "params.json").write_text(json.dumps({"tile": 64}))  # no minime marker key
+    (fake / "params.json").write_text(
+        json.dumps({"tile": 64}), encoding="utf-8"
+    )  # no minime marker key
     with pytest.raises(ValueError, match="refusing to delete"):
         pipeline._reset_dir(fake)
     raw = tmp_path / "raw"
@@ -209,3 +253,16 @@ def test_reset_dir_wipes_only_empty_or_minime_dirs(tmp_path):
     with pytest.raises(ValueError, match="refusing to delete"):  # same guard from run()
         pipeline.run(raw, Params(), run_name="fake", out_root=tmp_path)
     assert (fake / "params.json").exists()
+
+
+def test_a_failed_run_removes_the_tile_store(tiny_session, tmp_path, monkeypatch):
+    from minime import pass2
+
+    def boom(*a, **kw):
+        raise RuntimeError("pass 2 failed")
+
+    monkeypatch.setattr(pass2, "run_pass2", boom)
+    p = Params(tile=32, seeds_wnd=100, seeds_stp=50, template_frames=50)
+    with pytest.raises(RuntimeError, match="pass 2"):
+        pipeline.run(tiny_session["raw_dir"], p, run_name="f", out_root=tmp_path)
+    assert (tmp_path / "f" / "motion").is_dir() and not (tmp_path / "f" / "tiles").exists()

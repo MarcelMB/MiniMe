@@ -10,47 +10,15 @@ import numpy as np
 import pandas as pd
 from matplotlib.figure import Figure
 
+from minime.autotune.run import best_per_value, same_value  # noqa: F401 - re-export
 from minime.autotune.score import footprint_image, peak_mask
-from minime.autotune.sweep import SEARCHED, STEP_OF
+from minime.autotune.sweep import SEARCHED
 from minime.init import centroids
 from minime.tune.figures import FRAG, INK, MINIAN, MINIME, MUTED, OUTLINE_LEVEL, _style
 
 GOOD, FLAGGED, CHOSEN = MINIME, FRAG, MINIAN
 DPI = 110
 THUMB_SCALE = 4
-
-
-def _is_num(v: Any) -> bool:
-    try:
-        float(v)
-    except (TypeError, ValueError):
-        return False
-    return True
-
-
-def _order(values: pd.Series) -> list[Any]:
-    """Grid order: ``auto`` first, then numbers ascending."""
-    uniq = list(dict.fromkeys(values.tolist()))
-    words = [v for v in uniq if not _is_num(v)]
-    nums = sorted((v for v in uniq if _is_num(v)), key=float)
-    return words + nums
-
-
-def best_per_value(df: pd.DataFrame, key: str) -> pd.DataFrame:
-    """Per value of ``key`` in its step: the best-scoring successful trial, in grid order."""
-    d = df[(df["step"] == STEP_OF[key]) & df["score"].notna()]
-    if d.empty:
-        return d
-    top = d.sort_values("score", ascending=False, kind="stable").drop_duplicates(key)
-    order = {v: i for i, v in enumerate(_order(top[key]))}
-    return top.sort_values(key, key=lambda s: s.map(order)).reset_index(drop=True)
-
-
-def same_value(a: Any, b: Any) -> bool:
-    """``2`` and ``2.0`` and ``"2.0"`` are one value; ``auto`` only equals ``auto``."""
-    if _is_num(a) and _is_num(b):
-        return float(a) == float(b)
-    return str(a) == str(b)
 
 
 def _curve(df: pd.DataFrame, key: str, chosen: Any, path: Path) -> None:
@@ -81,6 +49,45 @@ def sweep_curves(sweep_csv: Path, doc: dict[str, Any], out_dir: Path) -> list[st
         _curve(df, key, doc["proposed"].get(key), Path(out_dir) / name)
         names.append(name)
     return names
+
+
+# ---------------------------------------------------------------------------
+# The two thresholds against the data
+# ---------------------------------------------------------------------------
+
+
+def threshold_figure(
+    run: dict[str, Any], prop: dict[str, Any], dup_corr: float, min_dist_frac: float, path: Path
+) -> None:
+    """Left: trace correlation of unit pairs within D, run (outline) and proposal (filled),
+    with far pairs (> 2 D) as the null; the line is ``dup_corr``. Right: nearest-neighbour
+    distance per unit in units of D; the line is ``min_dist_frac``. ``run`` and ``prop`` are
+    ``score.pair_stats`` dicts."""
+    fig = Figure(figsize=(5.8, 1.9), dpi=DPI, facecolor="white", layout="constrained")
+    ax1, ax2 = fig.subplots(1, 2)
+    bins = np.linspace(-0.4, 1.0, 29)
+    if len(run["far_corr"]):
+        ax1.hist(run["far_corr"], bins, density=True, color=MUTED, alpha=0.25, label="far pairs")
+    if len(prop["near_corr"]):
+        ax1.hist(prop["near_corr"], bins, density=True, color=GOOD, alpha=0.6, label="proposal")
+    if len(run["near_corr"]):
+        ax1.hist(run["near_corr"], bins, density=True, histtype="step", color=INK, label="run")
+    ax1.axvline(dup_corr, color=CHOSEN, lw=1, ls="--")
+    ax1.set_xlabel("trace corr, pairs within D", fontsize=7, color=INK)
+    ax1.legend(fontsize=6, frameon=False)
+    bins = np.linspace(0, 2.0, 41)
+    if len(prop["nn_dist"]):
+        ax2.hist(np.minimum(prop["nn_dist"], 2), bins, color=GOOD, alpha=0.6)
+    if len(run["nn_dist"]):
+        ax2.hist(np.minimum(run["nn_dist"], 2), bins, histtype="step", color=INK)
+    ax2.axvline(min_dist_frac, color=CHOSEN, lw=1, ls="--")
+    ax2.axvline(1.0, color=MUTED, lw=0.8, ls=":")
+    ax2.set_xlabel("nearest neighbour / D", fontsize=7, color=INK)
+    for ax in (ax1, ax2):
+        _style(ax)
+        ax.set_yticks([])
+        ax.tick_params(labelsize=6)
+    fig.savefig(path, dpi=DPI)
 
 
 # ---------------------------------------------------------------------------

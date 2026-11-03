@@ -114,12 +114,14 @@ def test_cross_tile_correlations_match_reconstruct_then_lowpass():
     seed = 31 * 64 + 31
     idx, cw = fc.window(seed, 6)
     assert np.unique(f.tile_of[idx]).tolist() == [0, 1, 2, 3]
-    assert np.abs(cw - ref(np.full(idx.size, seed), idx)).max() < 1e-10
+    assert (
+        np.abs(cw - ref(np.full(idx.size, seed), idx)).max() < 1e-7
+    )  # cross-tile G from float32 Vlp
     rng = np.random.default_rng(1)
     s, d = rng.integers(0, f.P, 3000), rng.integers(0, f.P, 3000)
     assert np.mean(f.tile_of[s] != f.tile_of[d]) > 0.5
     c = fc.pairs(s, d)
-    assert np.abs(c - ref(s, d)).max() < 1e-10
+    assert np.abs(c - ref(s, d)).max() < 1e-7
     assert np.abs(c - fc.pairs(d, s)).max() < 1e-12  # symmetric across tiles
 
 

@@ -59,11 +59,12 @@ export function JobPage({ id }: { id: string }) {
     return () => clearInterval(tick);
   }, [final]);
 
+  // a rerun or auto-tune job opens its source run on the Tune page
   const openRun = () =>
     getJSON<{ runs: RunListing[] }>(
-      `/runs?root=${encodeURIComponent(job!.out_dir)}`,
+      `/runs?root=${encodeURIComponent(job!.run_dir || job!.out_dir)}`,
     ).then(
-      (r) => go({ name: "run", id: r.runs[0].id, page: "overview" }),
+      (r) => go({ name: "run", id: r.runs[0].id, page: job!.kind !== "run" || job!.tune ? "tune" : "overview" }),
       (e: Error) => setErr(e.message),
     );
 
@@ -84,7 +85,10 @@ export function JobPage({ id }: { id: string }) {
     <div className="page">
       <div className="row">
         <div>
-          <span className="label">Run · {job.status}</span>
+          <span className="label">
+            {job.kind === "rerun" ? "Window-2 rerun" : job.kind === "autotune" ? "Auto-tune" : job.tune ? "Run + auto-tune" : "Run"} ·{" "}
+            {job.status}
+          </span>
           <h1>{job.name}</h1>
         </div>
         <span className="spacer" />
@@ -132,6 +136,12 @@ export function JobPage({ id }: { id: string }) {
                   </span>
                 )}{" "}
                 {stageLabel(r.stage)}
+                {r.n !== undefined && r.n > 0 && (
+                  <span className="muted">
+                    {" "}
+                    · {r.n} {r.n === 1 ? "setting" : "settings"}
+                  </span>
+                )}
               </span>
               <span className="spacer" />
               <span className="mono">

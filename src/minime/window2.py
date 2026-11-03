@@ -23,7 +23,7 @@ from typing import Any
 import scipy.sparse as sps
 
 import minime
-from minime import corr, pipeline, seeds
+from minime import corr, io, pipeline, seeds
 from minime.factors import Factors
 from minime.params import Params
 from minime.report import StageTimer
@@ -44,8 +44,8 @@ FACTOR_PARAMS = (
     "rank_rho_min",
     "rank_z",
     "noise_frames",
+    "noise_freq",  # also sets pass 2's per-pixel noise (spatial penalty, PNR)
 )
-SEED_WINDOW_PARAMS = ("seeds_wnd", "seeds_stp")  # must fall on the stored block edges
 EXECUTION_PARAMS = ("workers", "sub_batch")
 WINDOW2_PARAMS = tuple(
     f.name for f in fields(Params) if f.name not in FACTOR_PARAMS + EXECUTION_PARAMS
@@ -69,8 +69,16 @@ def run_params(run_dir: Path, override: Path | None = None) -> Params:
 
 def raw_dir(run_dir: Path) -> Path | None:
     """The raw folder recorded in the run's ``params.json`` (``None`` if it is not recorded)."""
-    raw = json.loads((Path(run_dir) / "params.json").read_text()).get("raw_dir")
+    raw = json.loads((Path(run_dir) / "params.json").read_text(encoding="utf-8")).get("raw_dir")
     return Path(raw) if raw else None
+
+
+def run_fps(run_dir: Path) -> float | None:
+    """Frame rate given when the run started, else ``io.fps_from_files`` of its raw folder."""
+    doc = json.loads((Path(run_dir) / "params.json").read_text(encoding="utf-8"))
+    if doc.get("fps"):
+        return float(doc["fps"])
+    return io.fps_from_files(Path(doc["raw_dir"])) if doc.get("raw_dir") else None
 
 
 def _norm(v: Any) -> Any:
@@ -109,15 +117,16 @@ def check_factor_params(fac: Factors, params: Params) -> None:
 
 
 def _write_params(out: Path, params: Params, run_dir: Path) -> None:
-    src = json.loads((run_dir / "params.json").read_text())
+    src = json.loads((run_dir / "params.json").read_text(encoding="utf-8"))
     doc = {
         **params.asdict(),
         "raw_dir": src.get("raw_dir"),
         "raw_hash": src.get("raw_hash"),
+        "fps": src.get("fps"),
         "source_run": str(run_dir.resolve()),
         "minime_version": minime.__version__,
     }
-    (out / "params.json").write_text(json.dumps(doc, indent=1))
+    (out / "params.json").write_text(json.dumps(doc, indent=1), encoding="utf-8")
 
 
 def _link_inputs(out: Path, run_dir: Path) -> None:
@@ -134,13 +143,13 @@ def _write_stages(d: Path, w2: pipeline.Window2Result) -> None:
         df.to_csv(d / f"{name}.csv", index=False)
     for name, A in w2.footprints.items():
         sps.save_npz(d / f"A_{name}.npz", sps.csr_matrix(A))
-    (d / "index.json").write_text(json.dumps({"footprints": list(w2.footprints)}))
+    (d / "index.json").write_text(json.dumps({"footprints": list(w2.footprints)}), encoding="utf-8")
 
 
 def footprint_stages(rerun_dir: Path) -> dict[str, sps.csr_matrix]:
     """Footprints after each window-2 step, in pipeline order (``initA`` ... ``merge_{n-1}``)."""
     d = Path(rerun_dir) / "stages"
-    names = json.loads((d / "index.json").read_text())["footprints"]
+    names = json.loads((d / "index.json").read_text(encoding="utf-8"))["footprints"]
     return {n: sps.load_npz(d / f"A_{n}.npz").tocsr() for n in names}
 
 
@@ -185,6 +194,7 @@ class Window2Session:
         _write_params(out, params, self.run_dir)
         _link_inputs(out, self.run_dir)
         timer = StageTimer(on_stage)
+        timer.attach_progress(out / "progress.jsonl")  # the serve job runner follows it
         try:
             fc = self.factor_corr(params.noise_freq, timer)
             w2 = pipeline.run_window2(self.fac, params, timer, fc)
@@ -192,7 +202,7 @@ class Window2Session:
                 pipeline._write_cnmf(out / "cnmf", w2.cnmf, self.fac.H, self.fac.W_)
                 _write_stages(out / "stages", w2)
         except Exception:
-            (out / "error.txt").write_text(traceback.format_exc())
+            (out / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
             raise
         timer.to_json(
             out / "report.json",

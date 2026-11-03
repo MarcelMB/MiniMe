@@ -5,9 +5,12 @@ from __future__ import annotations
 import multiprocessing
 import os
 import time
+from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -198,6 +201,34 @@ def _init_worker() -> None:
     cv2.setNumThreads(1)
 
 
+def run_workers(
+    fn: Callable[..., Any], jobs: list[tuple], initializer: Callable[[], None] | None = None
+) -> list[Any]:
+    """``fn(*job)`` for every job in single-threaded spawned processes; results in job order.
+
+    A worker that dies (killed for memory, say) raises ``BrokenProcessPool``; a
+    ``multiprocessing.Pool`` would wait for its result forever.
+    """
+    saved = {k: os.environ.get(k) for k in _THREAD_VARS}
+    os.environ.update(dict.fromkeys(_THREAD_VARS, "1"))
+    try:
+        ctx = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(len(jobs), mp_context=ctx, initializer=initializer) as ex:
+            return list(ex.map(fn, *zip(*jobs, strict=True)))
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def _block_range(edges: np.ndarray, t_start: int, frames: int) -> tuple[int, int]:
+    """Blocks ``[a, b)`` that frames ``[t_start, t_start + frames)`` fall in."""
+    a = int(np.searchsorted(edges, t_start, "right")) - 1
+    return a, max(a, int(np.searchsorted(edges, t_start + frames, "left")))
+
+
 def pass1_worker(
     paths: list[str],
     part: int,
@@ -216,7 +247,8 @@ def pass1_worker(
 
     Each segment is streamed in batches of ``read_batch`` frames (``io.iter_avi``), so a
     worker holds about 3 batches whatever the segment length. Returns the decoded frame
-    count of every segment (``segment_frames``) for ``check_segment_frames``.
+    count of every segment (``segment_frames``) for ``check_segment_frames``. ``block_max``
+    holds only the blocks ``block_range`` the worker's frames fall in.
     """
     cv2.setNumThreads(1)
     store = TileStore(Path(store_root), grid, n_parts)
@@ -241,14 +273,17 @@ def pass1_worker(
                     f.write(memoryview(packed[a:b]))
                 t_write += time.perf_counter() - t0
             decoded.append(n_seg)
+    a, b = _block_range(block_edges, t_start, p1.frames)
     return {
         "seconds": {**p1.seconds, "read_avi": t_read, "write_tiles": t_write},
         "frames": p1.frames,
         "segment_frames": decoded,
         "max_proj": p1.max_proj,
-        "block_max": p1.block_max,
-        "shifts": np.concatenate(p1.shifts),
-        "quality": np.concatenate(p1.quality),
+        "block_range": (a, b),
+        "block_max": p1.block_max[a:b].copy(),
+        # a worker whose segments hold 0 frames (a recording stopped right after a new file)
+        "shifts": np.concatenate(p1.shifts) if p1.shifts else np.empty((0, 2), np.float32),
+        "quality": np.concatenate(p1.quality) if p1.quality else np.empty(0, np.float32),
     }
 
 
@@ -311,24 +346,17 @@ def run_pass1(
         )
         for k, r in enumerate(ranges)
     ]
-    saved = {k: os.environ.get(k) for k in _THREAD_VARS}
-    os.environ.update(dict.fromkeys(_THREAD_VARS, "1"))
-    try:
-        ctx = multiprocessing.get_context("spawn")
-        with ctx.Pool(len(jobs), initializer=_init_worker) as pool:
-            res = pool.starmap(pass1_worker, jobs, chunksize=1)
-    finally:
-        for k, v in saved.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
+    res = run_workers(pass1_worker, jobs, _init_worker)
     check_segment_frames(info, [n for r in res for n in r["segment_frames"]])
+    block_max = np.zeros((len(edges) - 1, *template.shape), dtype=np.uint8)
+    for r in res:
+        a, b = r["block_range"]
+        np.maximum(block_max[a:b], r["block_max"], out=block_max[a:b])
     return Pass1Result(
         shifts=np.concatenate([r["shifts"] for r in res]).astype(np.float32),
         quality=np.concatenate([r["quality"] for r in res]).astype(np.float32),
         max_proj=np.maximum.reduce([r["max_proj"] for r in res]),
-        block_max=np.maximum.reduce([r["block_max"] for r in res]),
+        block_max=block_max,
         block_edges=edges,
         frames=int(sum(r["frames"] for r in res)),
         seconds={k: float(sum(r["seconds"][k] for r in res)) for k in STAGES},

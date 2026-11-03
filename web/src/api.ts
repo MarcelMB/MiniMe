@@ -95,3 +95,12 @@ export async function getArray(path: string): Promise<NDArray> {
   const r = await request(path);
   return decodeArray(await r.arrayBuffer(), r.headers.get("X-Shape") ?? "", r.headers.get("X-Dtype") ?? "");
 }
+
+export async function postArray(path: string, body: unknown): Promise<NDArray> {
+  const r = await request(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return decodeArray(await r.arrayBuffer(), r.headers.get("X-Shape") ?? "", r.headers.get("X-Dtype") ?? "");
+}

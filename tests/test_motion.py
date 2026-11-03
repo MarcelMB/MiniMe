@@ -1,6 +1,8 @@
 import numpy as np
+import pytest
 
 from minime import motion, preprocess
+from minime.params import Params
 from minime.testing import synth
 
 
@@ -147,3 +149,9 @@ def test_template_image_shape_for_odd_sizes():
     np.testing.assert_allclose(
         motion.frame_quality(pre, back), motion.frame_quality(pre, tmpl), atol=1e-5
     )
+
+
+@pytest.mark.parametrize("down", [0, 3, 4])
+def test_params_refuse_motion_down_other_than_1_or_2(down):
+    with pytest.raises(ValueError, match="motion_down"):
+        Params(motion_down=down)

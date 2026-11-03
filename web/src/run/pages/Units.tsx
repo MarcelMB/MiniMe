@@ -4,7 +4,7 @@ import { Loading } from "../../controls";
 import { ImageView } from "../../ImageView";
 import { useResource } from "../../poll";
 import type { Unit, UnitsResponse } from "../../types";
-import { useRun } from "../RunContext";
+import { rerunQuery, useRun } from "../RunContext";
 
 export type SortKey = "id" | "size_px" | "peak" | "row" | "col";
 
@@ -35,8 +35,10 @@ const COLS: { k: SortKey; label: string }[] = [
 ];
 
 export function Units() {
-  const { summary: s, units, maxProj, sel, setSel } = useRun();
-  const init = useResource(`units-init:${s.id}`, () => getJSON<UnitsResponse>(`/runs/${s.id}/units?stage=init`));
+  const { summary: s, units, maxProj, sel, setSel, rerun } = useRun();
+  const init = useResource(`units-init:${s.id}:${rerun ?? ""}`, () =>
+    getJSON<UnitsResponse>(`/runs/${s.id}/units?stage=init${rerunQuery(rerun, false)}`),
+  );
   const [sortKey, setSortKey] = useState<SortKey>("peak");
   const [desc, setDesc] = useState(true);
   const rows = useMemo(() => sortUnits(units, sortKey, desc), [units, sortKey, desc]);

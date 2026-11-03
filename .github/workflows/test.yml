@@ -7,21 +7,29 @@ on:
 
 jobs:
   python:
+    # the oldest supported Python (3.11, see README Install) and the newest on every OS,
+    # plus the oldest Ubuntu runner and an Intel Mac
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        python: ["3.11", "3.12"]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.14"]
+        include:
+          - os: ubuntu-22.04
+            python: "3.11"
+          - os: macos-15-intel
+            python: "3.12"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python }}
       - run: uv venv --clear && uv pip install -e ".[dev,tune]"
-      - run: .venv/bin/ruff format --check src tests
-      - run: .venv/bin/ruff check src tests
-      - run: .venv/bin/python -m pytest -q
+      - run: uv run --no-sync ruff format --check src tests
+      - run: uv run --no-sync ruff check src tests
+      - run: uv run --no-sync python -m pytest -q
 
   web:
     runs-on: ubuntu-latest

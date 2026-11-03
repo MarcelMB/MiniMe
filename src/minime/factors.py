@@ -52,6 +52,10 @@ class Factors:
     block_max: np.ndarray
     block_edges: np.ndarray
     meta: dict[str, Any]
+    # a time subset (``subset``): its first frame in the session and the session's frames,
+    # so the seed windows stay the session's own
+    t0: int = 0
+    session_T: int | None = None
     tile_of: np.ndarray = field(init=False, repr=False)  # (P,) int32
     loc_of: np.ndarray = field(init=False, repr=False)  # (P,) int32
 
@@ -76,6 +80,43 @@ class Factors:
         ys = np.arange(t.y0, t.y1)[:, None]
         xs = np.arange(t.x0, t.x1)[None, :]
         return (ys * self.W_ + xs).ravel().astype(np.int64)
+
+    def subset(self, t0: int, t1: int) -> Factors:
+        """Frames ``[t0, t1)`` as factors of their own; ``t0`` and ``t1`` must be block edges.
+
+        Each tile's ``V`` slice is re-orthonormalised (``V_s = Q R``, ``W -> W R^T``, same
+        product), so ``energy`` = low-rank part + the residual's share of the frames holds as
+        on full factors. ``max_proj`` is the max over the slice's blocks; ``mean`` and
+        ``sigma`` are kept.
+        """
+        e = self.block_edges
+        i0, i1 = np.searchsorted(e, [t0, t1])
+        if not 0 <= t0 < t1 <= self.T or e[i0] != t0 or i1 >= len(e) or e[i1] != t1:
+            raise ValueError(f"frames [{t0}, {t1}) do not start and end on stored block edges")
+        tiles = []
+        for tf in self.tiles:
+            q, r = np.linalg.qr(tf.V[t0:t1].astype(np.float64))
+            W = tf.W.astype(np.float64)
+            resid = np.maximum(tf.energy - (W**2).sum(axis=1), 0.0)
+            Ws = W @ r.T
+            energy = (Ws**2).sum(axis=1) + resid * (t1 - t0) / self.T
+            tiles.append(
+                TileFactors(Ws.astype(np.float32), q.astype(np.float32), tf.mean, tf.sigma, energy)
+            )
+        block_max = self.block_max[i0:i1]
+        return Factors(
+            self.H,
+            self.W_,
+            t1 - t0,
+            self.grid,
+            tiles,
+            block_max.max(axis=0),
+            block_max,
+            e[i0 : i1 + 1] - t0,
+            self.meta,
+            self.t0 + t0,
+            self.session_T or self.T,
+        )
 
     # ---- algebra on the factors ---------------------------------------------------
 
@@ -162,12 +203,12 @@ class Factors:
             "ranks": [tf.rank for tf in self.tiles],
             "meta": self.meta,
         }
-        (dir / "meta.json").write_text(json.dumps(meta, indent=1))
+        (dir / "meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
 
     @classmethod
     def load(cls, dir: Path) -> Factors:
         dir = Path(dir)
-        m = json.loads((dir / "meta.json").read_text())
+        m = json.loads((dir / "meta.json").read_text(encoding="utf-8"))
         if m["format_version"] != FORMAT_VERSION:
             raise ValueError(f"unsupported factors format {m['format_version']}")
         grid = tile_grid(m["H"], m["W"], m["tile"])

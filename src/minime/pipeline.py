@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,7 +20,7 @@ import pandas as pd
 import scipy.sparse as sps
 
 import minime
-from minime import corr, init, io, motion, pass1, pass2, seeds
+from minime import corr, init, io, motion, pass1, pass2, places, seeds
 from minime.cnmf import CnmfResult, run_cnmf
 from minime.factors import Factors
 from minime.params import Params
@@ -43,17 +44,30 @@ def check_run_name(run_name: str) -> None:
 
 
 def out_dir_for(raw_dir: Path, run_name: str, out_root: Path | None = None) -> Path:
-    """``(out_root or raw_dir/../processed) / run_name``."""
+    """``(out_root or raw_dir/../processed) / run_name``.
+
+    ``raw_dir`` is made absolute first: ``Path(".").parent`` is ``.``, which would put
+    ``processed/`` inside the raw folder.
+    """
     check_run_name(run_name)
-    root = Path(out_root) if out_root is not None else Path(raw_dir).parent / "processed"
+    root = (
+        Path(out_root)
+        if out_root is not None
+        else Path(os.path.abspath(raw_dir)).parent / "processed"
+    )
     return root / run_name
 
 
 def _check_out_dir(raw_dir: Path, out: Path) -> None:
-    """Refuse an output directory that is, or contains, the raw folder (it gets deleted)."""
+    """Refuse an output directory that is, contains, or lies inside the raw folder.
+
+    The output dir gets deleted, and the raw folder is read-only.
+    """
     raw, o = Path(raw_dir).resolve(), Path(out).resolve()
     if raw == o or o in raw.parents:
         raise ValueError(f"output dir {o} would contain the raw dir {raw}; choose another")
+    if raw in o.parents:
+        raise ValueError(f"output dir {o} lies inside the raw dir {raw}; choose another")
 
 
 def _is_minime_run(out: Path) -> bool:
@@ -67,7 +81,7 @@ def _is_minime_run(out: Path) -> bool:
         ("report.json", {"stages"}),
     ):
         try:
-            doc = json.loads((out / name).read_text())
+            doc = json.loads((out / name).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         if isinstance(doc, dict) and keys & set(doc):
@@ -146,10 +160,12 @@ def seeds_unmerged(
     params: Params,
     timer: StageTimer,
     stages: dict[str, pd.DataFrame] | None = None,
+    pnr_of: Callable[[pd.DataFrame], np.ndarray] | None = None,
 ) -> pd.DataFrame:
     """Seeds after init, PNR and GMM (opt-in), before the merge; ``stages`` collects each table.
 
     ``stages["seeds_pnr"]`` holds every initial seed with its ``pnr`` and ``mask_pnr``.
+    ``pnr_of(seeds)`` replaces ``seeds.seed_pnr`` (a cache when many thresholds are tried).
     """
     p, n = params, timer.counts
     st = {} if stages is None else stages
@@ -162,11 +178,14 @@ def seeds_unmerged(
             p.seeds_stp,
             p.seeds_max_wnd,
             p.seeds_diff_thres,
+            fac.t0,
+            fac.session_T,
         )
     n["seeds_init"] = len(s)
     st["seeds_init"] = s
     with timer("pnr_refine"):
-        st["seeds_pnr"] = seeds.pnr_refine(fac, s, thres=p.pnr_thres)
+        pnr = None if pnr_of is None else pnr_of(s)
+        st["seeds_pnr"] = seeds.pnr_refine(fac, s, thres=p.pnr_thres, pnr=pnr)
         s = _filter(st["seeds_pnr"], "mask_pnr")
     n["seeds_pnr"] = len(s)
     if p.gmm_refine:
@@ -240,7 +259,14 @@ def init_units(
     with timer("initC"):
         C = init.initC(fac, A)
     with timer("unit_merge"):
-        A, C, _ = init.unit_merge(A, C, fc.traces_corr, params.init_merge_corr)
+        A, C, _ = init.unit_merge(
+            A,
+            C,
+            fc.traces_corr,
+            params.init_merge_corr,
+            min_dist=params.merge_min_dist,
+            shape=(fac.H, fac.W_),
+        )
     timer.counts["units_init_merge"] = A.shape[0]
     fp["init_merge"] = A
     return A, C
@@ -310,14 +336,17 @@ def _write_cnmf(d: Path, res: CnmfResult, H: int, W: int) -> None:
     ).to_csv(d / "units.csv", index=False)
 
 
-def _write_params(out: Path, params: Params, raw_dir: Path, raw_hash: str) -> None:
+def _write_params(
+    out: Path, params: Params, raw_dir: Path, raw_hash: str, fps: float | None = None
+) -> None:
     doc = {
         **params.asdict(),
         "raw_dir": str(Path(raw_dir).resolve()),
         "raw_hash": raw_hash,
+        "fps": fps,  # given by the user; None: read from the raw folder's files
         "minime_version": minime.__version__,
     }
-    (out / "params.json").write_text(json.dumps(doc, indent=1))
+    (out / "params.json").write_text(json.dumps(doc, indent=1), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -332,8 +361,13 @@ def run(
     out_root: Path | None = None,
     keep_store: bool = False,
     workers: int | None = None,
+    fps: float | None = None,
 ) -> Path:
-    """Run the whole pipeline on ``raw_dir``; returns the (fresh) output directory."""
+    """Run the whole pipeline on ``raw_dir``; returns the (fresh) output directory.
+
+    ``fps``: frame rate of the recording, recorded in ``params.json`` (only for display;
+    default: ``io.fps_from_files``).
+    """
     t_start = time.perf_counter()
     raw_dir = Path(raw_dir)
     workers = params.workers if workers is None else int(workers)
@@ -349,7 +383,7 @@ def run(
     # read a valid sidecar into memory before the output dir is wiped
     sc = motion.load_if_valid(out / "motion", raw_hash, params.motion_params(), info.frames)
     _reset_dir(out)
-    _write_params(out, params, raw_dir, raw_hash)  # first: marks the dir as a minime run
+    _write_params(out, params, raw_dir, raw_hash, fps)  # first: marks the dir as a minime run
     timer.attach_progress(out / "progress.jsonl")
 
     with timer("template"):
@@ -361,20 +395,22 @@ def run(
             template_img = sc.template
     grid = tile_grid(info.height, info.width, params.tile)
     store = TileStore(out / "tiles", grid, pass1.n_parts_for(info, workers))
-    with timer("pass1"):
-        p1 = pass1.run_pass1(
-            info, store, template, params, workers, shifts=None if sc is None else sc.shifts
-        )
-    with timer("sidecar_save"):
-        _save_sidecar(out, p1, template_img, params, raw_hash, workers)
-    with timer("pass2"):
-        tiles = pass2.run_pass2(store, grid, params, workers)
-    fac = pass2.build_factors(info, grid, p1, tiles, params)
-    with timer("factors_save"):
-        fac.save(out / "factors")
-    store_peak = store.nbytes()
-    if not keep_store:
-        store.remove()
+    try:
+        with timer("pass1"):
+            p1 = pass1.run_pass1(
+                info, store, template, params, workers, shifts=None if sc is None else sc.shifts
+            )
+        with timer("sidecar_save"):
+            _save_sidecar(out, p1, template_img, params, raw_hash, workers)
+        with timer("pass2"):
+            tiles = pass2.run_pass2(store, grid, params, workers)
+        fac = pass2.build_factors(info, grid, p1, tiles, params)
+        with timer("factors_save"):
+            fac.save(out / "factors")
+        store_peak = store.nbytes()
+    finally:  # a failed run must not leave a raw-sized tile store behind
+        if not keep_store:
+            store.remove()
 
     with timer("corr_setup"):
         fc = corr.FactorCorr(fac, params.noise_freq)
@@ -412,4 +448,5 @@ def run(
             "version": minime.__version__,
         },
     )
+    places.remember(out.parent.parent, "run", raw_dir)  # the session folder: serve opens it
     return out
