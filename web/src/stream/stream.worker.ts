@@ -11,6 +11,9 @@ import init, {
   Pass1Engine,
   Pass2Engine,
   SeedsEngine,
+  StitchEngine,
+  time_windows,
+  window_inputs,
 } from "./pkg/minime_core.js";
 import type { FromWorker, ToWorker } from "./protocol";
 
@@ -28,7 +31,11 @@ async function run({ avis, inputs }: ToWorker): Promise<void> {
   const files = new Map<string, Uint8Array>();
   for (const f of inputs) files.set(f.name, new Uint8Array(await f.arrayBuffer()));
   log(`read ${files.size} input files`);
-  // an inputs folder with a template is ref_pass1.py's, one without footprints ref_motion.py's
+  // a session folder runs every window and the stitch (ref_stitch.py --session-inputs);
+  // stitch.json alone stitches ref_stitch.py's window units; an inputs folder with a
+  // template is ref_pass1.py's, one without footprints ref_motion.py's
+  if (files.has("session.json")) return runWindows(avis, files, log, wasm.memory);
+  if (files.has("stitch.json")) return runStitch(files, log, wasm.memory);
   if (files.has("template.npy")) return runPass1(avis, files, log, wasm.memory);
   if (!files.has("A_data.npy")) return runMotion(avis, files, log, wasm.memory);
   const engine = new Engine(files);
@@ -105,6 +112,20 @@ async function run({ avis, inputs }: ToWorker): Promise<void> {
 
 type Segment = { file: File; avi: AviFile; read: (off: number, len: number) => Uint8Array };
 
+/** Index every AVI (numeric order), reading through `File.slice`. */
+function indexSegments(avis: File[]): Segment[] {
+  const reader = new FileReaderSync();
+  return orderAvis(avis).map((file) => {
+    const read = (off: number, len: number) => new Uint8Array(reader.readAsArrayBuffer(file.slice(off, off + len)));
+    return { file, read, avi: AviFile.parse(read, file.size) };
+  });
+}
+
+/** What a window run keeps besides its outputs: tile CRCs (the pass 1 check reads the whole
+ * tile store back) and the CNMF loop's engine, handed over before it is freed. */
+type WindowOpts = { crc: boolean; onCnmf?: (engine: CnmfEngine) => void };
+type Out = { files: Map<string, Uint8Array>; seconds: number };
+
 /** Calls `push` on raw frames `[from, to)` of the session, reading `BLOCK` frames per slice. */
 function forFrames(
   segs: Segment[],
@@ -142,11 +163,7 @@ function runMotion(
   log: (what: string) => void,
   memory: WebAssembly.Memory,
 ): void {
-  const reader = new FileReaderSync();
-  const segs: Segment[] = orderAvis(avis).map((file) => {
-    const read = (off: number, len: number) => new Uint8Array(reader.readAsArrayBuffer(file.slice(off, off + len)));
-    return { file, read, avi: AviFile.parse(read, file.size) };
-  });
+  const segs = indexSegments(avis);
   if (!segs.length) throw new Error("no AVIs");
   const engine = new MotionEngine(files, segs[0].avi.n_frames());
   const [H, W, t0, t1, n] = [engine.height(), engine.width(), engine.t0(), engine.t1(), engine.template_n()];
@@ -196,21 +213,114 @@ function runMotion(
 const TILE_DIR = "pass1_tiles";
 const FLUSH = 100; // frames buffered before they are appended to the tile files
 
-/** Pass 1 (`minime-core pass1`) on `[t0, t1)`, with the tile store in OPFS: one file per
- * tile, written through sync access handles, read back at the end for its CRC-32s. With
- * `pass2.json` in the inputs, pass 2 follows on the same tile files (and with `seeds.json`
- * the seed stage on the factors). */
+/** Pass 1 and what follows on one window (`ref_pass1.py`'s ... `ref_cnmf.py`'s inputs). */
 async function runPass1(
   avis: File[],
   files: Map<string, Uint8Array>,
   log: (what: string) => void,
   memory: WebAssembly.Memory,
 ): Promise<void> {
-  const reader = new FileReaderSync();
-  const segs: Segment[] = orderAvis(avis).map((file) => {
-    const read = (off: number, len: number) => new Uint8Array(reader.readAsArrayBuffer(file.slice(off, off + len)));
-    return { file, read, avi: AviFile.parse(read, file.size) };
-  });
+  const segs = indexSegments(avis);
+  const { files: out, seconds } = await windowPass1(segs, files, log, memory, { crc: true });
+  for (const sg of segs) sg.avi.free();
+  post(
+    { type: "done", files: out, seconds },
+    [...out.values()].map((v) => v.buffer),
+  );
+}
+
+/** Every window of the session (`session.json`: window length and stage parameters,
+ * `shifts.npy`: the session's motion, `template.npy`), pass 1 to the CNMF loop each, keeping
+ * only each window's final units (its tile store is cleared before the next window); then
+ * the stitch. `omega_<t0>_<k>.npy` files replay numpy's draws in the window starting at t0. */
+async function runWindows(
+  avis: File[],
+  files: Map<string, Uint8Array>,
+  log: (what: string) => void,
+  memory: WebAssembly.Memory,
+): Promise<void> {
+  const segs = indexSegments(avis);
+  const starts = [0];
+  for (const { avi } of segs) starts.push(starts[starts.length - 1] + avi.n_frames());
+  const T = starts[starts.length - 1];
+  const session = files.get("session.json");
+  const shifts = files.get("shifts.npy");
+  if (!session || !shifts) throw new Error("the session folder needs session.json and shifts.npy");
+  const length = Number(JSON.parse(new TextDecoder().decode(session)).window_frames);
+  const flat = time_windows(T, length, Uint32Array.from(starts));
+  const n = flat.length / 2;
+  log(`${segs.length} files, ${T} frames: ${n} windows of about ${length} frames`);
+  const stitch = new StitchEngine(files);
+  const out = new Map<string, Uint8Array>();
+  const root = await navigator.storage.getDirectory();
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    const [t0, t1] = [flat[2 * i], flat[2 * i + 1]];
+    const wf = new Map(files);
+    for (const [name, bytes] of window_inputs(session, shifts, t0, t1) as Map<string, Uint8Array>) wf.set(name, bytes);
+    const prefix = `omega_${String(t0).padStart(6, "0")}_`;
+    for (const [name, bytes] of files) if (name.startsWith(prefix)) wf.set(`omega_${name.slice(prefix.length)}`, bytes);
+    log(`window ${i + 1}/${n}: frames ${t0}-${t1}`);
+    const w = await windowPass1(segs, wf, log, memory, {
+      crc: false,
+      onCnmf: (engine) => stitch.add_cnmf(engine, t0, t1),
+    });
+    total += w.seconds;
+    const tag = `win_${String(i).padStart(2, "0")}_`;
+    for (const [name, bytes] of w.files) if (name.startsWith("summary")) out.set(tag + name, bytes);
+    await root.removeEntry(TILE_DIR, { recursive: true }).catch(() => undefined);
+  }
+  for (const sg of segs) sg.avi.free();
+  const st = runStitchEngine(stitch, log, memory);
+  for (const [name, bytes] of st.files) out.set(name, bytes);
+  post(
+    { type: "done", files: out, seconds: total + st.seconds },
+    [...out.values()].map((v) => v.buffer),
+  );
+}
+
+/** The stitch (`minime-core stitch`) of `ref_stitch.py`'s window units (`stitch.json`,
+ * `win_*`). */
+function runStitch(files: Map<string, Uint8Array>, log: (what: string) => void, memory: WebAssembly.Memory): void {
+  const engine = new StitchEngine(files);
+  let units = 0;
+  for (let i = 0; i < engine.n_inputs(); i++) units += engine.add_inputs(files, i);
+  log(`${engine.n_inputs()} windows read, ${units} units`);
+  const { files: out, seconds } = runStitchEngine(engine, log, memory);
+  post(
+    { type: "done", files: out, seconds },
+    [...out.values()].map((v) => v.buffer),
+  );
+}
+
+/** Run a filled `StitchEngine`, then free it. */
+function runStitchEngine(engine: StitchEngine, log: (what: string) => void, memory: WebAssembly.Memory): Out {
+  post({ type: "start", stage: "stitch", frames: 1, units: 0, height: 0, width: 0 });
+  const start = performance.now();
+  const units = engine.run();
+  const seconds = (performance.now() - start) / 1e3;
+  post({ type: "progress", done: 1, frames: 1, seconds, stateMb: 0 });
+  const heapMb = memory.buffer.byteLength / 2 ** 20;
+  log(`stitch done, ${units} units, wasm heap ${heapMb.toFixed(0)} MB`);
+  const out = engine.finish(JSON.stringify({ where: "browser", stitch: seconds, wasm_heap_mb: heapMb })) as Map<
+    string,
+    Uint8Array
+  >;
+  engine.free();
+  return { files: out, seconds };
+}
+
+/** Pass 1 (`minime-core pass1`) on `[t0, t1)`, with the tile store in OPFS: one file per
+ * tile, written through sync access handles, read back at the end for its CRC-32s (with
+ * `opts.crc`). With `pass2.json` in the inputs, pass 2 follows on the same tile files (and
+ * with `seeds.json` the seed stage on the factors, and so on to the CNMF loop). */
+async function windowPass1(
+  segs: Segment[],
+  files: Map<string, Uint8Array>,
+  log: (what: string) => void,
+  memory: WebAssembly.Memory,
+  opts: WindowOpts,
+): Promise<Out> {
   const engine = new Pass1Engine(files);
   const [H, W, t0, t1, nTiles] = [engine.height(), engine.width(), engine.t0(), engine.t1(), engine.n_tiles()];
   for (const { file, avi } of segs)
@@ -260,19 +370,20 @@ async function runPass1(
   flush();
   const passSeconds = (performance.now() - start) / 1e3;
   const s = performance.now();
-  const crc = new Uint32Array(nTiles);
+  const crc = new Uint32Array(opts.crc ? nTiles : 0);
   let storeBytes = 0;
   for (let k = 0; k < nTiles; k++) {
     const h = handles[k];
+    storeBytes += h.getSize();
+    if (!opts.crc) continue;
     const buf = new Uint8Array(h.getSize());
     h.read(buf, { at: 0 });
     crc[k] = crc32(buf, 0);
-    storeBytes += buf.length;
   }
   const tCrc = (performance.now() - s) / 1e3;
   const heapMb = memory.buffer.byteLength / 2 ** 20;
   log(`pass 1 done, ${(storeBytes / 2 ** 20).toFixed(0)} MB in OPFS, wasm heap ${heapMb.toFixed(0)} MB`);
-  const p2 = files.has("pass2.json") ? runPass2(handles, files, log, memory, engine) : null;
+  const p2 = files.has("pass2.json") ? runPass2(handles, files, log, memory, engine, opts) : null;
   for (const h of handles) h.close();
   const timing = {
     where: "browser",
@@ -284,13 +395,8 @@ async function runPass1(
   };
   const out = engine.finish(JSON.stringify(timing), crc) as Map<string, Uint8Array>;
   engine.free();
-  for (const sg of segs) sg.avi.free();
   if (p2) for (const [name, bytes] of p2.files) out.set(name, bytes);
-  const seconds = passSeconds + (p2?.seconds ?? 0);
-  post(
-    { type: "done", files: out, seconds },
-    [...out.values()].map((v) => v.buffer),
-  );
+  return { files: out, seconds: passSeconds + (p2?.seconds ?? 0) };
 }
 
 /** Pass 2 (`minime-core pass2`) on pass 1's open tile files, one tile at a time; then the
@@ -301,7 +407,8 @@ function runPass2(
   log: (what: string) => void,
   memory: WebAssembly.Memory,
   pass1: Pass1Engine,
-): { files: Map<string, Uint8Array>; seconds: number } {
+  opts: WindowOpts,
+): Out {
   const engine = new Pass2Engine(files);
   const n = engine.n_tiles();
   if (n !== handles.length) throw new Error(`pass2.json has ${n} tiles, the tile store ${handles.length}`);
@@ -324,7 +431,7 @@ function runPass2(
   const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
   let total = seconds;
   if (files.has("seeds.json")) {
-    const s = runSeeds(files, pass1, engine, log, memory);
+    const s = runSeeds(files, pass1, engine, log, memory, opts);
     for (const [name, bytes] of s.files) out.set(name, bytes);
     total += s.seconds;
   }
@@ -340,7 +447,8 @@ function runSeeds(
   pass2: Pass2Engine,
   log: (what: string) => void,
   memory: WebAssembly.Memory,
-): { files: Map<string, Uint8Array>; seconds: number } {
+  opts: WindowOpts,
+): Out {
   post({ type: "start", stage: "seeds", frames: 1, units: 0, height: 0, width: 0 });
   const start = performance.now();
   const engine = new SeedsEngine(files, pass1, pass2);
@@ -354,7 +462,7 @@ function runSeeds(
   const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
   let total = seconds;
   if (files.has("init.json")) {
-    const i = runInit(files, engine, log, memory);
+    const i = runInit(files, engine, log, memory, opts);
     for (const [name, bytes] of i.files) out.set(name, bytes);
     total += i.seconds;
   }
@@ -369,7 +477,8 @@ function runInit(
   seeds: SeedsEngine,
   log: (what: string) => void,
   memory: WebAssembly.Memory,
-): { files: Map<string, Uint8Array>; seconds: number } {
+  opts: WindowOpts,
+): Out {
   post({ type: "start", stage: "init", frames: 1, units: 0, height: 0, width: 0 });
   const start = performance.now();
   const engine = new InitEngine(files);
@@ -382,7 +491,7 @@ function runInit(
   const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
   let total = seconds;
   if (files.has("cnmf.json")) {
-    const c = runCnmf(files, seeds, engine, log, memory);
+    const c = runCnmf(files, seeds, engine, log, memory, opts);
     for (const [name, bytes] of c.files) out.set(name, bytes);
     total += c.seconds;
   }
@@ -398,11 +507,13 @@ function runCnmf(
   init: InitEngine,
   log: (what: string) => void,
   memory: WebAssembly.Memory,
-): { files: Map<string, Uint8Array>; seconds: number } {
+  opts: WindowOpts,
+): Out {
   post({ type: "start", stage: "cnmf", frames: 1, units: 0, height: 0, width: 0 });
   const start = performance.now();
   const engine = new CnmfEngine(files);
   const units = engine.run(seeds, init);
+  opts.onCnmf?.(engine);
   const seconds = (performance.now() - start) / 1e3;
   post({ type: "progress", done: 1, frames: 1, seconds, stateMb: 0 });
   const heapMb = memory.buffer.byteLength / 2 ** 20;

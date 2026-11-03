@@ -38,7 +38,7 @@ browser stage is checked against it. Background and results: `docs/browser-optio
 | seeds, PNR + GMM threshold, opt-in `gmm_refine`, seed merge | `seeds`, `gmm`, `corr.seeds_merge` | **done** | same seeds, masks and merge pairs (native on Python's factors: PNR ≤ 1.1e-7 rel; Chrome on its own pass 2: ≤ 1.1e-4) |
 | initA, initC, initial unit merge | `init` | **done** | same footprint supports and merge groups (native: traces identical; Chrome on its own pass 2: ≤ 5.7e-6 rel) |
 | CNMF loop: spatial update (NNQP), size filter, background, traces, loop merge | `cnmf` | **done** | same supports, masks and merge groups per iteration (native: `YCt` exact; Chrome on its own factors: ≤ 2.2e-5 rel) |
-| stitch | `stream.stitch` | next | identical units |
+| stitch (`brightest_parent` trees of cross-window footprint cosines), window loop | `stream.stitch`, `t1_discovery.py --mode fresh` | **done** | same edges, parents, groups; footprints bit-exact on the same window units (native and Chrome); 2-window loop in Chrome = Python |
 
 Slice 1 inputs (until discovery is ported): footprints, shifts, mean image and noise come
 from Python as a small export (`ref_dump.py`'s `inputs/`).
@@ -364,11 +364,99 @@ worker, M1 Max; footprints (503), mean and noise from the 3 h MiniMe run `cafast
 - Harness: `web/e2e/.data/long/` (local, gitignored) saves outputs in 32 MB chunks; one
   base64 string of a > 512 MB output would exceed V8's string limit.
 
+## Stitch result (2026-11-03): native and Chrome match Python
+`stream.stitch` at `cos_thres` 0.7 (`t1_discovery.py`'s default, recorded in
+`t1_fresh/summary.json`). `ref_stitch.py` redoes it step by step on the stored `fresh` window
+units and reproduces the stored `stitched_A.npz` / `stitched.npz` exactly (12 windows,
+2278 → 365 units, 8946 links).
+
+| | Rust native vs Python | Rust → wasm, Chrome vs Python |
+|---|---|---|
+| (a) 12 stored windows: cross-window pairs (12 900), edges (8946), parents, roots, groups, n_windows, stitched supports | identical | identical |
+| norms, cosines, stitched footprints (float32), brightness | identical (bit for bit) | identical (bit for bit) |
+| time, 1 thread, M1 Max | 0.03 s | 0.07 s; 47 MB wasm heap |
+| Python | 0.02 s | |
+
+(b) Window loop in Chrome on frames 0–6000 (6 files, 2 windows; numpy's draws replayed in
+pass 2 of both windows), against the stored `win_000000_003000` / `win_003000_006000` and a
+Python stitch of those two:
+
+| | browser vs Python |
+|---|---|
+| units per window (189, 199), their supports | identical |
+| window footprint values / brightness (YrA peaks) | ≤ 2.2e-5 / ≤ 2.5e-6 rel |
+| pairs (219), edges (144), parents, groups, n_windows, stitched supports (388 → 244 units) | identical |
+| norms / cosines / stitched values / brightness | ≤ 3.6e-6 / ≤ 1.5e-6 / ≤ 2.0e-5 / ≤ 2.5e-6 rel |
+| time, 1 worker | 3:26 (≈ 103 s per window: pass 1 72 s, pass 2 27 s, seeds + init + CNMF 4 s; stitch < 0.1 s); wasm heap 92 MB after window 1, 168 MB after window 2 (wasm memory never shrinks; whether it levels off over 12 windows is for the overnight run) |
+
+- Margins: 12 windows: the closest cosine is 5.6e-4 from 0.7; the closest brightness tie
+  between linked units is a relative gap of 2.9e-5 (units 978/1539). Two windows: 5.0e-2 and
+  6.5e-4. Chrome's own-factor differences in the 2-window run are ≤ 1.5e-6 (cosine) and
+  ≤ 2.5e-6 (brightness), so only the 12-window tie is within 10x of them: check it first in
+  the overnight run.
+- With the browser's own draws (no replay) pass 2's ranks differ in a few tiles (the rSVD's
+  seed sensitivity, pass 2 result above): window 0 gives 191 units instead of 189 and the
+  stitch 245 instead of 244. `minime-core stitch` on those browser windows equals the
+  browser's stitch bit for bit.
+- Sum orders follow scipy 1.18: `vstack(...).astype(float64)` canonicalises the stack (rows
+  sorted); `diags @ A` and `M @ A` are `csr_matmat` (FMA into a zeroed accumulator, rows in
+  reverse first-appearance order); `A.multiply(A)` keeps or reverses rows by its canonical
+  check; a row sum is `np.add.reduceat` (first value + pairwise sum of the rest).
+- `stitch.rs`: `stitch` (sorted stack, row max one, norms, cross-window cosines per row as
+  `csr_matmat`, `corr::brightest_parent`, `roots`, group means, `n_windows`),
+  `time_windows`, `window_inputs`; `minime-core stitch --inputs DIR --out DIR`.
+- Browser: `StitchEngine` in `wasm.rs` (`add_cnmf` takes a finished `CnmfEngine`'s final A
+  and YrA peaks; `add_inputs` reads `ref_stitch.py`'s `win_*`). The worker runs:
+  - `stitch.json` in the inputs: the stitch of those window units (check a);
+  - `session.json` in the inputs: the window loop. Per-window inputs come from **one
+    session folder** (`ref_stitch.py --session-inputs`): `session.json` (window length,
+    every stage's parameters without `T`/`t0`/`t1`, `stitch.cos_thres`), the session's
+    `shifts.npy` (T, 2) and `template.npy`, optionally `omega_<t0>_<k>.npy` to replay
+    numpy's draws. The worker indexes the AVIs, takes `time_windows(T, length, segment
+    starts)`, and per window builds the stage files with `window_inputs` (Rust: JSONs with
+    `T`/`t0`/`t1`, the shift slice), runs pass 1 → pass 2 → seeds → init → CNMF, hands the
+    CNMF engine to `add_cnmf`, keeps only the stage summaries (`win_NN_summary_*.json`),
+    frees the engines and deletes the OPFS tile store. Then it stitches and outputs
+    `A_*` (stitched), `bright`, `n_windows`, the decisions and the window units in
+    `ref_stitch.py`'s inputs layout (`stitch.json`, `win_*`), so Python can redo the stitch.
+- File inputs skip symlinks, so the session folder holds copies of the omega files.
+
+Run it:
+```bash
+python experiments/streaming/ref_stitch.py                          # 12 windows: inputs/ + ref/
+minime-core stitch --inputs <ref>/inputs --out <ref>/rust_native
+python experiments/streaming/check_stitch.py <ref> <ref>/rust_native
+STREAM_FILES=1 STREAM_RAW=<raw dir> STREAM_INPUTS=<ref>/inputs STREAM_OUT=<ref>/rust_browser npm --prefix web run e2e:stream
+python experiments/streaming/check_stitch.py <ref> <ref>/rust_browser
+# window loop on the first 2 windows (after ref_pass1.py/ref_pass2.py --t0 3000 --t1 6000 for the replay)
+python experiments/streaming/ref_stitch.py --n 2 --session-inputs
+STREAM_FILES=6 STREAM_RAW=<raw dir> STREAM_INPUTS=<ref n2>/session STREAM_OUT=<ref n2>/rust_browser npm --prefix web run e2e:stream
+python experiments/streaming/check_stitch.py <ref n2> <ref n2>/rust_browser --own-windows
+```
+
+## Open: mean image and noise for the streaming pass after the stitch
+The streaming pass (`ref_dump.py`, `t2_stream.py`) takes `ymean` (background at the start
+of the pass) and `sn` (NNQP penalty of the footprint update) from the baseline batch
+factors; a browser-only run has no batch factors. Options (not decided):
+
+| | what | cost | match to the batch factors |
+|---|---|---|---|
+| ymean A | frame-weighted mean of the windows' pass-2 `mean` (Σ T_w mean_w / T) | one P-float64 sum in the window loop (2.9 MB at 600²), no extra read | same frames, same preprocessing: equal up to rounding |
+| ymean B | streaming pass's own Σy | free, but only after pass 0; pass 0 needs a start value (A) | exact for later passes (`t2_stream.py` does this) |
+| sn 1 | geometric mean of the windows' pass-2 `sigma` | one P-float64 log-sum in the loop | MiniMe's own segmented estimator (`noise(frames > 0)`: same band, pooled log-periodogram over segments) with segment = window; differs from the whole-session FFT by estimator noise only. Needs one Python check against `fac.sigma_flat()` |
+| sn 2 | `diff_noise` from the stream pass's Σdy² (`t2_stream.py --sn diff`) | free | different estimator: ≈ σ instead of 0.75 σ on white noise, inflated where cells fire often, so `sparse_snr` would need rescaling; untested on F1 |
+| sn 3 | whole-session FFT noise per pixel | a session-long tile store or ~1.4 GB of frame buffers | exact, but breaks the bounded-memory design |
+
 ## Next
 0. Rerun the 8 h and 24 h streaming pass with the traces in OPFS (8 h scale run above);
    machine-hours, so overnight.
-1. Discovery port, stage by stage on one 3000-frame window: ~~motion~~, ~~pass 1~~, ~~pass 2~~,
-   ~~seeds/PNR/GMM~~, ~~init~~, ~~CNMF loop~~ (done) → stitch.
+1. ~~Discovery port~~ (done, stitch included). Next: the full 12-window loop in Chrome
+   (~21 min single core, so overnight): `ref_stitch.py --session-inputs` (all windows; for
+   replayed draws `ref_pass1.py`/`ref_pass2.py` per window first, or own draws and compare
+   counts), `STREAM_INPUTS=<ref>/session`, all 36 files; check with `check_stitch.py
+   --own-windows` against `ref_stitch_w3000`, watching the 2.9e-5 brightness tie.
+1b. Decide `ymean`/`sn` for a browser-only run (open question above), then chain the window
+   loop into the streaming pass.
 2. Speed: preprocessing in a worker pool (frames are independent), faster median
    (Perreault O(1) or a sorting-network median), then rayon + COOP/COEP.
 3. Save outputs to a folder (`showDirectoryPicker` on Chromium, OPFS elsewhere) and

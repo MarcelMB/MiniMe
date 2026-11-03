@@ -1,8 +1,9 @@
 //! wasm-bindgen API for the browser worker: an AVI index over a synchronous JS read
 //! callback (`FileReaderSync` on `File.slice`), the streaming pass, the motion stage and
 //! pass 1, each fed one raw frame at a time, and pass 2, fed one tile of the tile store at a
-//! time, and the seed and init stages and the CNMF loop on the factors those two leave.
-//! Results come back as the same `.npy` files the native harness writes.
+//! time, and the seed and init stages and the CNMF loop on the factors those two leave; the
+//! window loop's plumbing (`time_windows`, `window_inputs`) and the stitch of every window's
+//! final units. Results come back as the same `.npy` files the native harness writes.
 
 use crate::avi::{self, AviIndex, ReadAt};
 use crate::cnmf::{self, CnmfParams, CnmfResult};
@@ -13,6 +14,7 @@ use crate::motion::{self, Motion, MotionParams, Reg, TemplateBuilder};
 use crate::npy;
 use crate::pass1::{self, Pass1, Pass1Params};
 use crate::seeds::{self, SeedParams, SeedsResult};
+use crate::stitch::{self, StitchParams, Window};
 use crate::stream::StreamPass;
 use crate::{finish, Inputs};
 use js_sys::{Function, Map, Uint8Array};
@@ -734,6 +736,145 @@ impl CnmfEngine {
                 )
             })
             .collect();
+        Ok(npy_map(files))
+    }
+}
+
+/// `stream.time_windows` on the segment starts `edges` (with the end `t`): `[t0, t1)` pairs,
+/// flat.
+#[wasm_bindgen]
+pub fn time_windows(t: usize, length: usize, edges: &[u32]) -> Vec<u32> {
+    let e: Vec<usize> = edges.iter().map(|&v| v as usize).collect();
+    stitch::time_windows(t, length, &e)
+        .into_iter()
+        .flatten()
+        .map(|v| v as u32)
+        .collect()
+}
+
+/// One window's stage files (`params.json`, `pass2.json`, `seeds.json`, `init.json`,
+/// `cnmf.json`, `shifts.npy`) from the session's `session.json` and `shifts.npy`.
+#[wasm_bindgen]
+pub fn window_inputs(session: &[u8], shifts: &[u8], t0: usize, t1: usize) -> Result<Map, JsError> {
+    Ok(npy_map(
+        stitch::window_inputs(session, shifts, t0, t1).map_err(|e| JsError::new(&e))?,
+    ))
+}
+
+/// The stitch (`minime-core stitch`): add every window's final units (`add_cnmf` after its
+/// CNMF loop, or `add_inputs` from `ref_stitch.py`'s inputs), then `run` and `finish`.
+#[wasm_bindgen]
+pub struct StitchEngine {
+    p: StitchParams,
+    windows: Vec<Window>,
+    res: Option<stitch::StitchResult>,
+}
+
+#[wasm_bindgen]
+impl StitchEngine {
+    /// `files`: `stitch.json`, or `session.json` (its `stitch` object, `H` and `W` from
+    /// its `pass1`).
+    #[wasm_bindgen(constructor)]
+    pub fn new(files: &Map) -> Result<StitchEngine, JsError> {
+        let p: StitchParams = match map_bytes(files, "stitch.json") {
+            Ok(b) => serde_json::from_slice(&b).map_err(|e| JsError::new(&format!("stitch.json: {e}")))?,
+            Err(_) => {
+                let s: serde_json::Value =
+                    serde_json::from_slice(&map_bytes(files, "session.json").map_err(|e| JsError::new(&e))?)
+                        .map_err(|e| JsError::new(&format!("session.json: {e}")))?;
+                let mut st = s["stitch"].clone();
+                st["H"] = s["pass1"]["H"].clone();
+                st["W"] = s["pass1"]["W"].clone();
+                serde_json::from_value(st).map_err(|e| JsError::new(&format!("session.json: stitch: {e}")))?
+            }
+        };
+        Ok(StitchEngine {
+            p,
+            windows: Vec::new(),
+            res: None,
+        })
+    }
+
+    /// Windows listed in `stitch.json`.
+    pub fn n_inputs(&self) -> usize {
+        self.p.windows.len()
+    }
+
+    /// Window `i` of `ref_stitch.py`'s inputs (`win_{i:02}_*`).
+    pub fn add_inputs(&mut self, files: &Map, i: usize) -> Result<usize, JsError> {
+        let t = *self
+            .p
+            .windows
+            .get(i)
+            .ok_or_else(|| JsError::new(&format!("stitch.json lists no window {i}")))?;
+        let w = stitch::read_window(&mut |n| map_bytes(files, n), i, t, self.p.h * self.p.w)
+            .map_err(|e| JsError::new(&e))?;
+        let k = w.a.k;
+        self.windows.push(w);
+        Ok(k)
+    }
+
+    /// The final units of the window `[t0, t1)` whose CNMF loop `cnmf` ran: footprints and the
+    /// peak of each unit's `YrA`. Returns the window's unit count.
+    pub fn add_cnmf(&mut self, cnmf: &CnmfEngine, t0: usize, t1: usize) -> Result<usize, JsError> {
+        let r = cnmf
+            .res
+            .as_ref()
+            .ok_or_else(|| JsError::new("run the loop first"))?;
+        let last = r.last();
+        let (a, t) = (last.merge.a.clone(), r.t);
+        let bright = (0..a.k)
+            .map(|i| {
+                f64::from(
+                    last.merge.c[i * t..(i + 1) * t]
+                        .iter()
+                        .fold(f32::NEG_INFINITY, |m, &v| m.max(v)),
+                )
+            })
+            .collect();
+        let k = a.k;
+        self.windows.push(Window {
+            t: [t0, t1],
+            a,
+            bright,
+        });
+        Ok(k)
+    }
+
+    /// Stitch the windows added so far; returns the number of stitched units.
+    pub fn run(&mut self) -> Result<usize, JsError> {
+        let r = stitch::stitch(&self.windows, self.p.cos_thres, self.p.h * self.p.w)
+            .map_err(|e| JsError::new(&e))?;
+        let n = r.a.k;
+        self.res = Some(r);
+        Ok(n)
+    }
+
+    /// Output name -> `.npy` bytes (the names `minime-core stitch` writes; the summary is
+    /// `summary_stitch.json`), plus the windows in `ref_stitch.py`'s inputs layout
+    /// (`stitch.json`, `win_*`).
+    pub fn finish(&self, timing_json: &str) -> Result<Map, JsError> {
+        let r = self
+            .res
+            .as_ref()
+            .ok_or_else(|| JsError::new("run the stitch first"))?;
+        let mut summary: serde_json::Value = serde_json::from_str(timing_json).unwrap_or_default();
+        summary["stage"] = "stitch".into();
+        summary["windows"] = self.windows.len().into();
+        let mut files: Vec<(String, Vec<u8>)> = stitch::outputs(r, summary)
+            .into_iter()
+            .map(|(n, b)| {
+                (
+                    if n == "summary.json" {
+                        "summary_stitch.json".into()
+                    } else {
+                        n
+                    },
+                    b,
+                )
+            })
+            .collect();
+        files.extend(stitch::window_files(&self.windows, &self.p));
         Ok(npy_map(files))
     }
 }

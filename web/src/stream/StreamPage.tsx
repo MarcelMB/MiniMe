@@ -14,6 +14,7 @@ type State =
       seeds: Record<string, unknown> | null;
       init: Record<string, unknown> | null;
       cnmf: Record<string, unknown> | null;
+      stitch: Record<string, unknown> | null;
       seconds: number;
     }
   | { phase: "error"; message: string };
@@ -54,6 +55,7 @@ export function StreamPage() {
           seeds: json("summary_seeds.json"),
           init: json("summary_init.json"),
           cnmf: json("summary_cnmf.json"),
+          stitch: json("summary_stitch.json"),
           seconds: m.seconds,
         });
         w.terminate();
@@ -114,7 +116,12 @@ export function StreamPage() {
       )}
       {st.phase === "done" && (
         <section className="card" aria-label="Results">
-          {st.summary.stage === "pass1" ? (
+          {st.stitch ? (
+            <p>
+              Done in {fmtDuration(st.seconds)}: {String(st.stitch.windows)} windows, {String(st.stitch.units_in)}{" "}
+              window units stitched into {String(st.stitch.units_out)} units ({String(st.stitch.edges)} links).
+            </p>
+          ) : st.summary.stage === "pass1" ? (
             <p>
               Done in {fmtDuration(st.seconds)}: pass 1 on {String(st.summary.frames)} frames,{" "}
               {String(st.summary.blocks)} seed blocks, {String(st.summary.tiles)} tiles (

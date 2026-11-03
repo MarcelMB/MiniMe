@@ -8,6 +8,7 @@
 //!     minime-core seeds --inputs INPUTS_DIR --out OUT_DIR
 //!     minime-core init --inputs INPUTS_DIR --out OUT_DIR
 //!     minime-core cnmf --inputs INPUTS_DIR --out OUT_DIR
+//!     minime-core stitch --inputs INPUTS_DIR --out OUT_DIR
 //!
 //! The first is one streaming pass (`ref_dump.py`), the second the motion stage on one
 //! window (`ref_motion.py`), the third pass 1 on one window (`ref_pass1.py`), with the
@@ -15,7 +16,8 @@
 //! (`ref_pass2.py`), replaying numpy's draws unless `--own-rng`, the fifth the seed stage
 //! on Python's factors of that window (`ref_seeds.py`'s `fac_*.npy`), the sixth init on
 //! those factors and Python's merged seeds (`ref_init.py`'s `init_seeds.npy`), the seventh
-//! the CNMF loop on those factors and Python's init units (`ref_cnmf.py`'s `cnmf_*.npy`).
+//! the CNMF loop on those factors and Python's init units (`ref_cnmf.py`'s `cnmf_*.npy`),
+//! the eighth the stitch of the stored window units (`ref_stitch.py`'s `win_*`).
 
 use minime_core::avi::{self, AviIndex, FileReader, ReadAt};
 use minime_core::cnmf::{self, CnmfParams};
@@ -26,6 +28,7 @@ use minime_core::init::{self, Csr, InitParams};
 use minime_core::motion::{self, Motion, MotionParams, Reg};
 use minime_core::pass1::{self, Pass1, Pass1Params};
 use minime_core::seeds::{self, SeedParams};
+use minime_core::stitch::{self, StitchParams};
 use minime_core::{finish, npy, Inputs};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -432,6 +435,29 @@ fn run_cnmf(args: &[String]) -> Result<(), String> {
     write_outputs(&out, &cnmf::outputs(&res, summary))
 }
 
+fn run_stitch(args: &[String]) -> Result<(), String> {
+    let inputs = PathBuf::from(arg(args, "--inputs").ok_or("--inputs DIR")?);
+    let out = PathBuf::from(arg(args, "--out").ok_or("--out DIR")?);
+    let mut read = |name: &str| std::fs::read(inputs.join(name)).map_err(|e| format!("{name}: {e}"));
+    let p: StitchParams =
+        serde_json::from_slice(&read("stitch.json")?).map_err(|e| format!("stitch.json: {e}"))?;
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let s0 = Instant::now();
+    let windows = p
+        .windows
+        .iter()
+        .enumerate()
+        .map(|(i, &t)| stitch::read_window(&mut read, i, t, p.h * p.w))
+        .collect::<Result<Vec<_>, _>>()?;
+    let load = s0.elapsed().as_secs_f64();
+    let s1 = Instant::now();
+    let res = stitch::stitch(&windows, p.cos_thres, p.h * p.w)?;
+    let seconds = s1.elapsed().as_secs_f64();
+    let summary =
+        serde_json::json!({"stage": "stitch", "windows": windows.len(), "load": load, "seconds": seconds});
+    write_outputs(&out, &stitch::outputs(&res, summary))
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
@@ -441,6 +467,7 @@ fn run() -> Result<(), String> {
         Some("seeds") => return run_seeds(&args),
         Some("init") => return run_init(&args),
         Some("cnmf") => return run_cnmf(&args),
+        Some("stitch") => return run_stitch(&args),
         _ => {}
     }
     let raw = PathBuf::from(arg(&args, "--raw").ok_or("--raw RAW_DIR")?);

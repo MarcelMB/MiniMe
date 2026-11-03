@@ -17,6 +17,7 @@ pub mod npy;
 pub mod pass1;
 pub mod preprocess;
 pub mod seeds;
+pub mod stitch;
 pub mod stream;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
