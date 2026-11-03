@@ -5,6 +5,7 @@ import init, {
   AviFile,
   crc32,
   Engine,
+  InitEngine,
   MotionEngine,
   Pass1Engine,
   Pass2Engine,
@@ -265,7 +266,7 @@ async function runPass1(
 }
 
 /** Pass 2 (`minime-core pass2`) on pass 1's open tile files, one tile at a time; then the
- * seed stage when the inputs hold `seeds.json`. */
+ * seed stage when the inputs hold `seeds.json` (and init when they hold `init.json`). */
 function runPass2(
   handles: FileSystemSyncAccessHandle[],
   files: Map<string, Uint8Array>,
@@ -303,7 +304,8 @@ function runPass2(
   return { files: out, seconds: total };
 }
 
-/** Seeds, PNR/GMM filter and seed merge (`minime-core seeds`) on the window's factors. */
+/** Seeds, PNR/GMM filter and seed merge (`minime-core seeds`) on the window's factors; then
+ * init on the merged seeds when the inputs hold `init.json`. */
 function runSeeds(
   files: Map<string, Uint8Array>,
   pass1: Pass1Engine,
@@ -321,6 +323,33 @@ function runSeeds(
   const heapMb = memory.buffer.byteLength / 2 ** 20;
   log(`seeds done, ${merged} merged seeds, wasm heap ${heapMb.toFixed(0)} MB`);
   const timing = { where: "browser", seeds: seconds, build_factors: tBuild, wasm_heap_mb: heapMb };
+  const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
+  let total = seconds;
+  if (files.has("init.json")) {
+    const i = runInit(files, engine, log, memory);
+    for (const [name, bytes] of i.files) out.set(name, bytes);
+    total += i.seconds;
+  }
+  engine.free();
+  return { files: out, seconds: total };
+}
+
+/** initA, initC and the initial unit merge (`minime-core init`) on the merged seeds. */
+function runInit(
+  files: Map<string, Uint8Array>,
+  seeds: SeedsEngine,
+  log: (what: string) => void,
+  memory: WebAssembly.Memory,
+): { files: Map<string, Uint8Array>; seconds: number } {
+  post({ type: "start", stage: "init", frames: 1, units: 0, height: 0, width: 0 });
+  const start = performance.now();
+  const engine = new InitEngine(files);
+  const units = engine.run(seeds);
+  const seconds = (performance.now() - start) / 1e3;
+  post({ type: "progress", done: 1, frames: 1, seconds, stateMb: 0 });
+  const heapMb = memory.buffer.byteLength / 2 ** 20;
+  log(`init done, ${units} units after the merge, wasm heap ${heapMb.toFixed(0)} MB`);
+  const timing = { where: "browser", init: seconds, wasm_heap_mb: heapMb };
   const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
   engine.free();
   return { files: out, seconds };

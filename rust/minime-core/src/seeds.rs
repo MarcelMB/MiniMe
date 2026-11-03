@@ -325,7 +325,7 @@ pub struct SeedsResult {
     pub merge_pairs: Vec<[usize; 2]>,
     pub merge_corr: Vec<f64>,
     pub merged: Vec<[i64; 2]>,
-    pub norm2: Vec<f64>,
+    pub fc: FactorCorr,      // kept for init (its `norm2` is an output)
     pub mask_gmm: Vec<bool>, // opt-in gmm_refine on the PNR survivors
     pub gmm_refine: Gmm1D,
     pub seconds: Vec<(&'static str, f64)>,
@@ -386,7 +386,7 @@ pub fn run(f: &Factors, p: &SeedParams, now: &dyn Fn() -> f64) -> Result<SeedsRe
         merge_pairs,
         merge_corr,
         merged,
-        norm2: fc.norm2,
+        fc,
         mask_gmm,
         gmm_refine,
         seconds,
@@ -435,7 +435,10 @@ pub fn outputs(r: &SeedsResult, mut summary: serde_json::Value) -> Vec<(String, 
         "seeds_merged.npy".into(),
         npy::write(&[r.merged.len(), 2], &merged),
     ));
-    out.push(("corr_norm2.npy".into(), npy::write(&[r.norm2.len()], &r.norm2)));
+    out.push((
+        "corr_norm2.npy".into(),
+        npy::write(&[r.fc.norm2.len()], &r.fc.norm2),
+    ));
     out.push((
         "mask_gmm.npy".into(),
         npy::write(&[r.mask_gmm.len()], &r.mask_gmm),

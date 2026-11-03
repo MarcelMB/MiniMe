@@ -36,7 +36,8 @@ browser stage is checked against it. Background and results: `docs/browser-optio
 | pass 1: max projection, block maxima, quality, tile store (OPFS in the browser) | `pass1` | **done** | max proj, block maxima, every tile bit-exact (native and Chrome) |
 | pass 2: mean, energy, noise, rSVD + rank cut | `compress` | **done** | same rank per tile, mean + energy exact, reconstruction ≤ 6e-5 (numpy's draws replayed; native and Chrome) |
 | seeds, PNR + GMM threshold, opt-in `gmm_refine`, seed merge | `seeds`, `gmm`, `corr.seeds_merge` | **done** | same seeds, masks and merge pairs (native on Python's factors: PNR ≤ 1.1e-7 rel; Chrome on its own pass 2: ≤ 1.1e-4) |
-| initA/initC, CNMF loop | `init`, `cnmf` | next | per stage on one window |
+| initA, initC, initial unit merge | `init` | **done** | same footprint supports and merge groups (native: traces identical; Chrome on its own pass 2: ≤ 5.7e-6 rel) |
+| CNMF loop | `cnmf` | next | per stage on one window |
 | stitch | `stream.stitch` | next | identical units |
 
 Slice 1 inputs (until discovery is ported): footprints, shifts, mean image and noise come
@@ -223,9 +224,60 @@ python experiments/streaming/check_pass2.py <pass2 ref> <ref>/rust_browser
 python experiments/streaming/check_pass1.py <pass1 ref> <ref>/rust_browser
 ```
 
+## Init result (2026-11-03): native and Chrome match Python
+`pipeline.init_units` (`initA` at `inita_corr` 0.8 in a radius-10 disk, `initC` through the
+normal equations, the initial `unit_merge` at `init_merge_corr` 0.8; `merge_min_dist` is 0)
+on `ref_seeds.py`'s factors and its 191 merged seeds. The native run reads Python's factors
+and seeds (`init_seeds.npy`); the browser run its own pass 1, pass 2 and seeds.
+
+| | Rust native vs Python (Python's factors) | Rust → wasm, headless Chrome vs Python (own factors) |
+|---|---|---|
+| units after initA (191), footprint supports (36 286 pixels), overlapping pairs (13), merge groups, units after merge (190), merged supports | identical | identical |
+| window correlations (the values initA thresholds) | ≤ 2.9e-15 | ≤ 2.5e-5 |
+| footprint values (float32) | identical | ≤ 2.0e-5 |
+| traces `C` after initC and after the merge (of each trace's largest value) | identical (float32) | ≤ 5.7e-6 |
+| trace correlations of overlapping pairs | ≤ 4.4e-16 | ≤ 7.5e-7 |
+| centroids | identical | ≤ 1.5e-5 px |
+| `cond(A Aᵀ)` | 13.66, Cholesky | 13.66, Cholesky |
+| time, 1 thread, M1 Max | 0.12 s (initA 0.012, initC 0.10, merge 0.009) | 0.15 s (initA 0.010, initC 0.13, merge 0.014); 95 MB wasm heap; pass 1 + 2 + seeds + init in one run: 1:42 |
+| Python, 1 thread | 0.083 s (initA 0.018, initC 0.054, merge 0.011) | |
+
+- Margins: the closest window pixel is 3.4e-6 from 0.8 (its Chrome diff 5.8e-8); 7 pixels
+  lie within Chrome's largest window difference (2.5e-5) of the threshold and all stay on
+  their side (one moved 2.0e-5 with a margin of 1.5e-5, away from 0.8). The closest
+  overlapping pair is 3.1e-4 from the merge threshold (Chrome diff 2.9e-7). Native
+  differences are ≤ 3e-15, far below both.
+- Two constant (zero-energy) pixels fall inside seed windows: their correlation is rounding
+  over rounding (`norm2` 2e-13 of the median in Python, 1e-28 in Rust), so Python gives
+  -0.05 and 0.06, Chrome 0.11 and 0.23. `check_init.py` lists them apart and only requires
+  them to stay below `inita_corr`.
+- `init.rs`: `init_a` (disk in `np.mgrid` order, `FactorCorr::pair`), `a_ty` (scipy's
+  per-tile `csc_matvecs` order in float32, then `V_bᵀ` as sequential FMAs, float64 sum),
+  `gram` (shared pixels ascending), `init_c` (`linalg::NormalSolver`: Jacobi `cond`, then
+  Cholesky or pinv as `_solve_normal`), `overlap_pairs`, `merge_labels` (union-find,
+  numbered by first appearance), `group_mean_a`/`group_mean_c`, `centroids`.
+  `corr::TracesCorr` is `traces_corr` pair by pair. initC's time is mostly the Jacobi
+  eigensolve for `cond` (191³).
+- Browser: `InitEngine` in `wasm.rs` runs on the finished `SeedsEngine` (its factors,
+  `FactorCorr` and merged seeds); the worker runs it after the seeds when the inputs hold
+  `init.json`. `ref_init.py`'s `inputs/` holds the earlier stages' inputs, so one run does
+  all four.
+
+Run it:
+```bash
+python experiments/streaming/ref_init.py --t0 0 --t1 3000   # after ref_seeds.py
+minime-core init --inputs <ref>/inputs --out <ref>/rust_native
+python experiments/streaming/check_init.py <ref> <ref>/rust_native
+STREAM_RAW=<raw dir> STREAM_INPUTS=<ref>/inputs STREAM_OUT=<ref>/rust_browser npm --prefix web run e2e:stream
+python experiments/streaming/check_init.py <ref> <ref>/rust_browser --own-factors
+python experiments/streaming/check_seeds.py <seeds ref> <ref>/rust_browser --own-factors
+python experiments/streaming/check_pass2.py <pass2 ref> <ref>/rust_browser
+python experiments/streaming/check_pass1.py <pass1 ref> <ref>/rust_browser
+```
+
 ## Next
 1. Discovery port, stage by stage on one 3000-frame window: ~~motion~~, ~~pass 1~~, ~~pass 2~~,
-   ~~seeds/PNR/GMM~~ (done) → init → CNMF loop → stitch.
+   ~~seeds/PNR/GMM~~, ~~init~~ (done) → CNMF loop → stitch.
 2. Speed: preprocessing in a worker pool (frames are independent), faster median
    (Perreault O(1) or a sorting-network median), then rayon + COOP/COEP.
 3. Save outputs to a folder (`showDirectoryPicker` on Chromium, OPFS elsewhere) and

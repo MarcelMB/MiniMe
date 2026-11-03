@@ -8,6 +8,7 @@ pub mod corr;
 pub mod factors;
 pub mod filters;
 pub mod gmm;
+pub mod init;
 pub mod linalg;
 pub mod motion;
 pub mod nnqp;

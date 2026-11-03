@@ -11,6 +11,8 @@ type State =
       files: [string, string, number][];
       summary: Record<string, unknown>;
       pass2: Record<string, unknown> | null;
+      seeds: Record<string, unknown> | null;
+      init: Record<string, unknown> | null;
       seconds: number;
     }
   | { phase: "error"; message: string };
@@ -49,6 +51,8 @@ export function StreamPage() {
           files,
           summary: json("summary.json") ?? {},
           pass2: json("summary_pass2.json"),
+          seeds: json("summary_seeds.json"),
+          init: json("summary_init.json"),
           seconds: m.seconds,
         });
         w.terminate();
@@ -116,6 +120,9 @@ export function StreamPage() {
               {Number(st.summary.store_mb).toFixed(0)} MB in browser storage)
               {st.pass2 &&
                 `; pass 2 kept ${String(st.pass2.rank_total)} components over ${String(st.pass2.tiles)} tiles`}
+              {st.seeds && `; ${String(st.seeds.seeds_merged)} merged seeds`}
+              {st.init &&
+                `; init: ${String(st.init.units_initA)} footprints, ${String(st.init.units_init_merge)} units after the merge`}
               .
             </p>
           ) : st.summary.stage === "motion" ? (

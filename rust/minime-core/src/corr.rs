@@ -10,18 +10,24 @@ use crate::factors::Factors;
 use realfft::RealFftPlanner;
 use std::collections::HashMap;
 
-/// `corr.lowpass` of the columns of `v` (`(t, r)` row-major float32): float64, same layout.
-pub fn lowpass_cols(v: &[f32], t: usize, r: usize, noise_freq: f64) -> Vec<f64> {
+/// `corr.lowpass` of `n` series of length `t`: `get(series, frame)` reads a value and
+/// `put(series, frame, value)` stores the low-passed one (float64).
+fn lowpass_series(
+    n: usize,
+    t: usize,
+    noise_freq: f64,
+    get: impl Fn(usize, usize) -> f64,
+    mut put: impl FnMut(usize, usize, f64),
+) {
     let cut = (noise_freq * t as f64) as usize;
     let mut planner = RealFftPlanner::<f64>::new();
     let fwd = planner.plan_fft_forward(t);
     let inv = planner.plan_fft_inverse(t);
     let mut x = fwd.make_input_vec();
     let mut spec = fwd.make_output_vec();
-    let mut out = vec![0f64; t * r];
-    for c in 0..r {
+    for c in 0..n {
         for (ti, xv) in x.iter_mut().enumerate() {
-            *xv = f64::from(v[ti * r + c]);
+            *xv = get(c, ti);
         }
         fwd.process(&mut x, &mut spec).expect("fft length");
         spec[0] = 0.0.into();
@@ -34,10 +40,65 @@ pub fn lowpass_cols(v: &[f32], t: usize, r: usize, noise_freq: f64) -> Vec<f64> 
         }
         inv.process(&mut spec, &mut x).expect("fft length");
         for (ti, xv) in x.iter().enumerate() {
-            out[ti * r + c] = xv / t as f64;
+            put(c, ti, xv / t as f64);
         }
     }
+}
+
+/// `corr.lowpass` of the columns of `v` (`(t, r)` row-major float32): float64, same layout.
+pub fn lowpass_cols(v: &[f32], t: usize, r: usize, noise_freq: f64) -> Vec<f64> {
+    let mut out = vec![0f64; t * r];
+    lowpass_series(
+        r,
+        t,
+        noise_freq,
+        |c, ti| f64::from(v[ti * r + c]),
+        |c, ti, x| out[ti * r + c] = x,
+    );
     out
+}
+
+/// `FactorCorr.traces_corr` of the rows of `c` (`(k, t)` row-major float32), pair by pair:
+/// the low-passed rows, centred and scaled to unit norm (zero for a flat row).
+pub struct TracesCorr {
+    z: Vec<f64>,
+    t: usize,
+}
+
+impl TracesCorr {
+    pub fn new(c: &[f32], k: usize, t: usize, noise_freq: f64) -> Self {
+        let mut z = vec![0f64; k * t];
+        lowpass_series(
+            k,
+            t,
+            noise_freq,
+            |i, ti| f64::from(c[i * t + ti]),
+            |i, ti, x| z[i * t + ti] = x,
+        );
+        for row in z.chunks_exact_mut(t.max(1)) {
+            let mean = row.iter().sum::<f64>() / t as f64;
+            row.iter_mut().for_each(|x| *x -= mean);
+            let nrm = row.iter().map(|x| x * x).sum::<f64>().sqrt();
+            if nrm > 0.0 {
+                row.iter_mut().for_each(|x| *x /= nrm);
+            } else {
+                row.fill(0.0);
+            }
+        }
+        Self { z, t }
+    }
+
+    /// Correlation of rows `i` and `j`, in [-1, 1] (1 on the diagonal).
+    pub fn pair(&self, i: usize, j: usize) -> f64 {
+        if i == j {
+            return 1.0;
+        }
+        let (a, b) = (
+            &self.z[i * self.t..(i + 1) * self.t],
+            &self.z[j * self.t..(j + 1) * self.t],
+        );
+        a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>().clamp(-1.0, 1.0)
+    }
 }
 
 /// `a^T b` of `(t, ra)` and `(t, rb)` row-major float64 matrices: `(ra, rb)`.

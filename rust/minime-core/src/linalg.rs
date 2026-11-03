@@ -113,8 +113,8 @@ pub fn sym_eig(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
 
 /// `B -> G^-1 B` from one factorisation of the symmetric `G` (`init._solve_normal`).
 pub enum NormalSolver {
-    Chol { l: Vec<f64>, n: usize },
-    Pinv { gi: Vec<f64>, n: usize },
+    Chol { l: Vec<f64>, n: usize, cond: f64 },
+    Pinv { gi: Vec<f64>, n: usize, cond: f64 },
 }
 
 impl NormalSolver {
@@ -125,7 +125,7 @@ impl NormalSolver {
         let cond = if amin > 0.0 { amax / amin } else { f64::INFINITY };
         if cond <= COND_MAX {
             if let Some(l) = cholesky(g, n) {
-                return Self::Chol { l, n };
+                return Self::Chol { l, n, cond };
             }
         }
         let cut = PINV_RCOND * amax;
@@ -141,7 +141,14 @@ impl NormalSolver {
                 }
             }
         }
-        Self::Pinv { gi, n }
+        Self::Pinv { gi, n, cond }
+    }
+
+    /// `np.linalg.cond(G)`: largest over smallest absolute eigenvalue.
+    pub fn cond(&self) -> f64 {
+        match self {
+            Self::Chol { cond, .. } | Self::Pinv { cond, .. } => *cond,
+        }
     }
 
     pub fn is_cholesky(&self) -> bool {
@@ -151,8 +158,8 @@ impl NormalSolver {
     /// Solve in place.
     pub fn solve(&self, b: &mut [f64]) {
         match self {
-            Self::Chol { l, n } => cho_solve(l, *n, b),
-            Self::Pinv { gi, n } => {
+            Self::Chol { l, n, .. } => cho_solve(l, *n, b),
+            Self::Pinv { gi, n, .. } => {
                 let x: Vec<f64> = (0..*n)
                     .map(|a| (0..*n).map(|c| gi[a * n + c] * b[c]).sum())
                     .collect();

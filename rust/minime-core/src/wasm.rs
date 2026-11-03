@@ -1,12 +1,13 @@
 //! wasm-bindgen API for the browser worker: an AVI index over a synchronous JS read
 //! callback (`FileReaderSync` on `File.slice`), the streaming pass, the motion stage and
 //! pass 1, each fed one raw frame at a time, and pass 2, fed one tile of the tile store at a
-//! time, and the seed stage on the factors those two leave. Results come back as the same
-//! `.npy` files the native harness writes.
+//! time, and the seed and init stages on the factors those two leave. Results come back as
+//! the same `.npy` files the native harness writes.
 
 use crate::avi::{self, AviIndex, ReadAt};
 use crate::compress::{self, Gaussian, Normals, Pass2Params, Recorded, TileFactors};
 use crate::factors::Factors;
+use crate::init::{self, InitParams, InitResult};
 use crate::motion::{self, Motion, MotionParams, Reg, TemplateBuilder};
 use crate::npy;
 use crate::pass1::{self, Pass1, Pass1Params};
@@ -599,6 +600,65 @@ impl SeedsEngine {
                 (
                     if n == "summary.json" {
                         "summary_seeds.json".into()
+                    } else {
+                        n
+                    },
+                    b,
+                )
+            })
+            .collect();
+        Ok(npy_map(files))
+    }
+}
+
+/// Init (`minime-core init`) on the seed stage's merged seeds, factors and `FactorCorr`.
+/// `run` with the finished `SeedsEngine`, then `finish`.
+#[wasm_bindgen]
+pub struct InitEngine {
+    p: InitParams,
+    res: Option<InitResult>,
+}
+
+#[wasm_bindgen]
+impl InitEngine {
+    /// `files`: `ref_init.py`'s `init.json`.
+    #[wasm_bindgen(constructor)]
+    pub fn new(files: &Map) -> Result<InitEngine, JsError> {
+        let p: InitParams =
+            serde_json::from_slice(&map_bytes(files, "init.json").map_err(|e| JsError::new(&e))?)
+                .map_err(|e| JsError::new(&format!("init.json: {e}")))?;
+        Ok(InitEngine { p, res: None })
+    }
+
+    /// Run the stage on `seeds` (run, not yet freed); returns the units after the merge.
+    pub fn run(&mut self, seeds: &mut SeedsEngine) -> Result<usize, JsError> {
+        let r = seeds
+            .res
+            .as_mut()
+            .ok_or_else(|| JsError::new("run the seed stage first"))?;
+        let now = || js_sys::Date::now() / 1e3;
+        let res = init::run(&mut r.fc, &seeds.f, &r.merged, &self.p, &now).map_err(|e| JsError::new(&e))?;
+        let n = res.a.k;
+        self.res = Some(res);
+        Ok(n)
+    }
+
+    /// Output name -> `.npy` bytes (the names `minime-core init` writes; the summary is
+    /// `summary_init.json`).
+    pub fn finish(&self, timing_json: &str) -> Result<Map, JsError> {
+        let r = self
+            .res
+            .as_ref()
+            .ok_or_else(|| JsError::new("run the stage first"))?;
+        let mut summary: serde_json::Value = serde_json::from_str(timing_json).unwrap_or_default();
+        summary["stage"] = "init".into();
+        summary["frames"] = self.p.t.into();
+        let files = init::outputs(r, &self.p, summary)
+            .into_iter()
+            .map(|(n, b)| {
+                (
+                    if n == "summary.json" {
+                        "summary_init.json".into()
                     } else {
                         n
                     },

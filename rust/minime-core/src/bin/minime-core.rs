@@ -6,16 +6,20 @@
 //!     minime-core pass1 --raw RAW_DIR --inputs INPUTS_DIR --out OUT_DIR [--estimate]
 //!     minime-core pass2 --tiles TILE_DIR --inputs INPUTS_DIR --out OUT_DIR [--own-rng]
 //!     minime-core seeds --inputs INPUTS_DIR --out OUT_DIR
+//!     minime-core init --inputs INPUTS_DIR --out OUT_DIR
 //!
 //! The first is one streaming pass (`ref_dump.py`), the second the motion stage on one
 //! window (`ref_motion.py`), the third pass 1 on one window (`ref_pass1.py`), with the
 //! tile store written to `OUT_DIR/tiles/`, the fourth pass 2 on that tile store
 //! (`ref_pass2.py`), replaying numpy's draws unless `--own-rng`, the fifth the seed stage
-//! on Python's factors of that window (`ref_seeds.py`'s `fac_*.npy`).
+//! on Python's factors of that window (`ref_seeds.py`'s `fac_*.npy`), the sixth init on
+//! those factors and Python's merged seeds (`ref_init.py`'s `init_seeds.npy`).
 
 use minime_core::avi::{self, AviIndex, FileReader, ReadAt};
 use minime_core::compress::{self, Gaussian, Normals, Pass2Params, Recorded};
+use minime_core::corr::FactorCorr;
 use minime_core::factors::Factors;
+use minime_core::init::{self, InitParams};
 use minime_core::motion::{self, Motion, MotionParams, Reg};
 use minime_core::pass1::{self, Pass1, Pass1Params};
 use minime_core::seeds::{self, SeedParams};
@@ -298,14 +302,9 @@ fn run_pass2(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn run_seeds(args: &[String]) -> Result<(), String> {
-    let inputs = PathBuf::from(arg(args, "--inputs").ok_or("--inputs DIR")?);
-    let out = PathBuf::from(arg(args, "--out").ok_or("--out DIR")?);
+/// The window's `Factors` from `ref_seeds.py`'s flat `fac_*.npy` files.
+fn load_factors(inputs: &Path, h: usize, w: usize, t: usize, tile: usize) -> Result<Factors, String> {
     let read = |name: &str| std::fs::read(inputs.join(name)).map_err(|e| format!("{name}: {e}"));
-    let p: SeedParams =
-        serde_json::from_slice(&read("seeds.json")?).map_err(|e| format!("seeds.json: {e}"))?;
-    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
-    let s0 = Instant::now();
     let f32s =
         |n: &str| -> Result<Vec<f32>, String> { Ok(npy::read_f32(&read(&format!("fac_{n}.npy"))?)?.data) };
     let ints = |n: &str| -> Result<Vec<usize>, String> {
@@ -315,10 +314,10 @@ fn run_seeds(args: &[String]) -> Result<(), String> {
             .map(|&v| v as usize)
             .collect())
     };
-    let grid = pass1::tile_grid(p.h, p.w, p.tile);
+    let grid = pass1::tile_grid(h, w, tile);
     let tiles = Factors::split_flat(
         &grid,
-        p.t,
+        t,
         &f32s("W")?,
         &f32s("V")?,
         &f32s("mean")?,
@@ -326,29 +325,68 @@ fn run_seeds(args: &[String]) -> Result<(), String> {
         &npy::read_f64(&read("fac_energy.npy")?)?.data,
         &ints("rank")?,
     )?;
-    let f = Factors::new(
-        p.h,
-        p.w,
-        p.t,
-        p.tile,
+    Factors::new(
+        h,
+        w,
+        t,
+        tile,
         tiles,
         npy::read_u8(&read("fac_max_proj.npy")?)?.data,
         npy::read_u8(&read("fac_block_max.npy")?)?.data,
         ints("block_edges")?,
-    )?;
-    let load = s0.elapsed().as_secs_f64();
-    let s1 = Instant::now();
-    let res = seeds::run(&f, &p, &|| s1.elapsed().as_secs_f64())?;
-    let seconds = s1.elapsed().as_secs_f64();
-    let summary = serde_json::json!({"frames": p.t, "load": load, "seconds": seconds});
-    let files = seeds::outputs(&res, summary);
-    for (name, bytes) in &files {
+    )
+}
+
+fn write_outputs(out: &Path, files: &[(String, Vec<u8>)]) -> Result<(), String> {
+    for (name, bytes) in files {
         if name == "summary.json" {
             eprintln!("{}", String::from_utf8_lossy(bytes));
         }
         std::fs::write(out.join(name), bytes).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+fn run_seeds(args: &[String]) -> Result<(), String> {
+    let inputs = PathBuf::from(arg(args, "--inputs").ok_or("--inputs DIR")?);
+    let out = PathBuf::from(arg(args, "--out").ok_or("--out DIR")?);
+    let p: SeedParams =
+        serde_json::from_slice(&std::fs::read(inputs.join("seeds.json")).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("seeds.json: {e}"))?;
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let s0 = Instant::now();
+    let f = load_factors(&inputs, p.h, p.w, p.t, p.tile)?;
+    let load = s0.elapsed().as_secs_f64();
+    let s1 = Instant::now();
+    let res = seeds::run(&f, &p, &|| s1.elapsed().as_secs_f64())?;
+    let seconds = s1.elapsed().as_secs_f64();
+    let summary = serde_json::json!({"frames": p.t, "load": load, "seconds": seconds});
+    write_outputs(&out, &seeds::outputs(&res, summary))
+}
+
+fn run_init(args: &[String]) -> Result<(), String> {
+    let inputs = PathBuf::from(arg(args, "--inputs").ok_or("--inputs DIR")?);
+    let out = PathBuf::from(arg(args, "--out").ok_or("--out DIR")?);
+    let read = |name: &str| std::fs::read(inputs.join(name)).map_err(|e| format!("{name}: {e}"));
+    let p: InitParams = serde_json::from_slice(&read("init.json")?).map_err(|e| format!("init.json: {e}"))?;
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let s0 = Instant::now();
+    let f = load_factors(&inputs, p.h, p.w, p.t, p.tile)?;
+    let seeds: Vec<[i64; 2]> = npy::read_i64(&read("init_seeds.npy")?)?
+        .data
+        .as_chunks::<2>()
+        .0
+        .to_vec();
+    let load = s0.elapsed().as_secs_f64();
+    let s1 = Instant::now();
+    let mut fc = FactorCorr::new(&f, p.noise_freq);
+    let corr_setup = s1.elapsed().as_secs_f64();
+    let s2 = Instant::now();
+    let res = init::run(&mut fc, &f, &seeds, &p, &|| s2.elapsed().as_secs_f64())?;
+    let seconds = s2.elapsed().as_secs_f64();
+    let summary =
+        serde_json::json!({"frames": p.t, "load": load, "corr_setup": corr_setup, "seconds": seconds});
+    write_outputs(&out, &init::outputs(&res, &p, summary))
 }
 
 fn run() -> Result<(), String> {
@@ -358,6 +396,7 @@ fn run() -> Result<(), String> {
         Some("pass1") => return run_pass1(&args),
         Some("pass2") => return run_pass2(&args),
         Some("seeds") => return run_seeds(&args),
+        Some("init") => return run_init(&args),
         _ => {}
     }
     let raw = PathBuf::from(arg(&args, "--raw").ok_or("--raw RAW_DIR")?);
