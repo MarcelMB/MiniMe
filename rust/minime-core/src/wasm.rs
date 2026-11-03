@@ -752,6 +752,12 @@ pub fn time_windows(t: usize, length: usize, edges: &[u32]) -> Vec<u32> {
         .collect()
 }
 
+/// The streaming pass's `params.json` for `t` frames from `session.json`'s `stream` object.
+#[wasm_bindgen]
+pub fn stream_params(session: &[u8], t: usize) -> Result<Vec<u8>, JsError> {
+    stitch::stream_params(session, t).map_err(|e| JsError::new(&e))
+}
+
 /// One window's stage files (`params.json`, `pass2.json`, `seeds.json`, `init.json`,
 /// `cnmf.json`, `shifts.npy`) from the session's `session.json` and `shifts.npy`.
 #[wasm_bindgen]
@@ -767,6 +773,7 @@ pub fn window_inputs(session: &[u8], shifts: &[u8], t0: usize, t1: usize) -> Res
 pub struct StitchEngine {
     p: StitchParams,
     windows: Vec<Window>,
+    mean_noise: stitch::MeanNoise,
     res: Option<stitch::StitchResult>,
 }
 
@@ -791,6 +798,7 @@ impl StitchEngine {
         Ok(StitchEngine {
             p,
             windows: Vec::new(),
+            mean_noise: stitch::MeanNoise::default(),
             res: None,
         })
     }
@@ -841,6 +849,16 @@ impl StitchEngine {
         Ok(k)
     }
 
+    /// The pass-2 factors of the window `[t0, t1)` (`pass2` finished), for the session's mean
+    /// image and noise (`ymean.npy`, `sn.npy` in `finish`).
+    pub fn add_pass2(&mut self, pass2: &Pass2Engine, t0: usize, t1: usize) -> Result<(), JsError> {
+        if pass2.done.len() != pass2.grid.len() {
+            return Err(JsError::new("finish pass 2 first"));
+        }
+        self.mean_noise.add(&pass2.grid, &pass2.done, self.p.w, t1 - t0);
+        Ok(())
+    }
+
     /// Stitch the windows added so far; returns the number of stitched units.
     pub fn run(&mut self) -> Result<usize, JsError> {
         let r = stitch::stitch(&self.windows, self.p.cos_thres, self.p.h * self.p.w)
@@ -875,6 +893,11 @@ impl StitchEngine {
             })
             .collect();
         files.extend(stitch::window_files(&self.windows, &self.p));
+        if let Some((ymean, sn)) = self.mean_noise.finish() {
+            let p = ymean.len();
+            files.push(("ymean.npy".into(), npy::write(&[p], &ymean)));
+            files.push(("sn.npy".into(), npy::write(&[p], &sn)));
+        }
         Ok(npy_map(files))
     }
 }

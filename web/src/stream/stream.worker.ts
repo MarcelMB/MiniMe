@@ -12,6 +12,7 @@ import init, {
   Pass2Engine,
   SeedsEngine,
   StitchEngine,
+  stream_params,
   time_windows,
   window_inputs,
 } from "./pkg/minime_core.js";
@@ -38,6 +39,21 @@ async function run({ avis, inputs }: ToWorker): Promise<void> {
   if (files.has("stitch.json")) return runStitch(files, log, wasm.memory);
   if (files.has("template.npy")) return runPass1(avis, files, log, wasm.memory);
   if (!files.has("A_data.npy")) return runMotion(avis, files, log, wasm.memory);
+  const { files: out, seconds } = await streamPass(avis, files, log, wasm.memory);
+  post({ type: "done", files: out, seconds }, transferable(out));
+}
+
+const transferable = (out: Map<string, Uint8Array | Blob>) =>
+  [...out.values()].flatMap((v) => (v instanceof Uint8Array ? [v.buffer] : []));
+
+/** The streaming pass (`minime-core`) with fixed footprints over every frame of `avis`, then
+ * one footprint update and merge from its sums. */
+async function streamPass(
+  avis: File[],
+  files: Map<string, Uint8Array>,
+  log: (what: string) => void,
+  memory: WebAssembly.Memory,
+): Promise<{ files: Map<string, Uint8Array | Blob>; seconds: number }> {
   const engine = new Engine(files);
   log("engine built");
   const [T, H, W] = [engine.frames(), engine.height(), engine.width()];
@@ -98,16 +114,13 @@ async function run({ avis, inputs }: ToWorker): Promise<void> {
   cOut.flush();
   cOut.close();
   const passSeconds = (performance.now() - t0) / 1e3;
-  const heapMb = wasm.memory.buffer.byteLength / 2 ** 20;
+  const heapMb = memory.buffer.byteLength / 2 ** 20;
   log(`pass done, wasm heap ${heapMb.toFixed(0)} MB`);
   const timing = { pass: passSeconds, where: "browser", wasm_heap_mb: heapMb };
   const out: Map<string, Uint8Array | Blob> = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
   engine.free();
   out.set("C.npy", await cFile.getFile());
-  post(
-    { type: "done", files: out, seconds: (performance.now() - t0) / 1e3 },
-    [...out.values()].flatMap((v) => (v instanceof Uint8Array ? [v.buffer] : [])),
-  );
+  return { files: out, seconds: (performance.now() - t0) / 1e3 };
 }
 
 type Segment = { file: File; avi: AviFile; read: (off: number, len: number) => Uint8Array };
@@ -123,7 +136,7 @@ function indexSegments(avis: File[]): Segment[] {
 
 /** What a window run keeps besides its outputs: tile CRCs (the pass 1 check reads the whole
  * tile store back) and the CNMF loop's engine, handed over before it is freed. */
-type WindowOpts = { crc: boolean; onCnmf?: (engine: CnmfEngine) => void };
+type WindowOpts = { crc: boolean; onPass2?: (engine: Pass2Engine) => void; onCnmf?: (engine: CnmfEngine) => void };
 type Out = { files: Map<string, Uint8Array>; seconds: number };
 
 /** Calls `push` on raw frames `[from, to)` of the session, reading `BLOCK` frames per slice. */
@@ -263,6 +276,7 @@ async function runWindows(
     log(`window ${i + 1}/${n}: frames ${t0}-${t1}`);
     const w = await windowPass1(segs, wf, log, memory, {
       crc: false,
+      onPass2: (engine) => stitch.add_pass2(engine, t0, t1),
       onCnmf: (engine) => stitch.add_cnmf(engine, t0, t1),
     });
     total += w.seconds;
@@ -273,10 +287,25 @@ async function runWindows(
   for (const sg of segs) sg.avi.free();
   const st = runStitchEngine(stitch, log, memory);
   for (const [name, bytes] of st.files) out.set(name, bytes);
-  post(
-    { type: "done", files: out, seconds: total + st.seconds },
-    [...out.values()].map((v) => v.buffer),
-  );
+  total += st.seconds;
+  const res: Map<string, Uint8Array | Blob> = out;
+  // with a "stream" object the streaming pass follows on the stitched footprints, the
+  // session's shifts and the windows' mean image and noise
+  if (JSON.parse(new TextDecoder().decode(session)).stream) {
+    const sf = new Map<string, Uint8Array>([
+      ["params.json", stream_params(session, T)],
+      ["shifts.npy", shifts],
+    ]);
+    for (const name of ["A_data.npy", "A_indices.npy", "A_indptr.npy", "ymean.npy", "sn.npy"]) {
+      const b = st.files.get(name);
+      if (!b) throw new Error(`the stitch gave no ${name}`);
+      sf.set(name, b);
+    }
+    const sp = await streamPass(avis, sf, log, memory);
+    for (const [name, bytes] of sp.files) res.set(name, bytes);
+    total += sp.seconds;
+  }
+  post({ type: "done", files: res, seconds: total }, transferable(res));
 }
 
 /** The stitch (`minime-core stitch`) of `ref_stitch.py`'s window units (`stitch.json`,
@@ -429,6 +458,7 @@ function runPass2(
   log(`pass 2 done, ${rankTotal} components, wasm heap ${heapMb.toFixed(0)} MB`);
   const timing = { where: "browser", pass2: seconds, read_tiles: tRead / 1e3, wasm_heap_mb: heapMb };
   const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
+  opts.onPass2?.(engine);
   let total = seconds;
   if (files.has("seeds.json")) {
     const s = runSeeds(files, pass1, engine, log, memory, opts);

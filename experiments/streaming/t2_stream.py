@@ -23,7 +23,8 @@ after the first update the footprints are also fitted from each segment's sums a
 
 Shortcuts (marked in ``results.json``): the first pass's background uses the baseline
 factors' mean image, and the spatial update uses the factors' FFT noise unless
-``--sn diff``. A browser would take both from the discovery pass.
+``--sn diff``. ``--mean-noise windows`` takes both from the stitched windows' pass-2
+factors instead (``stream.window_mean_noise``), as a browser-only run does.
 
 Writes ``processed/stream/t2_<footprints>_u<n>/`` (``pass<i>_A.npz``, ``pass<i>_C.npy``,
 ``stability.npz``, ``results.json``).
@@ -63,6 +64,12 @@ def main() -> None:
         "--batch", type=int, default=100, help="frames per read (100 x 600 x 600 float32 = 144 MB)"
     )
     ap.add_argument("--sn", choices=("factors", "diff"), default="factors")
+    ap.add_argument(
+        "--mean-noise",
+        choices=("factors", "windows"),
+        default="factors",
+        help="first mean image and noise: baseline factors, or the --stitched windows' runs",
+    )
     ap.add_argument("--merge-corr", type=float, help="default: params.loop_merge_corr")
     ap.add_argument(
         "--merge-on",
@@ -76,20 +83,27 @@ def main() -> None:
     params = s.params()
     H, W, T = s.shape()
     sc = s.sidecar()
-    fac = s.factors()  # mean image and noise only (see the module docstring)
-    ymean, sn_fft = fac.mean_flat(), fac.sigma_flat()
-    del fac
+    if a.mean_noise == "windows":
+        ymean, sn_fft = st.window_mean_noise(a.stitched / "runs")
+    else:
+        fac = s.factors()  # mean image and noise only (see the module docstring)
+        ymean, sn_fft = fac.mean_flat(), fac.sigma_flat()
+        del fac
     frames = st.FrameStream(io.probe(s.raw), sc.shifts, params, a.batch)
     merge_corr = params.loop_merge_corr if a.merge_corr is None else a.merge_corr
     # the first runs merged on raw traces and keep their folder names
     suffix = "" if a.merge_on == "raw" or a.n_updates == 0 else "_lp"
+    suffix += "_win" if a.mean_noise == "windows" else ""
     out = s.out(f"t2_{a.footprints}_u{a.n_updates}{suffix}")
 
     A = start_footprints(s, a.footprints, a.stitched)
     C_ref = s.baseline_units("cnmf")[1] if a.footprints == "baseline_final" else None
     results: dict = {
         "args": {k: str(v) for k, v in vars(a).items()},
-        "shortcuts": {"first_mean_image": "baseline factors", "noise": a.sn},
+        "shortcuts": {
+            "first_mean_image": "baseline factors" if a.mean_noise == "factors" else "windows",
+            "noise": a.sn if a.mean_noise == "factors" else "windows (quadratic mean)",
+        },
         "baseline": st.brief(s.baseline_score()),
         "passes": [],
     }

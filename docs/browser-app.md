@@ -434,18 +434,42 @@ STREAM_FILES=6 STREAM_RAW=<raw dir> STREAM_INPUTS=<ref n2>/session STREAM_OUT=<r
 python experiments/streaming/check_stitch.py <ref n2> <ref n2>/rust_browser --own-windows
 ```
 
-## Open: mean image and noise for the streaming pass after the stitch
-The streaming pass (`ref_dump.py`, `t2_stream.py`) takes `ymean` (background at the start
-of the pass) and `sn` (NNQP penalty of the footprint update) from the baseline batch
-factors; a browser-only run has no batch factors. Options (not decided):
+## Mean image and noise from the windows (2026-11-03): decided and chained
+The streaming pass after the stitch needs the session's mean image `ymean` (background of the
+first pass) and noise `sn` (NNQP penalty of the update); until now they came from the batch
+factors. Decided: both from the windows' pass-2 factors (`stream.window_mean_noise`), summed
+in the window loop (`stitch::MeanNoise`, 2 × P float64):
 
-| | what | cost | match to the batch factors |
-|---|---|---|---|
-| ymean A | frame-weighted mean of the windows' pass-2 `mean` (Σ T_w mean_w / T) | one P-float64 sum in the window loop (2.9 MB at 600²), no extra read | same frames, same preprocessing: equal up to rounding |
-| ymean B | streaming pass's own Σy | free, but only after pass 0; pass 0 needs a start value (A) | exact for later passes (`t2_stream.py` does this) |
-| sn 1 | geometric mean of the windows' pass-2 `sigma` | one P-float64 log-sum in the loop | MiniMe's own segmented estimator (`noise(frames > 0)`: same band, pooled log-periodogram over segments) with segment = window; differs from the whole-session FFT by estimator noise only. Needs one Python check against `fac.sigma_flat()` |
-| sn 2 | `diff_noise` from the stream pass's Σdy² (`t2_stream.py --sn diff`) | free | different estimator: ≈ σ instead of 0.75 σ on white noise, inflated where cells fire often, so `sparse_snr` would need rescaling; untested on F1 |
-| sn 3 | whole-session FFT noise per pixel | a session-long tile store or ~1.4 GB of frame buffers | exact, but breaks the bounded-memory design |
+- `ymean` = Σ T_w mean_w / T. Equal to the batch factors' up to rounding (rel ≤ 6e-8, 12 windows).
+- `sn` = sqrt(mean_w σ_w²), the **quadratic** mean. The geometric mean (option "sn 1" as
+  first listed) breaks on motion-border pixels that are empty in some windows: their σ_w ≈ 0
+  pulls the log-mean to zero (16 291 pixels off by > 10 %, 1818 in footprint supports, ratio
+  median 0.13 among them). The quadratic mean scales with the share of frames with signal, as
+  the whole-trace FFT does: 12 pixels off by > 10 %, none in a support; in the supports the
+  1st–99th percentile of window / batch is 0.977–1.012.
+- F1 (`t2_stream.py --footprints stitched --n-updates 1 --mean-noise windows`): pass 0 0.748
+  (same), after the update 0.738 vs 0.740 with the batch factors, 314 vs 315 units, trace
+  correlation 0.770 both.
+
+Browser: `StitchEngine.add_pass2` (worker hook `onPass2`) adds each window's pass-2 tiles;
+`finish` adds `ymean.npy`, `sn.npy`. With a `stream` object in `session.json`
+(`ref_stitch.py --stream`) the worker runs the streaming pass right after the stitch, on the
+stitched footprints, the session's shifts and that mean and noise (`stream_params` builds its
+`params.json`). Checked on frames 0–6000 in Chrome (2 windows, replayed draws, 4:48):
+
+| | browser vs reference |
+|---|---|
+| `ymean` vs `window_mean_noise` of the stored Python windows | identical |
+| `sn` | ≤ 1.1e-6 rel (pass 2's noise) |
+| stitch (388 → 244 units, 144 links) | `check_stitch.py --own-windows` passes |
+| streaming pass vs the native pass on the browser's own inputs (`check_chain.py`) | C, f, b, every sum, masks, 240 units: identical (sums ≤ 4e-16) |
+
+```bash
+python experiments/streaming/ref_stitch.py --n 2 --session-inputs --stream
+STREAM_RAW=<raw dir> STREAM_INPUTS=<ref>/session STREAM_OUT=<ref>/rust_chain STREAM_FILES=6 npm --prefix web run e2e:stream
+python experiments/streaming/check_stitch.py <ref> <ref>/rust_chain --own-windows
+python experiments/streaming/check_chain.py <ref> <ref>/rust_chain <dir with the 6 AVIs>
+```
 
 ## Next
 0. Rerun the 8 h and 24 h streaming pass with the traces in OPFS (8 h scale run above);
@@ -455,8 +479,10 @@ factors; a browser-only run has no batch factors. Options (not decided):
    replayed draws `ref_pass1.py`/`ref_pass2.py` per window first, or own draws and compare
    counts), `STREAM_INPUTS=<ref>/session`, all 36 files; check with `check_stitch.py
    --own-windows` against `ref_stitch_w3000`, watching the 2.9e-5 brightness tie.
-1b. Decide `ymean`/`sn` for a browser-only run (open question above), then chain the window
-   loop into the streaming pass.
+1b. ~~`ymean`/`sn` for a browser-only run, window loop chained into the streaming pass~~
+   (done). Overnight with 1: the whole 36-file chain with `--stream`, scored against F1 0.738.
+   A second streaming pass on the updated footprints (`t2_stream.py --n-updates 1`'s pass 1,
+   the scored traces) is one more read of the movie; not chained yet.
 2. Speed: preprocessing in a worker pool (frames are independent), faster median
    (Perreault O(1) or a sorting-network median), then rayon + COOP/COEP.
 3. Save outputs to a folder (`showDirectoryPicker` on Chromium, OPFS elsewhere) and

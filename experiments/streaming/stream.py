@@ -237,6 +237,31 @@ def window_units_fresh(
     return WindowUnits(t0, t1, A, bright, time.perf_counter() - t)
 
 
+def window_mean_noise(runs: Path, n: int | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Session mean image and noise from the ``fresh`` windows' pass-2 factors (``runs/``;
+    the first ``n`` windows only with ``n``).
+
+    The mean is the frame-weighted mean of the windows' means (the same frames, so equal to
+    the session's up to rounding). The noise is the quadratic mean of the windows' noise,
+    ``sqrt(mean_w sigma_w^2)``: equal to the session's on stationary noise, and like the
+    session's whole-trace FFT it scales with the share of frames a pixel has signal in (motion
+    borders), where a geometric mean would follow the windows with none to zero.
+    """
+    dirs = sorted(runs.glob("run_*_*"), key=lambda d: int(d.name.split("_")[1]))[:n]
+    if not dirs:
+        raise FileNotFoundError(f"no run_<t0>_<t1> folders in {runs}")
+    mean = sq = None
+    T = 0
+    for d in dirs:
+        f = Factors.load(d / "factors")
+        t = int(d.name.split("_")[2]) - int(d.name.split("_")[1])
+        m, sg = f.mean_flat().astype(np.float64), f.sigma_flat().astype(np.float64)
+        mean = t * m if mean is None else mean + t * m
+        sq = sg**2 if sq is None else sq + sg**2
+        T += t
+    return mean / T, np.sqrt(sq / len(dirs))
+
+
 def _roots(parent: np.ndarray) -> np.ndarray:
     """Root of every node of a ``brightest_parent`` forest."""
     root = parent.copy()

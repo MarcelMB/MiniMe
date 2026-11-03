@@ -12,10 +12,12 @@
 //! is `np.add.reduceat`: the first value plus the pairwise sum of the rest. So the norms and
 //! cosines, and with them the edges, come out bit for bit.
 
+use crate::compress::TileFactors;
 use crate::corr::brightest_parent;
 use crate::gmm::pairwise_sum;
 use crate::init::Csr;
 use crate::npy;
+use crate::pass1::Tile;
 use serde::Deserialize;
 
 // ---------------------------------------------------------------------------
@@ -83,6 +85,65 @@ pub fn window_inputs(
         npy::write(&[t1 - t0, 2], &sh.data[2 * t0..2 * t1]),
     ));
     Ok(out)
+}
+
+/// `stream.window_mean_noise`, window by window: the session's mean image (frame-weighted
+/// mean of the windows' pass-2 means) and noise (quadratic mean of the windows' pass-2 noise)
+/// for the streaming pass after the stitch, in float64 as the prototype keeps them.
+#[derive(Default)]
+pub struct MeanNoise {
+    mean: Vec<f64>,
+    sq: Vec<f64>,
+    t: usize,
+    n: usize,
+}
+
+impl MeanNoise {
+    /// Add one window of `t` frames: its pass-2 tiles on the `grid` of a `w`-wide frame.
+    pub fn add(&mut self, grid: &[Tile], tiles: &[TileFactors], w: usize, t: usize) {
+        if self.n == 0 {
+            let p: usize = grid.iter().map(Tile::pixels).sum();
+            self.mean = vec![0.0; p];
+            self.sq = vec![0.0; p];
+        }
+        let tf = t as f64;
+        for (g, f) in grid.iter().zip(tiles) {
+            let mut l = 0;
+            for y in g.y0..g.y1 {
+                for x in g.x0..g.x1 {
+                    let (m, sg) = (f64::from(f.mean[l]), f64::from(f.sigma[l]));
+                    self.mean[y * w + x] += tf * m;
+                    self.sq[y * w + x] += sg * sg;
+                    l += 1;
+                }
+            }
+        }
+        self.t += t;
+        self.n += 1;
+    }
+
+    /// `(ymean, sn)`, or `None` before the first window.
+    pub fn finish(&self) -> Option<(Vec<f64>, Vec<f64>)> {
+        if self.n == 0 {
+            return None;
+        }
+        let (t, n) = (self.t as f64, self.n as f64);
+        let mean = self.mean.iter().map(|&v| v / t).collect();
+        let sn = self.sq.iter().map(|&v| (v / n).sqrt()).collect();
+        Some((mean, sn))
+    }
+}
+
+/// The streaming pass's `params.json` for `t` frames from `session.json`'s `stream` object
+/// (`ref_dump.py`'s parameters without `T`, `K`).
+pub fn stream_params(session: &[u8], t: usize) -> Result<Vec<u8>, String> {
+    let s: serde_json::Value = serde_json::from_slice(session).map_err(|e| format!("session.json: {e}"))?;
+    let mut p = s["stream"]
+        .as_object()
+        .cloned()
+        .ok_or("session.json: no \"stream\" object")?;
+    p.insert("T".into(), t.into());
+    Ok(serde_json::to_vec(&p).unwrap())
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +507,33 @@ pub fn outputs(r: &StitchResult, mut summary: serde_json::Value) -> Vec<(String,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mean_noise_weights_frames_and_squares() {
+        let grid = vec![Tile {
+            y0: 0,
+            y1: 1,
+            x0: 0,
+            x1: 2,
+        }];
+        let tile = |m: [f32; 2], s: [f32; 2]| TileFactors {
+            w: vec![],
+            v: vec![],
+            s: vec![],
+            mean: m.to_vec(),
+            sigma: s.to_vec(),
+            energy: vec![0.0; 2],
+            rank: 0,
+            k: 0,
+        };
+        let mut mn = MeanNoise::default();
+        assert!(mn.finish().is_none());
+        mn.add(&grid, &[tile([1.0, 2.0], [3.0, 0.0])], 2, 1000);
+        mn.add(&grid, &[tile([4.0, 2.0], [4.0, 2.0])], 2, 3000);
+        let (m, s) = mn.finish().unwrap();
+        assert_eq!(m, vec![(1000.0 + 12000.0) / 4000.0, 2.0]);
+        assert_eq!(s, vec![12.5f64.sqrt(), 2.0f64.sqrt()]);
+    }
 
     fn csr(rows: &[&[(usize, f32)]], p: usize) -> Csr {
         let mut indptr = vec![0];

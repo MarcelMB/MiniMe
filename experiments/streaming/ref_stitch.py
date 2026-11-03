@@ -21,10 +21,14 @@ windows only):
   ``t1`` and the stitch's ``cos_thres``; ``shifts.npy``, the whole session's baseline
   shifts (T, 2) float32; ``template.npy``), plus
   ``omega_<t0>_<k>.npy`` for every window whose ``ref_pass2_<t0>_<t1>`` exists, so the
-  browser replays numpy's draws there.
+  browser replays numpy's draws there; with ``--stream`` also ``session.json``'s ``stream``
+  object (``ref_dump.py``'s parameters), so the browser runs the streaming pass after the
+  stitch, and ``ref/`` gets ``ymean.npy`` / ``sn.npy`` (``stream.window_mean_noise`` of the
+  same windows' stored runs).
 
     python experiments/streaming/ref_stitch.py                         # all 12 windows
     python experiments/streaming/ref_stitch.py --n 2 --session-inputs  # 0-6000, browser
+    python experiments/streaming/ref_stitch.py --n 2 --session-inputs --stream
 """
 
 from __future__ import annotations
@@ -44,6 +48,7 @@ from ref_pass2 import pass2_meta
 from ref_seeds import seeds_meta
 
 from minime import corr
+from minime.params import Params
 
 
 def stitch_steps(units: list[st.WindowUnits], cos_thres: float) -> dict[str, np.ndarray]:
@@ -97,7 +102,27 @@ def same_csr(a: sps.csr_matrix, b: sps.csr_matrix) -> bool:
     )
 
 
-def write_session(s: st.Session, out: Path, length: int, cos_thres: float) -> None:
+def stream_meta(params: Params, H: int, W: int) -> dict:
+    """``ref_dump.py``'s streaming-pass parameters without ``T`` and ``K``."""
+    return {
+        "H": H,
+        "W": W,
+        "segment_frames": 6000,
+        "batch": 100,
+        "median_ksize": params.median_ksize,
+        "tophat_wnd": params.tophat_wnd,
+        "motion_before_tophat": params.motion_before_tophat,
+        "dl_wnd": params.dl_wnd,
+        "sparse_snr": params.sparse_snr,
+        "size_thres": list(params.size_thres),
+        "noise_freq": params.noise_freq,
+        "loop_merge_corr": params.loop_merge_corr,
+    }
+
+
+def write_session(
+    s: st.Session, out: Path, length: int, cos_thres: float, stream: bool = False
+) -> None:
     """The browser window loop's inputs: one parameter file for every window."""
     params = s.params()
     H, W, T = s.shape()
@@ -115,6 +140,8 @@ def write_session(s: st.Session, out: Path, length: int, cos_thres: float) -> No
         "cnmf": {k: v for k, v in cnmf_meta(params, H, W, 0).items() if k not in drop},
         "stitch": {"cos_thres": cos_thres},
     }
+    if stream:
+        session["stream"] = stream_meta(params, H, W)
     (d / "session.json").write_text(json.dumps(session, indent=1))
     np.save(d / "shifts.npy", np.ascontiguousarray(sc.shifts, dtype=np.float32))
     np.save(d / "template.npy", sc.template.astype(np.float32))
@@ -131,6 +158,7 @@ def main() -> None:
     ap.add_argument("--length", type=int, default=3000, help="window length (frames)")
     ap.add_argument("--n", type=int, default=None, help="first n windows only")
     ap.add_argument("--session-inputs", dest="session", action="store_true")
+    ap.add_argument("--stream", action="store_true", help="streaming pass after the stitch")
     a = ap.parse_args()
 
     s = st.Session(a.root)
@@ -181,7 +209,11 @@ def main() -> None:
     (ref / "summary.json").write_text(json.dumps(summary, indent=1))
     print(json.dumps(summary, indent=1))
     if a.session:
-        write_session(s, out, a.length, cos_thres)
+        write_session(s, out, a.length, cos_thres, a.stream)
+    if a.stream:
+        ymean, sn = st.window_mean_noise(src / "runs", a.n)
+        np.save(ref / "ymean.npy", ymean)
+        np.save(ref / "sn.npy", sn)
     print(f"reference: {out}")
 
 

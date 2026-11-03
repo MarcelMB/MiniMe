@@ -119,7 +119,10 @@ export function StreamPage() {
           {st.stitch ? (
             <p>
               Done in {fmtDuration(st.seconds)}: {String(st.stitch.windows)} windows, {String(st.stitch.units_in)}{" "}
-              window units stitched into {String(st.stitch.units_out)} units ({String(st.stitch.edges)} links).
+              window units stitched into {String(st.stitch.units_out)} units ({String(st.stitch.edges)} links)
+              {st.summary.K !== undefined &&
+                `; streaming pass: ${String(st.summary.kept)} kept, ${String(st.summary.merged)} after merge`}
+              .
             </p>
           ) : st.summary.stage === "pass1" ? (
             <p>
