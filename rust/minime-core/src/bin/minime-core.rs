@@ -7,19 +7,22 @@
 //!     minime-core pass2 --tiles TILE_DIR --inputs INPUTS_DIR --out OUT_DIR [--own-rng]
 //!     minime-core seeds --inputs INPUTS_DIR --out OUT_DIR
 //!     minime-core init --inputs INPUTS_DIR --out OUT_DIR
+//!     minime-core cnmf --inputs INPUTS_DIR --out OUT_DIR
 //!
 //! The first is one streaming pass (`ref_dump.py`), the second the motion stage on one
 //! window (`ref_motion.py`), the third pass 1 on one window (`ref_pass1.py`), with the
 //! tile store written to `OUT_DIR/tiles/`, the fourth pass 2 on that tile store
 //! (`ref_pass2.py`), replaying numpy's draws unless `--own-rng`, the fifth the seed stage
 //! on Python's factors of that window (`ref_seeds.py`'s `fac_*.npy`), the sixth init on
-//! those factors and Python's merged seeds (`ref_init.py`'s `init_seeds.npy`).
+//! those factors and Python's merged seeds (`ref_init.py`'s `init_seeds.npy`), the seventh
+//! the CNMF loop on those factors and Python's init units (`ref_cnmf.py`'s `cnmf_*.npy`).
 
 use minime_core::avi::{self, AviIndex, FileReader, ReadAt};
+use minime_core::cnmf::{self, CnmfParams};
 use minime_core::compress::{self, Gaussian, Normals, Pass2Params, Recorded};
 use minime_core::corr::FactorCorr;
 use minime_core::factors::Factors;
-use minime_core::init::{self, InitParams};
+use minime_core::init::{self, Csr, InitParams};
 use minime_core::motion::{self, Motion, MotionParams, Reg};
 use minime_core::pass1::{self, Pass1, Pass1Params};
 use minime_core::seeds::{self, SeedParams};
@@ -389,6 +392,46 @@ fn run_init(args: &[String]) -> Result<(), String> {
     write_outputs(&out, &init::outputs(&res, &p, summary))
 }
 
+fn run_cnmf(args: &[String]) -> Result<(), String> {
+    let inputs = PathBuf::from(arg(args, "--inputs").ok_or("--inputs DIR")?);
+    let out = PathBuf::from(arg(args, "--out").ok_or("--out DIR")?);
+    let read = |name: &str| std::fs::read(inputs.join(name)).map_err(|e| format!("{name}: {e}"));
+    let p: CnmfParams = serde_json::from_slice(&read("cnmf.json")?).map_err(|e| format!("cnmf.json: {e}"))?;
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let s0 = Instant::now();
+    let f = load_factors(&inputs, p.h, p.w, p.t, p.tile)?;
+    let usizes = |n: &str| -> Result<Vec<usize>, String> {
+        Ok(npy::read_i64(&read(n)?)?
+            .data
+            .iter()
+            .map(|&v| v as usize)
+            .collect())
+    };
+    let indptr = usizes("cnmf_A_indptr.npy")?;
+    let a = Csr {
+        k: indptr.len() - 1,
+        p: p.h * p.w,
+        indptr,
+        indices: usizes("cnmf_A_indices.npy")?,
+        data: npy::read_f32(&read("cnmf_A_data.npy")?)?.data,
+    };
+    let c = npy::read_f32(&read("cnmf_C.npy")?)?.data;
+    if c.len() != a.k * p.t {
+        return Err(format!(
+            "cnmf_C.npy holds {} values, expected {} x {}",
+            c.len(),
+            a.k,
+            p.t
+        ));
+    }
+    let load = s0.elapsed().as_secs_f64();
+    let s1 = Instant::now();
+    let res = cnmf::run(&f, &a, &c, &p, &|| s1.elapsed().as_secs_f64())?;
+    let seconds = s1.elapsed().as_secs_f64();
+    let summary = serde_json::json!({"load": load, "seconds": seconds});
+    write_outputs(&out, &cnmf::outputs(&res, summary))
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
@@ -397,6 +440,7 @@ fn run() -> Result<(), String> {
         Some("pass2") => return run_pass2(&args),
         Some("seeds") => return run_seeds(&args),
         Some("init") => return run_init(&args),
+        Some("cnmf") => return run_cnmf(&args),
         _ => {}
     }
     let raw = PathBuf::from(arg(&args, "--raw").ok_or("--raw RAW_DIR")?);

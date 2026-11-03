@@ -3,6 +3,7 @@
 import { orderAvis } from "./order";
 import init, {
   AviFile,
+  CnmfEngine,
   crc32,
   Engine,
   InitEngine,
@@ -361,7 +362,8 @@ function runSeeds(
   return { files: out, seconds: total };
 }
 
-/** initA, initC and the initial unit merge (`minime-core init`) on the merged seeds. */
+/** initA, initC and the initial unit merge (`minime-core init`) on the merged seeds; then the
+ * CNMF loop when the inputs hold `cnmf.json`. */
 function runInit(
   files: Map<string, Uint8Array>,
   seeds: SeedsEngine,
@@ -377,6 +379,35 @@ function runInit(
   const heapMb = memory.buffer.byteLength / 2 ** 20;
   log(`init done, ${units} units after the merge, wasm heap ${heapMb.toFixed(0)} MB`);
   const timing = { where: "browser", init: seconds, wasm_heap_mb: heapMb };
+  const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
+  let total = seconds;
+  if (files.has("cnmf.json")) {
+    const c = runCnmf(files, seeds, engine, log, memory);
+    for (const [name, bytes] of c.files) out.set(name, bytes);
+    total += c.seconds;
+  }
+  engine.free();
+  return { files: out, seconds: total };
+}
+
+/** The CNMF loop (`minime-core cnmf`: spatial update, background, traces, loop merge) on
+ * init's merged units. */
+function runCnmf(
+  files: Map<string, Uint8Array>,
+  seeds: SeedsEngine,
+  init: InitEngine,
+  log: (what: string) => void,
+  memory: WebAssembly.Memory,
+): { files: Map<string, Uint8Array>; seconds: number } {
+  post({ type: "start", stage: "cnmf", frames: 1, units: 0, height: 0, width: 0 });
+  const start = performance.now();
+  const engine = new CnmfEngine(files);
+  const units = engine.run(seeds, init);
+  const seconds = (performance.now() - start) / 1e3;
+  post({ type: "progress", done: 1, frames: 1, seconds, stateMb: 0 });
+  const heapMb = memory.buffer.byteLength / 2 ** 20;
+  log(`CNMF loop done, ${units} units, wasm heap ${heapMb.toFixed(0)} MB`);
+  const timing = { where: "browser", cnmf: seconds, wasm_heap_mb: heapMb };
   const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
   engine.free();
   return { files: out, seconds };

@@ -37,7 +37,7 @@ browser stage is checked against it. Background and results: `docs/browser-optio
 | pass 2: mean, energy, noise, rSVD + rank cut | `compress` | **done** | same rank per tile, mean + energy exact, reconstruction ≤ 6e-5 (numpy's draws replayed; native and Chrome) |
 | seeds, PNR + GMM threshold, opt-in `gmm_refine`, seed merge | `seeds`, `gmm`, `corr.seeds_merge` | **done** | same seeds, masks and merge pairs (native on Python's factors: PNR ≤ 1.1e-7 rel; Chrome on its own pass 2: ≤ 1.1e-4) |
 | initA, initC, initial unit merge | `init` | **done** | same footprint supports and merge groups (native: traces identical; Chrome on its own pass 2: ≤ 5.7e-6 rel) |
-| CNMF loop | `cnmf` | next | per stage on one window |
+| CNMF loop: spatial update (NNQP), size filter, background, traces, loop merge | `cnmf` | **done** | same supports, masks and merge groups per iteration (native: `YCt` exact; Chrome on its own factors: ≤ 2.2e-5 rel) |
 | stitch | `stream.stitch` | next | identical units |
 
 Slice 1 inputs (until discovery is ported): footprints, shifts, mean image and noise come
@@ -275,6 +275,72 @@ python experiments/streaming/check_pass2.py <pass2 ref> <ref>/rust_browser
 python experiments/streaming/check_pass1.py <pass1 ref> <ref>/rust_browser
 ```
 
+## CNMF result (2026-11-03): native and Chrome match Python
+`cnmf.run_cnmf` (initial background, then `n_iter` 2 x spatial update on the radius-10
+dilated supports with the NNQP kernel, `size_thres` (25, none), rows scaled to maximum 1,
+background (unclipped, the session's `background_clip`), `compute_trace`, loop merge at
+`loop_merge_corr` 0.9) on `ref_seeds.py`'s factors and init's 190 units. `ref_cnmf.py`
+records every step (wrapping `dilate_footprints`, `solve_nnqp`, `update_spatial`,
+`update_background`, `compute_trace`, `unit_merge`; the wrapped run equals the plain one
+bit for bit). Its 189 final units equal the stored `t1_fresh` window run's. The native run
+reads Python's factors and init units (`cnmf_A_*.npy`, `cnmf_C.npy`); the browser run its
+own pass 1, pass 2, seeds and init.
+
+| | Rust native vs Python (Python's factors) | Rust → wasm, headless Chrome vs Python (own factors) |
+|---|---|---|
+| per iteration: dilated supports (144 097 / 142 343 active pixels, 184 405 / 184 175 pairs), NNQP zero pattern, support size per unit, size mask, footprint supports (37 103 / 36 881 pixels), overlapping pairs (37 / 36), merge groups, merged supports; units 190 → 190 → 189 → 189 → 189 | identical | identical |
+| `B` = `YCt` (float32) | iteration 0 identical, iteration 1 ≤ 8.0e-8 rel | ≤ 3.3e-6 rel |
+| NNQP solution `w` | ≤ 9.0e-8 rel | ≤ 2.4e-6 rel |
+| footprint values, `norm_fac` | ≤ 1.1e-6 rel | ≤ 2.2e-5 rel |
+| traces `C`, `YrA` (of each trace's largest value) | ≤ 1.7e-6 | ≤ 1.9e-5 |
+| background `b`, `f` | ≤ 1.1e-7 rel (initial `b` identical) | ≤ 3.3e-6 rel |
+| merge correlations | ≤ 1.6e-9 | ≤ 1.2e-6 |
+| `lam` (noise) | identical | ≤ 5.4e-7 rel |
+| time, 1 thread, M1 Max | 0.32 s (spatial 0.13 per iteration, background ≤ 0.01, traces 0.007, merge 0.01) | 2.6 s (spatial 1.1 per iteration, background ≤ 0.1, traces 0.1, merge 0.015); 125 MB wasm heap; pass 1 + 2 + seeds + init + CNMF in one run: 1:44 |
+| Python, 1 thread (numba NNQP, warm) | 1.09 s (of a spatial update: `cv2.dilate` per unit 0.33, NNQP 0.09) | |
+
+- Margins: the closest NNQP decision is a non-zero of 2.2e-5 (in `B` units) in iteration 0,
+  where Chrome's `B` differs by 2.4e-7 (native: 0); in iteration 1 the closest is 2.1e-3
+  (a non-zero) against a largest `B` difference of 6.2e-5 (Chrome) / 1.5e-6 (native). No
+  pair lies within the largest `B` difference of the boundary. Sizes: the closest unit is
+  10 pixels from `size_thres`. Merge: the closest overlapping pair is 5.5e-3 from 0.9
+  (Chrome diff 1.3e-7), then 1.4e-2.
+- `cnmf.rs`: `dilate` (`stream::Support`), `update_spatial` (centring and unit norms with
+  numpy's pairwise sums, `G` as syrk, `YCt` at the support pairs only: `V_b^T Ct` as
+  sequential float32 FMAs over the frames, then `W_b` over the components, which is
+  Accelerate's sgemm order, bit-exact natively; `nnqp::solve_nnqp`; zero elimination,
+  size mask, row maxima), `update_background` (unclipped on the factors; clipped as
+  Minian's, `BG_CHUNK` frames per tile with `f64_spot_check`), `compute_trace` (`A Y` in
+  float64 through `a_ty64`, `A A^T` and the norms in scipy's orders), `unit_merge`
+  (pairs with a positive float32 product, `TracesCorr`, `init::group_mean_a`, which now
+  drops zero sums as scipy's `csr_matmat` does), the finite checks.
+- The NNQP stops on a relative duality gap of 1e-10 and its `yn2` comes from a Jacobi
+  eigensolve instead of LAPACK's, so `w` differs from Python by its convergence error even
+  where `B` is identical (≤ 9e-8 here).
+- `background_clip=True` (Minian's clipped background) is checked natively only
+  (`ref_cnmf.py --clip`, `ref_cnmf_clip_0_3000`): same decisions, `b`, `f` ≤ 5.5e-8 rel,
+  initial `b` identical, spot check 1.0e-6; 3.9 s native vs Python 2.6 s (threaded).
+- Chrome is 8x slower than native in the spatial update, most likely because wasm simd128
+  has no fused multiply-add: the `mul_add`s of `YCt` (needed for Accelerate's rounding)
+  become `fmaf` calls (not profiled).
+- Browser: `CnmfEngine` in `wasm.rs` runs on the finished `SeedsEngine` (factors) and
+  `InitEngine` (merged units); the worker runs it after init when the inputs hold
+  `cnmf.json`. `ref_cnmf.py`'s `inputs/` holds the earlier stages' inputs, so one run does
+  all five.
+
+Run it:
+```bash
+OMP_NUM_THREADS=1 NUMBA_NUM_THREADS=1 python experiments/streaming/ref_cnmf.py --t0 0 --t1 3000   # after ref_init.py
+minime-core cnmf --inputs <ref>/inputs --out <ref>/rust_native
+python experiments/streaming/check_cnmf.py <ref> <ref>/rust_native
+STREAM_FILES=3 STREAM_RAW=<raw dir> STREAM_INPUTS=<ref>/inputs STREAM_OUT=<ref>/rust_browser npm --prefix web run e2e:stream
+python experiments/streaming/check_cnmf.py <ref> <ref>/rust_browser --own-factors
+python experiments/streaming/check_init.py <init ref> <ref>/rust_browser --own-factors
+python experiments/streaming/check_seeds.py <seeds ref> <ref>/rust_browser --own-factors
+python experiments/streaming/check_pass2.py <pass2 ref> <ref>/rust_browser
+python experiments/streaming/check_pass1.py <pass1 ref> <ref>/rust_browser
+```
+
 ## 8 h scale run (2026-11-03): motion ok, stream pass fails at the end
 First 8 h (576 files, 576 000 frames) of the real V4 24 h recording in headless Chrome, one
 worker, M1 Max; footprints (503), mean and noise from the 3 h MiniMe run `cafast_3h_fix`.
@@ -302,7 +368,7 @@ worker, M1 Max; footprints (503), mean and noise from the 3 h MiniMe run `cafast
 0. Rerun the 8 h and 24 h streaming pass with the traces in OPFS (8 h scale run above);
    machine-hours, so overnight.
 1. Discovery port, stage by stage on one 3000-frame window: ~~motion~~, ~~pass 1~~, ~~pass 2~~,
-   ~~seeds/PNR/GMM~~, ~~init~~ (done) → CNMF loop → stitch.
+   ~~seeds/PNR/GMM~~, ~~init~~, ~~CNMF loop~~ (done) → stitch.
 2. Speed: preprocessing in a worker pool (frames are independent), faster median
    (Perreault O(1) or a sorting-network median), then rayon + COOP/COEP.
 3. Save outputs to a folder (`showDirectoryPicker` on Chromium, OPFS elsewhere) and

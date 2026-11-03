@@ -13,6 +13,7 @@ type State =
       pass2: Record<string, unknown> | null;
       seeds: Record<string, unknown> | null;
       init: Record<string, unknown> | null;
+      cnmf: Record<string, unknown> | null;
       seconds: number;
     }
   | { phase: "error"; message: string };
@@ -52,6 +53,7 @@ export function StreamPage() {
           pass2: json("summary_pass2.json"),
           seeds: json("summary_seeds.json"),
           init: json("summary_init.json"),
+          cnmf: json("summary_cnmf.json"),
           seconds: m.seconds,
         });
         w.terminate();
@@ -122,6 +124,8 @@ export function StreamPage() {
               {st.seeds && `; ${String(st.seeds.seeds_merged)} merged seeds`}
               {st.init &&
                 `; init: ${String(st.init.units_initA)} footprints, ${String(st.init.units_init_merge)} units after the merge`}
+              {st.cnmf &&
+                `; CNMF loop: ${String(st.cnmf.units_in)} → ${String(st.cnmf.units_final)} units in ${String(st.cnmf.iterations)} iterations`}
               .
             </p>
           ) : st.summary.stage === "motion" ? (

@@ -3,6 +3,7 @@
 
 pub mod avi;
 pub mod butter;
+pub mod cnmf;
 pub mod compress;
 pub mod corr;
 pub mod factors;

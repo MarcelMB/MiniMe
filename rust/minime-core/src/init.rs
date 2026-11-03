@@ -307,7 +307,8 @@ fn groups(labels: &[usize]) -> Vec<Vec<usize>> {
     g
 }
 
-/// `M @ A` with `M` the group means: float64 sums over the members in order, then float32.
+/// `M @ A` with `M` the group means: float64 sums over the members in order (zero sums
+/// dropped), then float32.
 pub fn group_mean_a(a: &Csr, labels: &[usize]) -> Csr {
     let mut indptr = vec![0usize];
     let (mut indices, mut data) = (Vec::new(), Vec::new());
@@ -330,8 +331,11 @@ pub fn group_mean_a(a: &Csr, labels: &[usize]) -> Csr {
         cols.sort_unstable();
         for j in cols {
             used[j] = false;
-            indices.push(j);
-            data.push(acc[j] as f32);
+            // scipy's csr_matmat drops entries whose sum is zero
+            if acc[j] != 0.0 {
+                indices.push(j);
+                data.push(acc[j] as f32);
+            }
         }
         indptr.push(indices.len());
     }

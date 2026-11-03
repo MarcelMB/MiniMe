@@ -1,10 +1,11 @@
 //! wasm-bindgen API for the browser worker: an AVI index over a synchronous JS read
 //! callback (`FileReaderSync` on `File.slice`), the streaming pass, the motion stage and
 //! pass 1, each fed one raw frame at a time, and pass 2, fed one tile of the tile store at a
-//! time, and the seed and init stages on the factors those two leave. Results come back as
-//! the same `.npy` files the native harness writes.
+//! time, and the seed and init stages and the CNMF loop on the factors those two leave.
+//! Results come back as the same `.npy` files the native harness writes.
 
 use crate::avi::{self, AviIndex, ReadAt};
+use crate::cnmf::{self, CnmfParams, CnmfResult};
 use crate::compress::{self, Gaussian, Normals, Pass2Params, Recorded, TileFactors};
 use crate::factors::Factors;
 use crate::init::{self, InitParams, InitResult};
@@ -670,6 +671,62 @@ impl InitEngine {
                 (
                     if n == "summary.json" {
                         "summary_init.json".into()
+                    } else {
+                        n
+                    },
+                    b,
+                )
+            })
+            .collect();
+        Ok(npy_map(files))
+    }
+}
+
+/// The CNMF loop (`minime-core cnmf`) on init's merged units and the seed stage's factors.
+/// `run` with the finished `SeedsEngine` and `InitEngine`, then `finish`.
+#[wasm_bindgen]
+pub struct CnmfEngine {
+    p: CnmfParams,
+    res: Option<CnmfResult>,
+}
+
+#[wasm_bindgen]
+impl CnmfEngine {
+    /// `files`: `ref_cnmf.py`'s `cnmf.json`.
+    #[wasm_bindgen(constructor)]
+    pub fn new(files: &Map) -> Result<CnmfEngine, JsError> {
+        let p: CnmfParams =
+            serde_json::from_slice(&map_bytes(files, "cnmf.json").map_err(|e| JsError::new(&e))?)
+                .map_err(|e| JsError::new(&format!("cnmf.json: {e}")))?;
+        Ok(CnmfEngine { p, res: None })
+    }
+
+    /// Run the loop on `init`'s units (both engines run, not yet freed); returns the final
+    /// number of units.
+    pub fn run(&mut self, seeds: &SeedsEngine, init: &InitEngine) -> Result<usize, JsError> {
+        let r = init.res.as_ref().ok_or_else(|| JsError::new("run init first"))?;
+        let now = || js_sys::Date::now() / 1e3;
+        let res = cnmf::run(&seeds.f, &r.a, &r.c, &self.p, &now).map_err(|e| JsError::new(&e))?;
+        let n = res.last().merge.a.k;
+        self.res = Some(res);
+        Ok(n)
+    }
+
+    /// Output name -> `.npy` bytes (the names `minime-core cnmf` writes; the summary is
+    /// `summary_cnmf.json`).
+    pub fn finish(&self, timing_json: &str) -> Result<Map, JsError> {
+        let r = self
+            .res
+            .as_ref()
+            .ok_or_else(|| JsError::new("run the loop first"))?;
+        let mut summary: serde_json::Value = serde_json::from_str(timing_json).unwrap_or_default();
+        summary["stage"] = "cnmf".into();
+        let files = cnmf::outputs(r, summary)
+            .into_iter()
+            .map(|(n, b)| {
+                (
+                    if n == "summary.json" {
+                        "summary_cnmf.json".into()
                     } else {
                         n
                     },
