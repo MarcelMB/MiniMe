@@ -1,4 +1,5 @@
 import json
+import shutil
 
 import numpy as np
 import pytest
@@ -190,11 +191,11 @@ def test_factors_load_memory_maps_v_and_reads_format_1(tmp_path):
     assert all(np.array_equal(a.V, b.V) for a, b in zip(g.tiles, tf, strict=True))
     A = sps.random(5, H * W, density=0.05, format="csr", random_state=0, dtype=np.float32)
     assert np.array_equal(g.AtY(A), f.AtY(A))
-    # format 1: V inside each tile's .npz
-    d = tmp_path / "factors"
+    # format 1: V inside each tile's .npz; a copy, since Windows cannot delete the files g maps
+    d = tmp_path / "factors_v1"
+    shutil.copytree(tmp_path / "factors", d, ignore=shutil.ignore_patterns("*.V.npy"))
     for b, t in enumerate(tf):
         np.savez(d / f"tile_{b:03d}.npz", W=t.W, V=t.V, mean=t.mean, sigma=t.sigma, energy=t.energy)
-        (d / f"tile_{b:03d}.V.npy").unlink()
     meta = json.loads((d / "meta.json").read_text())
     (d / "meta.json").write_text(json.dumps({**meta, "format_version": 1}))
     old = fm.Factors.load(d, mmap=True)
