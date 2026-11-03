@@ -70,7 +70,7 @@ class Params:
     # units whose centroids are closer than this (px) merge whatever their traces do: two cells
     # cannot sit that close, only a split one can. 0 = off; auto-tune sets 0.4 x cell diameter
     merge_min_dist: float = 0.0
-    # CNMF
+    # CNMF (dl_wnd < 0: no growth limit, every unit may take every pixel; dense, K x P)
     dl_wnd: int = 10
     # sparseness penalty of the spatial update as a per-pixel signal-to-noise threshold: a
     # pixel keeps a unit only where its std along the unit's trace exceeds sparse_snr x sn.

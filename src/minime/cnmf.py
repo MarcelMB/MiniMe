@@ -45,8 +45,11 @@ from minime.spatial_kernel import solve_nnqp
 
 
 def dilate_footprints(A: sps.csr_matrix, H: int, W: int, dl_wnd: int) -> sps.csr_matrix:
-    """(K, P) bool CSR: each footprint's support dilated by a disk of radius ``dl_wnd``."""
+    """(K, P) bool CSR: each footprint's support dilated by a disk of radius ``dl_wnd``;
+    ``dl_wnd < 0`` allows every unit on every pixel (dense, K x P entries)."""
     A = sps.csr_matrix(A)
+    if dl_wnd < 0:
+        return sps.csr_matrix(np.ones((A.shape[0], H * W), dtype=bool))
     kernel = disk(dl_wnd)
     rows: list[np.ndarray] = []
     cols: list[np.ndarray] = []
