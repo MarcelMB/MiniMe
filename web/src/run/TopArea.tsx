@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Computing } from "../api";
 import { Segmented, Slider, Toggle } from "../controls";
 import type { Img } from "../draw";
+import { FEATURES } from "../features";
 import { fmtClock } from "../format";
 import { latest, STALE } from "../frames";
 import { ImageView } from "../ImageView";
@@ -151,6 +152,7 @@ export function TopArea() {
           <div className="glass" style={{ padding: "6px 14px" }}>
             <Toggle label="Contours" checked={contours} onChange={setContours} />
           </div>
+          {FEATURES.RunActions && <FEATURES.RunActions runId={summary.id} />}
         </div>
         <div className="glass player">
           <button

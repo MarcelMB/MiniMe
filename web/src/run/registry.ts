@@ -1,4 +1,5 @@
 import type { JSX } from "react";
+import { FEATURES } from "../features";
 import type { Page } from "../router";
 import { Compression } from "./pages/Compression";
 import { Frames } from "./pages/Frames";
@@ -29,5 +30,5 @@ export const PAGE_VIEWS: Partial<Record<Page, () => JSX.Element>> = {
   seeds: Seeds,
   units: Units,
   traces: Traces,
-  tune: Tune,
+  ...(FEATURES.tune ? { tune: Tune } : {}),
 };

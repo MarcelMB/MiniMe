@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { getJSON, postJSON } from "../api";
 import { ErrorNote, Loading, Toggle } from "../controls";
+import { FEATURES } from "../features";
 import { fmtBytes, fmtDuration, fmtInt } from "../format";
 import { FolderPicker } from "../home/FolderPicker";
 import { useFolders } from "../home/Home";
@@ -70,8 +71,8 @@ export function NewRun() {
       params: changedOnly(merged, defaults.data!.params),
       keep_store: keep,
       overwrite,
-      tune,
-      tune_args: tune && diameter ? { diameter } : {},
+      tune: FEATURES.tune && tune,
+      tune_args: FEATURES.tune && tune && diameter ? { diameter } : {},
       fps: fps.fps,
     }).then(
       (job) => go({ name: "job", id: job.id }),
@@ -190,13 +191,15 @@ export function NewRun() {
         </section>
         <section className="card span4" aria-label="4. Parameters">
           <span className="label">4 · Parameters</span>
-          <Toggle
-            label={`Auto-tune the seed, init and CNMF parameters after the run (a few more minutes; the proposal opens on the run's Tune page${
-              diameter ? `, cell diameter ${diameter} px from step 2` : ""
-            }). Switch off only to set every parameter by hand.`}
-            checked={tune}
-            onChange={setTune}
-          />
+          {FEATURES.tune && (
+            <Toggle
+              label={`Auto-tune the seed, init and CNMF parameters after the run (a few more minutes; the proposal opens on the run's Tune page${
+                diameter ? `, cell diameter ${diameter} px from step 2` : ""
+              }). Switch off only to set every parameter by hand.`}
+              checked={tune}
+              onChange={setTune}
+            />
+          )}
           <Loading res={defaults} what="parameters">
             {(d) => (
               <ParamsForm

@@ -1,3 +1,5 @@
+import { type EventHandlers, openEvents, transportFetch } from "./transport";
+
 export type DType = "uint8" | "int32" | "float32";
 export type NDArray = { shape: number[]; dtype: DType; data: Uint8Array | Int32Array | Float32Array };
 
@@ -56,7 +58,7 @@ export function decodeArray(buf: ArrayBuffer, shape: string, dtype: string): NDA
 
 async function request(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = { "X-Token": token, ...(init.headers as Record<string, string> | undefined) };
-  const r = await fetch(`/api${path}`, { ...init, headers });
+  const r = await transportFetch(`/api${path}`, { ...init, headers });
   if (r.status === 202) {
     const b = await r.json();
     throw new Computing(Number(b.elapsed_s ?? 0));
@@ -103,4 +105,9 @@ export async function postArray(path: string, body: unknown): Promise<NDArray> {
     body: JSON.stringify(body),
   });
   return decodeArray(await r.arrayBuffer(), r.headers.get("X-Shape") ?? "", r.headers.get("X-Dtype") ?? "");
+}
+
+/** The server-sent events of `path` (e.g. `/jobs/<id>/events`); returns close. */
+export function subscribe(path: string, on: EventHandlers, onError: () => void): () => void {
+  return openEvents(`/api${path}?${tokenQuery()}`, on, onError);
 }

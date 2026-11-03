@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getJSON, postJSON, tokenQuery } from "../api";
+import { getJSON, postJSON, subscribe } from "../api";
 import { ErrorNote } from "../controls";
 import { fmtDuration } from "../format";
 import { go } from "../router";
@@ -27,27 +27,30 @@ export function JobPage({ id }: { id: string }) {
       },
       (e: Error) => setErr(e.message),
     );
-    const es = new EventSource(`/api/jobs/${id}/events?${tokenQuery()}`);
-    es.addEventListener("stage", (e) => setEvents((x) => [...x, JSON.parse((e as MessageEvent).data)]));
-    es.addEventListener("log", (e) => setLog((x) => [...x.slice(-299), JSON.parse((e as MessageEvent).data)]));
-    es.addEventListener("status", (e) => {
-      const j = JSON.parse((e as MessageEvent).data) as Job;
-      gotStatus.current = true;
-      setJob(j);
-      if (isFinal(j.status)) es.close();
-    });
-    es.onerror = () => {
-      es.close();
-      getJSON<Job>(`/jobs/${id}`).then(
-        (j) => {
+    let close = () => {};
+    close = subscribe(
+      `/jobs/${id}/events`,
+      {
+        stage: (d) => setEvents((x) => [...x, d as ProgressEvent]),
+        log: (d) => setLog((x) => [...x.slice(-299), d as string]),
+        status: (d) => {
+          const j = d as Job;
           gotStatus.current = true;
           setJob(j);
-          if (!isFinal(j.status)) setLost(true);
+          if (isFinal(j.status)) close();
         },
-        () => setLost(true),
-      );
-    };
-    return () => es.close();
+      },
+      () =>
+        getJSON<Job>(`/jobs/${id}`).then(
+          (j) => {
+            gotStatus.current = true;
+            setJob(j);
+            if (!isFinal(j.status)) setLost(true);
+          },
+          () => setLost(true),
+        ),
+    );
+    return () => close();
   }, [id]);
 
   useEffect(() => {
