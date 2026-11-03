@@ -91,6 +91,35 @@ def test_unclipped_background_matches_dense_reference():
     assert np.isfinite(res.f).all() and res.A.shape[0] >= 0.7 * A.shape[0]
 
 
+def test_mean_background_is_the_mean_image():
+    f, fc, A, C = _setup()
+    Y = _dense(f)
+    b_ref = np.clip(Y.mean(1), 0, None)
+    f_ref = (Y - A.toarray().astype(np.float64).T @ C).T @ b_ref / (b_ref @ b_ref)
+    b, fb = cnmf.update_background(f, A, C, clip=False, mode="mean")
+    assert np.allclose(b, b_ref, atol=1e-5 * b_ref.max()) and np.allclose(fb, f_ref, rtol=1e-5)
+    # b is the mean image whatever the units do; only f sees A and C
+    b2, fb2 = cnmf.update_background(f, A, 10 * C, clip=False, mode="mean")
+    assert np.array_equal(b2, b) and not np.allclose(fb2, fb)
+    _, fb3 = cnmf.update_background(f, A, C, b=b, clip=False, mode="mean")
+    assert np.allclose(fb3, fb, rtol=1e-6)
+    # the residual fit (default) subtracts the units, so b is smaller under them
+    b_res, _ = cnmf.update_background(f, A, C, clip=False)
+    under = np.flatnonzero(np.asarray(A.sum(axis=0)).ravel() > 0)
+    assert (b_res[under] <= b[under] + 1e-6).all() and b_res[under].sum() < 0.9 * b[under].sum()
+    # clipped (Minian) pass 2 takes the same b
+    b_cl, _ = cnmf.update_background(f, A, C, clip=True, mode="mean", chunk=128)
+    assert np.array_equal(b_cl, b)
+    with pytest.raises(ValueError, match="mode"):
+        cnmf.update_background(f, A, C, mode="median")
+    with pytest.raises(ValueError, match="background"):
+        Params(background="median")
+    p = Params(dl_wnd=5, size_thres=(9, None), n_iter=1, background="mean")
+    res = cnmf.run_cnmf(f, A, C, p, fc.traces_corr)
+    assert np.array_equal(res.b, b) and np.isfinite(res.f).all()
+    assert res.A.shape[0] >= 0.7 * A.shape[0]
+
+
 def test_background_uses_only_units_touching_each_tile():
     f, fc, A, C = _setup()
     Acsc = sps.csc_matrix(A)

@@ -45,7 +45,14 @@ GROUPS: dict[str, list[str]] = {
         "loop_merge_corr",
         "merge_min_dist",
     ],
-    "CNMF": ["dl_wnd", "sparse_snr", "size_thres", "n_iter", "background_clip"],
+    "CNMF": [
+        "dl_wnd",
+        "sparse_snr",
+        "size_thres",
+        "n_iter",
+        "background_clip",
+        "background",
+    ],
     "Execution": ["workers", "sub_batch"],
 }
 
@@ -85,6 +92,7 @@ HELP: dict[str, str] = {
     "size_thres": "Smallest and largest footprint size in px (empty = no limit).",
     "n_iter": "CNMF iterations (spatial + temporal update).",
     "background_clip": "Background of the clipped residual as Minian (about 2x slower).",
+    "background": "Background footprint: fitted to the residual, or the session mean image.",
     "workers": "Worker processes; about the number of CPU cores minus one or two.",
     "sub_batch": "Frames per pass-1 sub-batch.",
 }

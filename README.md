@@ -263,7 +263,10 @@ effect; its `xfail` marks are known weaknesses. The effect models follow
 - Background: rank-1 fit of the unclipped residual `Y - A C` on the factors
   (`b = clip(mean_t (Y - A C), 0)`), not Minian's mean of `clip(Y - A C, 0)`. `b` differs by
   up to 6 % of its maximum; scores and traces do not change (worst unit trace corr 0.998) and
-  `cnmf` is ~2x faster. `background_clip: true` restores Minian's definition.
+  `cnmf` is ~2x faster. `background_clip: true` restores Minian's definition;
+  `background: mean` takes the session mean image as `b` instead (the browser pipeline's
+  choice; in the batch loop it lifts the trace correlation on the 30-min GRIN synth only from
+  0.855 to 0.865, bench/README.md "Mean-image background"). Default unchanged.
 - Footprints carry a long tail of tiny weights: median 1029 px > 0 vs Minian 509 px, but
   329 px > 1 % of the maximum in both, and 5.7 % (ours) vs 5.5 % (Minian) of the footprint
   mass lies outside the true 15 x 15 cell patch.

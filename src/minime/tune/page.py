@@ -56,6 +56,7 @@ FORM = [
                 "background_clip",
                 "background of clip(Y - AC, 0) as Minian (true / false, ~2x slower)",
             ),
+            ("background", "background footprint: residual (fitted) or mean (session mean image)"),
         ],
     ),
 ]

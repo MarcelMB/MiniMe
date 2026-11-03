@@ -14,7 +14,12 @@ Every stage reads the movie only through ``Factors`` (``YCt``, ``AtY``,
   movie. ``background_clip = True`` gives Minian's ``b = mean_t clip(Y - A C, 0)``,
   ``f_t = clip(Y_t - A C_t, 0) . b / (b . b)``, streamed over reconstructed tile chunks
   (``bench_passes/candidates/bg_streamed.py``), one tile per thread.
-* ``compute_trace``: Minian ``compute_trace`` (``trace_shared.py`` algebra).
+  ``Params.background = "mean"`` takes ``b = clip(mean_t Y, 0)``, the session mean image,
+  instead of the residual's mean (``mean_image``) and fits only ``f`` as above: the residual
+  fit carves a hole into ``b`` under every unit (``mean_t (A C)`` is subtracted), so the
+  background's own fluctuations under a cell end up in its trace.
+* ``compute_trace``: Minian ``compute_trace`` (``trace_shared.py`` algebra): one projection
+  step of the residual onto each footprint from the previous ``C``.
 * ``run_cnmf``: background, then ``n_iter`` x (spatial, background, traces,
   ``C := YrA``, unit merge). The background footprint ``b`` is computed in full on the
   first and on the last iteration (Minian recomputes it every iteration; in between the
@@ -35,7 +40,7 @@ import scipy.sparse as sps
 
 from minime import init
 from minime.factors import Factors
-from minime.params import Params
+from minime.params import BACKGROUNDS, Params
 from minime.seeds import disk
 from minime.spatial_kernel import solve_nnqp
 
@@ -270,6 +275,15 @@ def _background_clipped(
     return b_out, fb.astype(np.float32)
 
 
+def mean_image(f: Factors) -> np.ndarray:
+    """``mean_t Y`` (P,) float64 from the factors: ``W mean_t V + mean`` per tile."""
+    ymean = np.empty(f.P, dtype=np.float64)
+    for t, tf in enumerate(f.tiles):
+        vm = tf.V.astype(np.float64).mean(axis=0)
+        ymean[f.tile_rows(t)] = tf.W.astype(np.float64) @ vm + tf.mean
+    return ymean
+
+
 def _background_unclipped(
     f: Factors, A: sps.csr_matrix, C: np.ndarray, b: np.ndarray | None
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -281,11 +295,7 @@ def _background_unclipped(
     A64 = sps.csr_matrix(A, dtype=np.float64)
     C64 = np.asarray(C, dtype=np.float64)
     if b is None:
-        ymean = np.empty(f.P, dtype=np.float64)
-        for t, tf in enumerate(f.tiles):
-            vm = tf.V.astype(np.float64).mean(axis=0)
-            ymean[f.tile_rows(t)] = tf.W.astype(np.float64) @ vm + tf.mean
-        b64 = np.clip(ymean - A64.T @ C64.mean(axis=1), 0, None)
+        b64 = np.clip(mean_image(f) - A64.T @ C64.mean(axis=1), 0, None)
     else:
         b64 = np.asarray(b, dtype=np.float64)
     num = -(C64.T @ (A64 @ b64))
@@ -306,6 +316,7 @@ def update_background(
     chunk: int = 1000,
     clip: bool = True,
     threads: int | None = None,
+    mode: str = "residual",
 ) -> tuple[np.ndarray, np.ndarray]:
     """``(b (P,) float32, f (T,) float32)``, the rank-1 background of ``Y - A^T C``.
 
@@ -317,7 +328,14 @@ def update_background(
 
     ``clip=False``: the same on the unclipped residual, computed on the factors without
     reconstructing the movie (``_background_unclipped``); ``b`` is clipped at 0 afterwards.
+
+    ``mode="mean"`` (``Params.background``): pass 1 is ``b = clip(mean_t Y, 0)``, the
+    session mean image, whatever ``A`` and ``C`` are; pass 2 as above.
     """
+    if mode not in BACKGROUNDS:
+        raise ValueError(f"mode must be one of {BACKGROUNDS}, not {mode!r}")
+    if b is None and mode == "mean":
+        b = np.clip(mean_image(f), 0, None).astype(np.float32)
     if not clip:
         return _background_unclipped(f, A, C, b)
     if threads is None:
@@ -383,7 +401,8 @@ def run_cnmf(
     """
     sn = fac.sigma_flat()
     counts: dict[str, int] = {}
-    b, fb = update_background(fac, A, C, clip=params.background_clip)
+    bg = dict(clip=params.background_clip, mode=params.background)
+    b, fb = update_background(fac, A, C, **bg)
     _check_finite("initial background", b=b, f=fb)
     C_sp = np.asarray(C, dtype=np.float32)
     YrA = C_sp
@@ -397,7 +416,7 @@ def run_cnmf(
         if record is not None:
             record(f"spatial_{it}", A)
         last = it == params.n_iter - 1
-        b, fb = update_background(fac, A, C_sp, b=None if last else b, clip=params.background_clip)
+        b, fb = update_background(fac, A, C_sp, b=None if last else b, **bg)
         _check_finite(f"background (iteration {it})", b=b, f=fb)
         YrA = compute_trace(fac, A, b, C_sp, fb)
         _check_finite(f"traces (iteration {it})", YrA=YrA)

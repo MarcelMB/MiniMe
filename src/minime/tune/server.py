@@ -65,6 +65,8 @@ def _parse(key: str, s: str) -> Any:
         return int(s)
     if t == "float":
         return float(s)
+    if t == "str":
+        return s  # Params validates the value (background)
     if key == "pnr_thres":
         return "auto" if s == "auto" else float(s)
     if t.startswith("tuple"):

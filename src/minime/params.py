@@ -23,6 +23,9 @@ RUN_METADATA_KEYS = frozenset(
 )
 
 
+BACKGROUNDS = ("residual", "mean")
+
+
 @dataclass
 class Params:
     # preprocessing + motion (median_ksize <= 1 / tophat_wnd <= 0 skip that step)
@@ -79,6 +82,10 @@ class Params:
     # reconstructing the movie (False), or of clip(Y - A C, 0) as Minian (True, ~2x slower
     # cnmf); same scores on synth, WL25, WL27 (bench/README.md)
     background_clip: bool = False
+    # footprint b of the rank-1 background: "residual" fits it to Y - A C (above); "mean" takes
+    # the session mean image, so b under a cell keeps the neuropil / drift that the residual
+    # fit assigns to the unit (bench/README.md "Mean-image background"). f is fitted either way
+    background: str = "residual"
     # execution
     workers: int = 1
     sub_batch: int = 100
@@ -87,6 +94,8 @@ class Params:
         # motion._prep only knows 2x downsampling, but estimate scales shifts by motion_down
         if self.motion_down not in (1, 2):
             raise ValueError(f"motion_down must be 1 or 2, not {self.motion_down!r}")
+        if self.background not in BACKGROUNDS:
+            raise ValueError(f"background must be one of {BACKGROUNDS}, not {self.background!r}")
 
     def asdict(self) -> dict[str, Any]:
         return asdict(self)
