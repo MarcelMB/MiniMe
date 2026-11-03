@@ -33,8 +33,8 @@ import cv2
 import numpy as np
 import scipy.sparse as sps
 
-from minime import init
-from minime.factors import Factors
+from minime import init, traces
+from minime.factors import TIME_CHUNK, Factors
 from minime.params import Params
 from minime.seeds import disk
 from minime.spatial_kernel import solve_nnqp
@@ -88,6 +88,21 @@ def column_norms(Cc: np.ndarray) -> np.ndarray:
     return norms
 
 
+def centred_gram(C: np.ndarray, chunk: int = TIME_CHUNK) -> tuple[np.ndarray, ...]:
+    """``(mean, scale, G)`` of the rows of ``C`` (K, T): row means, ``column_norms`` of the
+    centred rows and the Gram ``Cc Cc^T`` of ``Cc = (C - mean) / scale``, all float64, formed
+    ``chunk`` frames at a time (a float64 ``Cc`` of all frames is 22 GB for 1569 units on a
+    24 h session)."""
+    mean = C.mean(axis=1, dtype=np.float64)
+    S = np.zeros((C.shape[0], C.shape[0]), dtype=np.float64)
+    for t0 in range(0, C.shape[1], chunk):
+        X = C[:, t0 : t0 + chunk].astype(np.float64) - mean[:, None]
+        S += X @ X.T
+    norms = np.sqrt(np.maximum(np.diag(S), 0.0))
+    scale = np.where(norms == 0, 1.0, norms)
+    return mean, scale, S / np.outer(scale, scale)
+
+
 def update_spatial(
     f: Factors,
     A: sps.csr_matrix,
@@ -117,12 +132,8 @@ def update_spatial(
     np.cumsum(counts[active], out=indptr[1:])
     indices = subT.indices.astype(np.int64)  # inactive pixels hold no entries
 
-    Cc = np.asarray(C, dtype=np.float64)
-    Cc = Cc - Cc.mean(axis=1, keepdims=True)
-    scale = column_norms(Cc)
-    Cc /= scale[:, None]
-    G = Cc @ Cc.T
-    B = f.YCt(Cc)[active].astype(np.float64)
+    mean, scale, G = centred_gram(np.asarray(C))
+    B = f.YCt(C, center=mean, scale=scale)[active].astype(np.float64)
     lam = np.sqrt(f.T) * sparse_snr * np.asarray(sn, dtype=np.float64)[active]
     values = solve_nnqp(G, B, lam, indptr, indices) / scale[indices]
 
@@ -268,7 +279,7 @@ def _background_clipped(
 
 
 def _background_unclipped(
-    f: Factors, A: sps.csr_matrix, C: np.ndarray, b: np.ndarray | None
+    f: Factors, A: sps.csr_matrix, C: np.ndarray, b: np.ndarray | None, chunk: int = TIME_CHUNK
 ) -> tuple[np.ndarray, np.ndarray]:
     """Rank-1 background of the unclipped residual ``Y - A^T C``, on the factors only.
 
@@ -276,20 +287,27 @@ def _background_unclipped(
     with ``Y_t . b = sum_tiles V_t W^T b_tile + mean . b_tile``. No frame is reconstructed.
     """
     A64 = sps.csr_matrix(A, dtype=np.float64)
-    C64 = np.asarray(C, dtype=np.float64)
+    C = np.asarray(C)
     if b is None:
         ymean = np.empty(f.P, dtype=np.float64)
         for t, tf in enumerate(f.tiles):
-            vm = tf.V.astype(np.float64).mean(axis=0)
+            vm = tf.V.mean(axis=0, dtype=np.float64)
             ymean[f.tile_rows(t)] = tf.W.astype(np.float64) @ vm + tf.mean
-        b64 = np.clip(ymean - A64.T @ C64.mean(axis=1), 0, None)
+        b64 = np.clip(ymean - A64.T @ C.mean(axis=1, dtype=np.float64), 0, None)
     else:
         b64 = np.asarray(b, dtype=np.float64)
-    num = -(C64.T @ (A64 @ b64))
-    for t, tf in enumerate(f.tiles):
-        bt = b64[f.tile_rows(t)]
-        num += tf.V.astype(np.float64) @ (tf.W.astype(np.float64).T @ bt)
-        num += float(tf.mean.astype(np.float64) @ bt)
+    Ab = A64 @ b64
+    Wb = [tf.W.astype(np.float64).T @ b64[f.tile_rows(t)] for t, tf in enumerate(f.tiles)]
+    mb = sum(
+        float(tf.mean.astype(np.float64) @ b64[f.tile_rows(t)]) for t, tf in enumerate(f.tiles)
+    )
+    num = np.empty(f.T, dtype=np.float64)
+    for t0 in range(0, f.T, chunk):  # (K, T) and (T, r) float64 copies a block at a time
+        t1 = min(f.T, t0 + chunk)
+        n = mb - C[:, t0:t1].astype(np.float64).T @ Ab
+        for tf, w in zip(f.tiles, Wb, strict=True):
+            n += tf.V[t0:t1].astype(np.float64) @ w
+        num[t0:t1] = n
     bb = float(b64 @ b64)
     fb = num / bb if bb > 0 else np.zeros(f.T)
     return b64.astype(np.float32), fb.astype(np.float32)
@@ -328,17 +346,29 @@ def update_background(
 
 
 def compute_trace(
-    f: Factors, A: sps.csr_matrix, b: np.ndarray, C: np.ndarray, fb: np.ndarray
+    f: Factors,
+    A: sps.csr_matrix,
+    b: np.ndarray,
+    C: np.ndarray,
+    fb: np.ndarray,
+    chunk: int = TIME_CHUNK,
 ) -> np.ndarray:
     """``YrA (K, T) float32 = clip(C + A_norm ((Y - b f^T)^T A - C^T A A^T)^T, 0)``."""
     A = sps.csr_matrix(A, dtype=np.float64)
-    C = np.asarray(C, dtype=np.float64)
+    C = np.asarray(C)
     Ab = A @ np.asarray(b, dtype=np.float64)  # (K,)
-    YtA = (f.AtY(A) - np.outer(Ab, np.asarray(fb, dtype=np.float64))).T  # (T, K)
+    fb = np.asarray(fb, dtype=np.float64)
     AA = (A @ A.T).toarray()
     A_norm = 1.0 / np.asarray(A.multiply(A).sum(axis=1)).ravel()
-    YrA = C + ((YtA - C.T @ AA) * A_norm).T
-    return np.clip(YrA, 0, None).astype(np.float32)
+    YrA = traces.empty(C.shape)
+    for t0, t1, AY in f.AtY_blocks(A, chunk):  # (K, T) float64 a block of frames at a time
+        Cb = C[:, t0:t1].astype(np.float64)
+        AY -= np.outer(Ab, fb[t0:t1])
+        AY -= AA.T @ Cb
+        AY *= A_norm[:, None]
+        AY += Cb
+        YrA[:, t0:t1] = np.clip(AY, 0, None)
+    return YrA
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +390,7 @@ class CnmfResult:
 
 def _check_finite(stage: str, **arrays: np.ndarray) -> None:
     """Raise ``RuntimeError`` naming ``stage`` if any array holds NaN or inf."""
-    bad = [k for k, v in arrays.items() if not np.isfinite(np.asarray(v)).all()]
+    bad = [k for k, v in arrays.items() if not traces.all_finite(v)]
     if bad:
         raise RuntimeError(f"CNMF {stage}: non-finite values in {', '.join(bad)}")
 
@@ -382,13 +412,15 @@ def run_cnmf(
     counts: dict[str, int] = {}
     b, fb = update_background(fac, A, C, clip=params.background_clip)
     _check_finite("initial background", b=b, f=fb)
-    C_sp = np.asarray(C, dtype=np.float32)
-    YrA = C_sp
+    # YrA: the traces the next spatial update fits (C := YrA after each merge)
+    C_sp = YrA = np.asarray(C, dtype=np.float32)
+    del C
     for it in range(params.n_iter):
         A, mask, nf = update_spatial(
-            fac, A, C, sn, params.dl_wnd, params.sparse_snr, params.size_thres
+            fac, A, YrA, sn, params.dl_wnd, params.sparse_snr, params.size_thres
         )
-        C_sp = (np.asarray(C)[mask] * nf[:, None]).astype(np.float32)
+        C_sp = traces.scaled_rows(YrA, np.flatnonzero(mask), nf)
+        del YrA  # drop the loop's hold on the previous traces before new ones are made
         _check_finite(f"spatial update (iteration {it})", A_data=A.data, C=C_sp)
         counts[f"units_after_spatial_{it}"] = A.shape[0]
         if record is not None:
@@ -407,7 +439,6 @@ def run_cnmf(
             min_dist=params.merge_min_dist,
             shape=(fac.H, fac.W_),
         )
-        C = YrA
         counts[f"units_after_merge_{it}"] = A.shape[0]
         if record is not None:
             record(f"merge_{it}", A)

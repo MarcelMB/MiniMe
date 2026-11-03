@@ -20,7 +20,7 @@ import pandas as pd
 import scipy.sparse as sps
 
 import minime
-from minime import corr, init, io, motion, pass1, pass2, places, seeds
+from minime import corr, init, io, motion, pass1, pass2, places, seeds, traces
 from minime.cnmf import CnmfResult, run_cnmf
 from minime.factors import Factors
 from minime.params import Params
@@ -402,11 +402,14 @@ def run(
             )
         with timer("sidecar_save"):
             _save_sidecar(out, p1, template_img, params, raw_hash, workers)
+        # the workers save each tile and every later stage reads V from its file, not from
+        # RAM: V is T x rank per tile (8 GB on an 8 h session, 23 GB on 24 h), more than the
+        # RAM left next to pass 2 or CNMF on a 32 GB Mac
         with timer("pass2"):
-            tiles = pass2.run_pass2(store, grid, params, workers)
+            tiles = pass2.run_pass2(store, grid, params, workers, out / "factors")
         fac = pass2.build_factors(info, grid, p1, tiles, params)
         with timer("factors_save"):
-            fac.save(out / "factors")
+            fac.save_meta(out / "factors")
         store_peak = store.nbytes()
     finally:  # a failed run must not leave a raw-sized tile store behind
         if not keep_store:
@@ -417,10 +420,11 @@ def run(
     kept: dict[str, np.ndarray] = {}
     s = _seeds(fac, fc, params, timer, keep=kept)
     _write_seeds(out / "seeds", kept)
-    A, C = init_units(fac, fc, s, params, timer)
-    _write_init(out / "init", A)
-    with timer("cnmf"):
-        res = run_cnmf(fac, A, C, params, fc.traces_corr)
+    with traces.spill_to(out):  # large (units, frames) arrays as temporary files in out
+        A, C = init_units(fac, fc, s, params, timer)
+        _write_init(out / "init", A)
+        with timer("cnmf"):
+            res = run_cnmf(fac, A, C, params, fc.traces_corr)
     timer.counts.update(res.counts)
     timer.counts["units_final"] = res.A.shape[0]
 
