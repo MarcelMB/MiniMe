@@ -259,6 +259,7 @@ def test_truth_matches_generator_with_every_effect():
         dict(hemo=20.0),
         dict(edge_band=3),
         dict(out_of_focus=3),
+        dict(halo=0.15),
         dict(spike_rate=0.003, rate_cv=2.0),
         dict(amp_scale=0.5, cell_f0=10.0, decay_tau=24.0),
         dict(aperture=1.0, shot_noise=0.4, background=1.5),
@@ -277,6 +278,18 @@ def test_size_cv_keeps_positions_but_grows_patch():
     on = synth.synth_setup(64, 64, 30, seed=0, options=synth.SynthOptions(size_cv=0.3))
     assert on.sigma.size == base.ys.size and on.sigma.std() > 0
     assert on.patch.shape[0] >= 15 and on.patch.shape[0] % 2 == 1
+
+
+def test_halo_widens_footprints_and_renders_past_the_canvas():
+    base = synth.synth_setup(64, 64, 20, seed=0)
+    on = synth.synth_setup(64, 64, 20, seed=0, options=synth.SynthOptions(halo=0.15))
+    assert on.patch.shape[0] > base.patch.shape[0] and (on.ys < 0).any()
+    wide = (synth.footprints(on, 64, 64) > 0.1).sum(axis=1)
+    narrow = (synth.footprints(base, 64, 64) > 0.1).sum(axis=1)
+    inside = synth.detectable(base, 64, 64)
+    assert (np.asarray(wide)[inside] > np.asarray(narrow)[inside]).all()
+    chunks = list(synth.synth_chunks(64, 64, 20, seed=0, options=on.options))
+    assert sum(c.shape[0] for _, c in chunks) == 20
 
 
 def test_overlap_more_than_cells():
