@@ -32,7 +32,7 @@ browser stage is checked against it. Background and results: `docs/browser-optio
 | median 7, warp (shift), tophat 15 (uint8) | `preprocess`, `motion.apply_shifts` | **done** | bit-exact |
 | per-frame LS traces on `[A; b]`, sums Σy·cᵀ, Σc·cᵀ, Σl·lᵀ, Σy, Σdy² | `stream.TraceModel`, `stream_pass` | **done** | rel 1e-9 |
 | footprint update from sums (NNQP), size filter, merge | `spatial_from_stats`, `merge_from_stats` | **done** | rel 1e-6, same kept units |
-| motion estimation + template | `motion` | next | shifts ≤ 1e-3 px |
+| motion: bandpass registration image, template, FFT estimate, quality | `motion`, `pass1.build_template` | **done** (native) | reg + prep bit-exact, shifts ≤ 5e-6 px |
 | pass 1 summaries (block maxima), tile store | `pass1` | next | bit-exact |
 | pass 2 rSVD + rank cut | `compress` | next | same rank; subspace / reconstruction (rSVD RNG injected for the check) |
 | seeds, PNR, GMM, initA/initC, CNMF loop | `seeds`, `corr`, `init`, `cnmf` | next | per stage on one window |
@@ -71,10 +71,39 @@ STREAM_RAW=<raw dir> STREAM_INPUTS=<ref>/inputs STREAM_OUT=<ref>/rust_browser np
 python experiments/streaming/check_rust.py <ref> <ref>/rust_browser
 ```
 
+## Motion stage result (2026-11-02): native matches Python
+In the `fresh` runs every window reuses the session's motion sidecar, so the browser needs
+the session's own motion pass: template from the first `template_frames` frames of
+segment 0, then a shift per frame. Checked on frames 0–3000 of the 30-min GRIN synth
+(`ref_motion.py`, which also reproduces the baseline sidecar's shifts exactly):
+
+| | Rust native vs Python |
+|---|---|
+| registration image (bandpass), prepared image (down 2, mean, Hann) | identical (float32) |
+| template image | ≤ 2.7e-7 of max |
+| shifts (up to 8.3 px) | ≤ 4.6e-6 px, same integer peak in all 3000 frames |
+| quality | ≤ 1.3e-5 (numpy's float32 dot products; Rust is 50x closer to float64) |
+| time, 1 thread, M1 Max | 52 s / 3000 frames: registration 12.9 ms/frame (median 7.5), estimate 0.9, quality 1.3; template 5.6 s |
+
+- OpenCV 5 on arm64 routes `resize` INTER_LINEAR through Arm's KleidiCV HAL: its NEON
+  body and scalar tail fuse the multiply-adds in different orders; `filters.rs` mirrors
+  both. The uint8 Gaussian is OpenCV's fixed-point path, the float32 Gaussian its
+  fused SIMD order. As with the warp, "bit-exact" means against Python on Apple silicon.
+- The FFT is `rustfft`/`realfft` in float32; numpy's float32 pocketfft is not reproduced.
+- The template is built from two reads of its frames, so only one frame is held at a time.
+- Not yet run in the browser (the wasm library builds; no worker API for motion yet).
+
+Run it:
+```bash
+python experiments/streaming/ref_motion.py --t0 0 --t1 3000
+minime-core motion --raw <raw dir> --params <ref>/inputs/params.json --out <ref>/rust_native --check-frames <ref>/ref/frames_t.npy
+python experiments/streaming/check_motion.py <ref> <ref>/rust_native
+```
+
 ## Next
-1. Discovery port, stage by stage on one 3000-frame window: motion estimate + template →
-   pass 1 (block maxima, tile store in OPFS) → pass 2 rSVD → seeds/PNR/GMM → init → CNMF
-   loop → stitch.
+1. Discovery port, stage by stage on one 3000-frame window: ~~motion~~ (native done;
+   browser check pending) → pass 1 (block maxima, tile store in OPFS) → pass 2 rSVD →
+   seeds/PNR/GMM → init → CNMF loop → stitch.
 2. Speed: preprocessing in a worker pool (frames are independent), faster median
    (Perreault O(1) or a sorting-network median), then rayon + COOP/COEP.
 3. Save outputs to a folder (`showDirectoryPicker` on Chromium, OPFS elsewhere) and

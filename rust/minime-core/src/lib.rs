@@ -3,7 +3,9 @@
 
 pub mod avi;
 pub mod butter;
+pub mod filters;
 pub mod linalg;
+pub mod motion;
 pub mod nnqp;
 pub mod npy;
 pub mod preprocess;

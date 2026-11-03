@@ -68,17 +68,25 @@ pub fn median_blur(src: &[u8], h: usize, w: usize, k: usize) -> Vec<u8> {
 /// float64 and the sum is exact there for these magnitudes, so one rounding to float32
 /// matches a fused multiply-add without wasm's slow software `fmaf`.
 #[inline]
-fn fma(a: f32, b: f32, c: f32) -> f32 {
+pub(crate) fn fma(a: f32, b: f32, c: f32) -> f32 {
     (f64::from(a) * f64::from(b) + f64::from(c)) as f32
 }
 
-/// `cv2.warpAffine(f, [[1, 0, -dx], [0, 1, -dy]], INTER_LINEAR)`: `out(y, x) = f(y + dy,
-/// x + dx)` by bilinear interpolation (fused lerps, round half to even), zeros outside.
-pub fn shift(src: &[u8], h: usize, w: usize, dy: f32, dx: f32) -> Vec<u8> {
-    let mut out = vec![0u8; h * w];
+/// `cv2.warpAffine(f, [[1, 0, -dx], [0, 1, -dy]], INTER_LINEAR)` on any pixel type:
+/// `out(y, x) = f(y + dy, x + dx)` by fused bilinear lerps, zeros outside; `store`
+/// converts the float32 result to the output type.
+fn shift_with<T: Copy, O>(
+    src: &[T],
+    h: usize,
+    w: usize,
+    dy: f32,
+    dx: f32,
+    load: impl Fn(T) -> f32,
+    store: impl Fn(f32) -> O,
+) -> Vec<O> {
     let at = |yy: i64, xx: i64| -> f32 {
         if yy >= 0 && yy < h as i64 && xx >= 0 && xx < w as i64 {
-            f32::from(src[yy as usize * w + xx as usize])
+            load(src[yy as usize * w + xx as usize])
         } else {
             0.0
         }
@@ -90,22 +98,35 @@ pub fn shift(src: &[u8], h: usize, w: usize, dy: f32, dx: f32) -> Vec<u8> {
             (x0 as i64, sx - x0)
         })
         .collect();
+    let mut out = Vec::with_capacity(h * w);
     for y in 0..h {
         let sy = y as f32 + dy;
         let y0f = sy.floor();
         let (y0, ay) = (y0f as i64, sy - y0f);
-        for (x, &(x0, ax)) in xs.iter().enumerate() {
+        for &(x0, ax) in &xs {
             let p00 = at(y0, x0);
             let p01 = at(y0, x0 + 1);
             let p10 = at(y0 + 1, x0);
             let p11 = at(y0 + 1, x0 + 1);
             let top = fma(p01 - p00, ax, p00);
             let bot = fma(p11 - p10, ax, p10);
-            let v = fma(bot - top, ay, top);
-            out[y * w + x] = v.round_ties_even().clamp(0.0, 255.0) as u8;
+            out.push(store(fma(bot - top, ay, top)));
         }
     }
     out
+}
+
+/// `cv2.warpAffine(f, [[1, 0, -dx], [0, 1, -dy]], INTER_LINEAR)` on uint8 (OpenCV 5:
+/// float32 lerps, round half to even), zeros outside.
+pub fn shift(src: &[u8], h: usize, w: usize, dy: f32, dx: f32) -> Vec<u8> {
+    shift_with(src, h, w, dy, dx, f32::from, |v| {
+        v.round_ties_even().clamp(0.0, 255.0) as u8
+    })
+}
+
+/// The same warp on float32 frames (`motion.apply_shifts` on the registration image).
+pub fn shift_f32(src: &[f32], h: usize, w: usize, dy: f32, dx: f32) -> Vec<f32> {
+    shift_with(src, h, w, dy, dx, |v| v, |v| v)
 }
 
 /// Running min (`is_min`) or max over windows of `2r + 1` samples along one line, samples

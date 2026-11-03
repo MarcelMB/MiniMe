@@ -1,9 +1,14 @@
-//! Native check harness: one streaming pass over the raw AVIs on disk, writing the same
-//! `.npy` files as `experiments/streaming/ref_dump.py`'s `ref/`.
+//! Native check harness over the raw AVIs on disk, writing the same `.npy` files as the
+//! Python reference scripts in `experiments/streaming/`:
 //!
 //!     minime-core --raw RAW_DIR --inputs INPUTS_DIR --out OUT_DIR [--check-frames T.npy]
+//!     minime-core motion --raw RAW_DIR --params PARAMS.json --out OUT_DIR [--check-frames T.npy]
+//!
+//! The first is one streaming pass (`ref_dump.py`), the second the motion stage on one
+//! window (`ref_motion.py`).
 
-use minime_core::avi::{self, FileReader, ReadAt};
+use minime_core::avi::{self, AviIndex, FileReader, ReadAt};
+use minime_core::motion::{self, Motion, MotionParams, Reg};
 use minime_core::{finish, npy, Inputs};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -32,19 +37,141 @@ fn arg(args: &[String], name: &str) -> Option<String> {
         .cloned()
 }
 
-fn run() -> Result<(), String> {
-    let args: Vec<String> = std::env::args().collect();
-    let raw = PathBuf::from(arg(&args, "--raw").ok_or("--raw RAW_DIR")?);
-    let inputs = PathBuf::from(arg(&args, "--inputs").ok_or("--inputs DIR")?);
-    let out = PathBuf::from(arg(&args, "--out").ok_or("--out DIR")?);
-    let check: Vec<usize> = match arg(&args, "--check-frames") {
+fn check_frames(args: &[String]) -> Result<Vec<usize>, String> {
+    Ok(match arg(args, "--check-frames") {
         Some(p) => npy::read_i64(&std::fs::read(&p).map_err(|e| e.to_string())?)?
             .data
             .iter()
             .map(|&v| v as usize)
             .collect(),
         None => Vec::new(),
-    };
+    })
+}
+
+/// Random access to the frames of all segments by session frame index.
+struct Frames {
+    segs: Vec<(FileReader, AviIndex)>,
+    starts: Vec<usize>, // first session frame of each segment, plus the total
+}
+
+impl Frames {
+    fn open(raw: &Path, h: usize, w: usize) -> Result<Self, String> {
+        let mut segs = Vec::new();
+        let mut starts = vec![0];
+        for p in segments(raw)? {
+            let mut r = FileReader::open(&p)?;
+            let ix = avi::index(&mut r)?;
+            if (ix.height, ix.width) != (h, w) {
+                return Err(format!(
+                    "{}: {}x{} frames, expected {h}x{w}",
+                    p.display(),
+                    ix.height,
+                    ix.width
+                ));
+            }
+            starts.push(starts.last().unwrap() + ix.frames.len());
+            segs.push((r, ix));
+        }
+        Ok(Self { segs, starts })
+    }
+
+    fn get(&mut self, t: usize) -> Result<Vec<u8>, String> {
+        let s = self.starts.partition_point(|&v| v <= t) - 1;
+        let (r, ix) = self.segs.get_mut(s).ok_or(format!("frame {t} is past the end"))?;
+        let (off, size) = ix.frames[t - self.starts[s]];
+        Ok(ix.unpad(&r.read_at(off, size as usize)?))
+    }
+}
+
+/// The motion stage on frames `[t0, t1)`: template from the first `template_frames` frames
+/// of segment 0, then shift and quality per frame (`ref_motion.py`).
+fn run_motion(args: &[String]) -> Result<(), String> {
+    let raw = PathBuf::from(arg(args, "--raw").ok_or("--raw RAW_DIR")?);
+    let out = PathBuf::from(arg(args, "--out").ok_or("--out DIR")?);
+    let pj = arg(args, "--params").ok_or("--params PARAMS.json")?;
+    let meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&pj).map_err(|e| format!("{pj}: {e}"))?)
+            .map_err(|e| e.to_string())?;
+    let p: MotionParams = serde_json::from_value(meta.clone()).map_err(|e| format!("{pj}: {e}"))?;
+    let t0 = meta["t0"].as_u64().ok_or("params: t0")? as usize;
+    let t1 = meta["t1"].as_u64().ok_or("params: t1")? as usize;
+    let check = check_frames(args)?;
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let mut frames = Frames::open(&raw, p.h, p.w)?;
+    if t1 > *frames.starts.last().unwrap() {
+        return Err(format!("t1 {t1} is past the last frame"));
+    }
+
+    let s = Instant::now();
+    let n_tmpl = p.template_frames.min(frames.starts[1]);
+    let m = Motion::build(&p, n_tmpl, &mut |t| {
+        Ok(motion::registration_image(&frames.get(t)?, &p))
+    })?;
+    let t_template = s.elapsed().as_secs_f64();
+
+    let (mut t_read, mut t_reg, mut t_est, mut t_qual) = (0.0, 0.0, 0.0, 0.0);
+    let (mut shifts, mut quality) = (Vec::new(), Vec::new());
+    let (mut reg_chk, mut prep_chk, mut chk_t) = (Vec::new(), Vec::new(), Vec::new());
+    let corr = motion::Correlator::new(p.h, p.w, p.motion_down)?;
+    for t in t0..t1 {
+        let s0 = Instant::now();
+        let raw = frames.get(t)?;
+        let s1 = Instant::now();
+        let reg = motion::registration_image(&raw, &p);
+        let s2 = Instant::now();
+        let [dy, dx] = m.estimate(&reg);
+        let s3 = Instant::now();
+        quality.push(m.quality(&reg.shifted(p.h, p.w, dy as f32, dx as f32)));
+        let s4 = Instant::now();
+        shifts.extend([dy, dx]);
+        if check.contains(&t) {
+            chk_t.push(t as i64);
+            if let Reg::F32(f) = &reg {
+                reg_chk.extend_from_slice(f);
+            }
+            prep_chk.extend(corr.prep(&reg));
+        }
+        t_read += (s1 - s0).as_secs_f64();
+        t_reg += (s2 - s1).as_secs_f64();
+        t_est += (s3 - s2).as_secs_f64();
+        t_qual += (s4 - s3).as_secs_f64();
+    }
+    let (ph, pw) = m.prep_shape();
+    let n = t1 - t0;
+    let mut files = vec![
+        (
+            "template.npy".to_string(),
+            npy::write(&[ph, pw], m.template_image()),
+        ),
+        ("shifts.npy".into(), npy::write(&[n, 2], &shifts)),
+        ("quality.npy".into(), npy::write(&[n], &quality)),
+        ("frames_t.npy".into(), npy::write(&[chk_t.len()], &chk_t)),
+        ("prep.npy".into(), npy::write(&[chk_t.len(), ph, pw], &prep_chk)),
+    ];
+    if !reg_chk.is_empty() {
+        files.push(("reg.npy".into(), npy::write(&[chk_t.len(), p.h, p.w], &reg_chk)));
+    }
+    let timing = serde_json::json!({
+        "frames": n, "template": t_template, "read": t_read, "registration": t_reg,
+        "estimate": t_est, "quality": t_qual,
+    });
+    files.push(("timing.json".into(), serde_json::to_vec_pretty(&timing).unwrap()));
+    for (name, bytes) in &files {
+        std::fs::write(out.join(name), bytes).map_err(|e| e.to_string())?;
+    }
+    eprintln!("{timing}");
+    Ok(())
+}
+
+fn run() -> Result<(), String> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("motion") {
+        return run_motion(&args);
+    }
+    let raw = PathBuf::from(arg(&args, "--raw").ok_or("--raw RAW_DIR")?);
+    let inputs = PathBuf::from(arg(&args, "--inputs").ok_or("--inputs DIR")?);
+    let out = PathBuf::from(arg(&args, "--out").ok_or("--out DIR")?);
+    let check = check_frames(&args)?;
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
     let inp = Inputs::load(&mut |name| std::fs::read(inputs.join(name)).map_err(|e| format!("{name}: {e}")))?;
     let (h, w, t_total) = (inp.params.h, inp.params.w, inp.params.t);
