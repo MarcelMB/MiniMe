@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
+import pandas as pd
 import scipy.sparse as sps
 
 from minime import corr, motion, pipeline
@@ -15,10 +18,19 @@ from minime.serve.traces import overview
 SEED_STAGES = ("init", "pnr", "merged")
 
 
+def _stage_seeds(run: RunView) -> dict[str, np.ndarray]:
+    """A rerun's seed tables (``stages/seeds_*.csv``) as positions per step."""
+    tables = {k: pd.read_csv(run.path / "stages" / f"seeds_{k}.csv") for k in SEED_STAGES}
+    tables["pnr"] = pipeline._filter(tables["pnr"], "mask_pnr")
+    return {k: pipeline._positions(df) for k, df in tables.items()}
+
+
 def seeds(run: RunView) -> dict[str, np.ndarray] | None:
     """Seed positions (n, 2) per step: from the run if it saved them, else from the cache."""
     if run.has_saved_seeds:
         return {k: np.load(run.path / "seeds" / f"{k}.npy") for k in SEED_STAGES}
+    if run.has_stages:
+        return _stage_seeds(run)
     if all(run.cache.has(f"seeds_{k}.npy") for k in SEED_STAGES):
         return {k: run.cache.load_npy(f"seeds_{k}.npy") for k in SEED_STAGES}
     return None
@@ -27,6 +39,8 @@ def seeds(run: RunView) -> dict[str, np.ndarray] | None:
 def init_A(run: RunView) -> sps.csr_matrix | None:
     if run.has_saved_init:
         return sps.load_npz(run.path / "init" / "A.npz").tocsr()
+    if run.has_stages:  # a rerun: the footprints after the init merge, before CNMF
+        return sps.load_npz(run.path / "stages" / "A_init_merge.npz").tocsr()
     if run.cache.has("init_A.npz"):
         return sps.load_npz(run.cache.dir / "init_A.npz").tocsr()
     return None
@@ -35,7 +49,9 @@ def init_A(run: RunView) -> sps.csr_matrix | None:
 def compute_seeds_and_init(run: RunView) -> None:
     """Rerun the seed and init stages on the saved factors (~2.5 min on 3 h) into the cache."""
     fac = run.factors
-    p = Params.from_json(run.path / "params.json")
+    doc = json.loads((run.path / "params.json").read_text(encoding="utf-8"))
+    doc.pop("sparse_penal", None)  # older runs; seeds and init do not use it
+    p = Params.from_dict(doc, source=str(run.path / "params.json"))
     fc = corr.FactorCorr(fac, p.noise_freq)
     timer = StageTimer()
     kept: dict[str, np.ndarray] = {}

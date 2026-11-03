@@ -14,6 +14,9 @@ src/minime/serve/static/
 dist/
 LOCAL_DATA.md
 docs/superpowers/
+docs/slides/
+docs/gpu-research/
+docs/gpu-options.md
 .superpowers/
 bench/
 TODO.md

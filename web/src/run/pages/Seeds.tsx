@@ -5,7 +5,7 @@ import { fmtInt } from "../../format";
 import { ImageView } from "../../ImageView";
 import { useResource } from "../../poll";
 import type { Seeds as SeedsT } from "../../types";
-import { useRun } from "../RunContext";
+import { rerunQuery, useRun } from "../RunContext";
 
 type Step = keyof SeedsT;
 const STEPS: { value: Step; label: string }[] = [
@@ -15,9 +15,9 @@ const STEPS: { value: Step; label: string }[] = [
 ];
 
 export function Seeds() {
-  const { summary: s, maxProj } = useRun();
+  const { summary: s, maxProj, rerun } = useRun();
   const [step, setStep] = useState<Step>("merged");
-  const res = useResource(`seeds:${s.id}`, () => getJSON<SeedsT>(`/runs/${s.id}/seeds`));
+  const res = useResource(`seeds:${s.id}:${rerun ?? ""}`, () => getJSON<SeedsT>(`/runs/${s.id}/seeds${rerunQuery(rerun)}`));
   return (
     <div className="bento">
       <section className="card span3" aria-label="Seeds on the max projection">

@@ -64,6 +64,8 @@ def create_app(
     app.state.registry = Registry(cache_root)
     app.state.frames = {}
     app.state.frames_lock = threading.Lock()
+    app.state.raw_infos = {}  # resolved raw folder -> io.RawInfo (the launcher's preview)
+    app.state.raw_infos_lock = threading.Lock()
     app.state.background = Background()
     app.state.jobs = jobs
 

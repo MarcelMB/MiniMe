@@ -1,4 +1,6 @@
+import os
 import shutil
+import tempfile
 import time as _time
 
 import pytest
@@ -6,6 +8,9 @@ import pytest
 from minime import pipeline
 from minime.params import Params
 from minime.testing import synth
+
+# runs and serve write the known-folders list and jobs here, never into ~/.cache/minime
+os.environ["MINIME_CACHE"] = tempfile.mkdtemp(prefix="minime-test-cache-")
 
 
 @pytest.fixture

@@ -2,25 +2,14 @@
 
 from __future__ import annotations
 
-import multiprocessing
-import os
 from pathlib import Path
-
-import numpy as np
 
 from minime.compress import compress_tile
 from minime.factors import Factors, TileFactors
 from minime.io import RawInfo
 from minime.params import Params
-from minime.pass1 import Pass1Result
+from minime.pass1 import Pass1Result, _split, run_workers
 from minime.tiles import Tile, TileStore
-
-_THREAD_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
-
-
-def _split(n: int, parts: int) -> list[range]:
-    edges = np.linspace(0, n, parts + 1).round().astype(int)
-    return [range(a, b) for a, b in zip(edges[:-1], edges[1:], strict=True) if b > a]
 
 
 def pass2_worker(
@@ -49,18 +38,7 @@ def run_pass2(
     """Compress every tile with ``workers`` single-threaded processes; grid order."""
     ranges = _split(len(grid), workers)
     jobs = [(str(store.root), grid, store.n_parts, r, params) for r in ranges]
-    saved = {k: os.environ.get(k) for k in _THREAD_VARS}
-    os.environ.update(dict.fromkeys(_THREAD_VARS, "1"))
-    try:
-        ctx = multiprocessing.get_context("spawn")
-        with ctx.Pool(len(jobs)) as pool:
-            res = pool.starmap(pass2_worker, jobs, chunksize=1)
-    finally:
-        for k, v in saved.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
+    res = run_workers(pass2_worker, jobs)
     return [tf for chunk in res for tf in chunk]
 
 

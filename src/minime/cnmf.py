@@ -36,6 +36,7 @@ import scipy.sparse as sps
 from minime import init
 from minime.factors import Factors
 from minime.params import Params
+from minime.seeds import disk
 from minime.spatial_kernel import solve_nnqp
 
 # ---------------------------------------------------------------------------
@@ -43,16 +44,10 @@ from minime.spatial_kernel import solve_nnqp
 # ---------------------------------------------------------------------------
 
 
-def _disk(radius: int) -> np.ndarray:
-    """(2r+1, 2r+1) uint8 disk, ``dy^2 + dx^2 <= r^2`` (``skimage.morphology.disk``)."""
-    dy, dx = np.mgrid[-radius : radius + 1, -radius : radius + 1]
-    return (dy**2 + dx**2 <= radius**2).astype(np.uint8)
-
-
 def dilate_footprints(A: sps.csr_matrix, H: int, W: int, dl_wnd: int) -> sps.csr_matrix:
     """(K, P) bool CSR: each footprint's support dilated by a disk of radius ``dl_wnd``."""
     A = sps.csr_matrix(A)
-    kernel = _disk(dl_wnd)
+    kernel = disk(dl_wnd)
     rows: list[np.ndarray] = []
     cols: list[np.ndarray] = []
     for k in range(A.shape[0]):
@@ -403,7 +398,15 @@ def run_cnmf(
         _check_finite(f"background (iteration {it})", b=b, f=fb)
         YrA = compute_trace(fac, A, b, C_sp, fb)
         _check_finite(f"traces (iteration {it})", YrA=YrA)
-        A, YrA, (C_sp,) = init.unit_merge(A, YrA, fc_traces, params.loop_merge_corr, [C_sp])
+        A, YrA, (C_sp,) = init.unit_merge(
+            A,
+            YrA,
+            fc_traces,
+            params.loop_merge_corr,
+            [C_sp],
+            min_dist=params.merge_min_dist,
+            shape=(fac.H, fac.W_),
+        )
         C = YrA
         counts[f"units_after_merge_{it}"] = A.shape[0]
         if record is not None:

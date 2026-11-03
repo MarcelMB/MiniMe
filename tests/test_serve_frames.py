@@ -32,16 +32,16 @@ def test_frame_is_uint8_with_cached_contrast(tiny_run, cache_dir):
     assert not fs.has_contrast("recon")
     f = fs.frame("recon", 299)
     assert f.dtype == np.uint8 and f.shape == (64, 64)
-    doc = json.loads((cache_dir / fs.run.id / "contrast.json").read_text())
+    doc = json.loads((cache_dir / fs.run.id / "contrast.json").read_text(encoding="utf-8"))
     assert doc["recon"][0] < doc["recon"][1]
     assert fs.has_contrast("recon")
 
 
 def test_frame_errors(run_copy, cache_dir):
     shutil.rmtree(run_copy / "tiles")
-    pj = json.loads((run_copy / "params.json").read_text())
+    pj = json.loads((run_copy / "params.json").read_text(encoding="utf-8"))
     pj["raw_dir"] = str(run_copy / "unplugged")
-    (run_copy / "params.json").write_text(json.dumps(pj))
+    (run_copy / "params.json").write_text(json.dumps(pj), encoding="utf-8")
     fs = FrameSource(RunView(run_copy, cache_dir))
     assert not fs.available("pre") and not fs.available("raw") and fs.available("recon")
     with pytest.raises(LookupError):
@@ -73,5 +73,5 @@ def test_concurrent_contrast_keeps_both_entries(tiny_run, cache_dir):
         th.start()
     for th in ths:
         th.join()
-    doc = json.loads((cache_dir / fs.run.id / "contrast.json").read_text())
+    doc = json.loads((cache_dir / fs.run.id / "contrast.json").read_text(encoding="utf-8"))
     assert {"recon", "pre"} <= set(doc)
