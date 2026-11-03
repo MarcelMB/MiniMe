@@ -78,6 +78,33 @@ class TileStore:
                     o += n
         return raw[:o].reshape(-1, *t.shape)
 
+    def _part_frames(self, tile: int) -> list[int]:
+        px = self.grid[tile].pixels
+        return [self.part_path(tile, p).stat().st_size // px for p in range(self.n_parts)]
+
+    def tile_frames(self, tile: int) -> int:
+        """Number of frames stored for ``tile``."""
+        return sum(self._part_frames(tile))
+
+    def read_frames(self, tile: int, t0: int, t1: int) -> np.ndarray:
+        """Frames ``t0:t1`` of one tile, (t1 - t0, th, tw) uint8, read from the parts they
+        fall in (pass 2 on long sessions: one time window of a tile at a time)."""
+        t = self.grid[tile]
+        px = t.pixels
+        raw = np.empty((t1 - t0) * px, dtype=np.uint8)
+        buf = memoryview(raw)
+        o = start = 0
+        for p, n in enumerate(self._part_frames(tile)):
+            a, b = max(t0, start), min(t1, start + n)
+            if a < b:
+                end = o + (b - a) * px
+                with open(self.part_path(tile, p), "rb", buffering=0) as fh:
+                    fh.seek((a - start) * px)
+                    while o < end and (k := fh.readinto(buf[o:end])):  # reads cap at ~2 GB
+                        o += k
+            start += n
+        return raw[:o].reshape(-1, *t.shape)
+
     def nbytes(self) -> int:
         return sum(p.stat().st_size for p in self.root.glob("tile_*.part*"))
 

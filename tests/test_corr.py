@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 import scipy.sparse as sps
 
 from minime import compress, corr, tiles
@@ -28,6 +29,15 @@ def test_lowpass_removes_dc_and_high_band():
     x[1] = np.sin(2 * np.pi * 200 * np.arange(T) / T)
     y = corr.lowpass(x, 0.06)
     assert abs(y).max() < 1e-6
+
+
+@pytest.mark.parametrize(("T", "noise_freq"), [(500, 0.06), (501, 0.06), (40, 0.5), (41, 0.5)])
+def test_passband_coefs_give_the_gram_of_the_lowpassed_columns(T, noise_freq):
+    # odd and even T; noise_freq 0.5 keeps the Nyquist bin of an even T (counted once)
+    V = np.random.default_rng(T).standard_normal((T, 37)).astype(np.float32)
+    F = corr.passband_coefs(V, noise_freq, chunk=8)
+    lp = corr.lowpass(V.T, noise_freq)
+    assert np.allclose((F.conj().T @ F).real, lp @ lp.T, rtol=1e-10, atol=1e-10)
 
 
 def test_pair_correlations_track_noise_free_truth():
@@ -66,6 +76,24 @@ def test_window_is_clipped_disk_and_matches_pairs():
     full = [(y, x) for y in range(64) for x in range(64) if (y - 1) ** 2 + (x - 2) ** 2 <= 16]
     assert idx.size == len(full) and seed in idx
     np.testing.assert_allclose(cw, fc.pairs(np.full(idx.size, seed), idx))
+
+
+def test_traces_corr_is_the_pearson_correlation_of_the_lowpassed_rows():
+    T = 1000
+    fc = corr.FactorCorr(_session(T=T)[3], 0.06)
+    rng = np.random.default_rng(1)
+    C = rng.standard_normal((6, T)).cumsum(1)
+    C[3] = 2.0  # flat: correlation 0 with the others, 1 with itself
+    lp = corr.lowpass(C, 0.06)
+    lp -= lp.mean(1, keepdims=True)
+    nrm = np.sqrt((lp**2).sum(1))
+    Z = np.where(nrm[:, None] > 1e-9, lp / np.where(nrm > 1e-9, nrm, 1)[:, None], 0)
+    ref = Z @ Z.T
+    np.fill_diagonal(ref, 1.0)
+    R = fc.traces_corr(C)
+    keep = np.r_[0:3, 4:6]
+    assert np.allclose(R[np.ix_(keep, keep)], ref[np.ix_(keep, keep)], atol=1e-10)
+    assert R[3, 3] == 1.0
 
 
 def test_traces_corr_and_merge_labels():

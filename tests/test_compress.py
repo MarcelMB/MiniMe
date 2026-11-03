@@ -1,6 +1,8 @@
 import json
+import shutil
 
 import numpy as np
+import pytest
 import scipy.sparse as sps
 
 from minime import compress, pass2, tiles
@@ -161,6 +163,43 @@ def test_run_pass2_parallel_matches_serial_and_builds_factors(tmp_path):
     expected = json.loads(json.dumps(p.asdict()))  # tuples become lists in JSON
     assert back.meta["params"] == expected and back.meta["params"]["size_thres"] == [25, None]
     assert back.meta["pass1_seconds"] == {"denoise": 1.0} and len(back.tiles) == 4
+    # workers that save each tile themselves: same factors, V read from its file
+    disk = pass2.run_pass2(store, grid, p, workers=2, out_dir=tmp_path / "f2")
+    assert all(isinstance(tf.V, np.memmap) for tf in disk)
+    for a, b in zip(two, disk, strict=True):
+        assert np.array_equal(a.W, b.W) and np.array_equal(a.V, b.V)
+        assert np.array_equal(a.sigma, b.sigma) and np.array_equal(a.energy, b.energy)
+    pass2.build_factors(info, grid, p1, disk, p).save_meta(tmp_path / "f2")
+    back2 = fm.Factors.load(tmp_path / "f2", mmap=True)
+    assert [tf.rank for tf in back2.tiles] == [tf.rank for tf in two]
+    assert np.array_equal(back2.tiles[3].V, two[3].V)
+
+
+def test_factors_load_memory_maps_v_and_reads_format_1(tmp_path):
+    H = W = 32
+    T = 200
+    grid = tiles.tile_grid(H, W, 16)
+    movie = synth.synth_movie(H, W, T, 1)
+    tf = [
+        compress.compress_tile(np.ascontiguousarray(movie[:, t.y0 : t.y1, t.x0 : t.x1]), k0=8)
+        for t in grid
+    ]
+    f = fm.Factors(H, W, T, grid, tf, movie.max(0), movie.max(0)[None], np.array([0, T]), {})
+    f.save(tmp_path / "factors")
+    g = fm.Factors.load(tmp_path / "factors", mmap=True)
+    assert all(isinstance(t.V, np.memmap) for t in g.tiles)
+    assert all(np.array_equal(a.V, b.V) for a, b in zip(g.tiles, tf, strict=True))
+    A = sps.random(5, H * W, density=0.05, format="csr", random_state=0, dtype=np.float32)
+    assert np.array_equal(g.AtY(A), f.AtY(A))
+    # format 1: V inside each tile's .npz; a copy, since Windows cannot delete the files g maps
+    d = tmp_path / "factors_v1"
+    shutil.copytree(tmp_path / "factors", d, ignore=shutil.ignore_patterns("*.V.npy"))
+    for b, t in enumerate(tf):
+        np.savez(d / f"tile_{b:03d}.npz", W=t.W, V=t.V, mean=t.mean, sigma=t.sigma, energy=t.energy)
+    meta = json.loads((d / "meta.json").read_text())
+    (d / "meta.json").write_text(json.dumps({**meta, "format_version": 1}))
+    old = fm.Factors.load(d, mmap=True)
+    assert all(np.array_equal(a.V, b.V) for a, b in zip(old.tiles, tf, strict=True))
 
 
 def _truth_metrics(Y_truth, S, grid, tfs):
@@ -236,3 +275,98 @@ def test_energy_one_pass_matches_centred_sum():
     X = raw.reshape(len(raw), -1).astype(np.float64)
     assert np.allclose(Y.energy, ((X - X.mean(0)) ** 2).sum(0), rtol=1e-9)
     assert np.allclose(Y.mean, X.mean(0), rtol=1e-6)
+
+
+def test_yct_recomputes_a_non_finite_float32_tile_in_float64(monkeypatch):
+    H = W = 32
+    T = 200
+    grid = tiles.tile_grid(H, W, 16)
+    movie = synth.synth_movie(H, W, T, 1)
+    tf = [
+        compress.compress_tile(np.ascontiguousarray(movie[:, t.y0 : t.y1, t.x0 : t.x1]), k0=8)
+        for t in grid
+    ]
+    f = fm.Factors(
+        H, W, T, grid, tf, movie.max(0), movie[:100].max(0)[None], np.array([0, 100, 200]), {}
+    )
+    C = np.random.default_rng(0).standard_normal((5, T)).astype(np.float32)
+    Cc = C - C.mean(1, keepdims=True)
+    ref = f.YCt(Cc)
+    # the float32 product of one tile turns non-finite (Accelerate, macOS 26): that tile is
+    # redone in float64 with a warning instead of NaN reaching the spatial update
+    true_part = fm._tile_vtc
+    monkeypatch.setattr(
+        fm,
+        "_tile_vtc",
+        lambda tf, t0, t1, Ct: true_part(tf, t0, t1, Ct) * (np.nan if tf is f.tiles[2] else 1),
+    )
+    with pytest.warns(RuntimeWarning, match="tile 2"):
+        got = f.YCt(Cc)
+    assert np.isfinite(got).all()
+    assert np.allclose(got, ref, rtol=1e-4, atol=1e-3)
+
+
+def _windows(raw, window, **kw):
+    return compress.compress_tile_windows(lambda a, b: raw[a:b], raw.shape[0], window, **kw)
+
+
+def test_compress_tile_windows_one_window_is_compress_tile():
+    raw = _tile_movie(T=300)
+    a = compress.compress_tile(raw, k0=8, seed=5)
+    for window in (0, 300, 1000):
+        b = _windows(raw, window, k0=8, seed=5)
+        for name in ("W", "V", "mean", "sigma", "energy"):
+            assert np.array_equal(getattr(a, name), getattr(b, name))
+
+
+def test_compress_tile_windows_merges_to_the_whole_tile_result():
+    raw = _tile_movie(T=900, seed=7)
+    T = raw.shape[0]
+    whole = compress.compress_tile(raw, k0=8, seed=0)
+    win = _windows(raw, 300, k0=8, seed=0)  # 3 windows
+    Y = raw.reshape(T, -1).T.astype(np.float64)
+    m = Y.mean(1, keepdims=True)
+    assert np.allclose(win.mean, m.ravel(), rtol=1e-6, atol=1e-5)
+    assert np.allclose(win.energy, ((Y - m) ** 2).sum(1), rtol=1e-6)
+    assert win.W.dtype == win.V.dtype == win.mean.dtype == win.sigma.dtype == np.float32
+    assert np.allclose(win.V.T @ win.V, np.eye(win.rank), atol=1e-3)
+    norm = np.linalg.norm(Y - m)
+
+    def err(tf):
+        return np.linalg.norm(Y - m - tf.W @ tf.V.T) / norm
+
+    assert err(win) < err(whole) + 0.02
+    # every kept component passes the same cut at length T, on time courses with noise
+    assert compress.lag1_autocorr(win.V.T).min() > max(4 / np.sqrt(T), 0.2)
+    assert win.rank <= 2 * whole.rank  # moving synthetic movie; real V4 tiles: +15 %
+    assert np.allclose(win.sigma, whole.sigma, rtol=0.1)
+
+
+def test_run_pass2_windows_long_tiles(tmp_path):
+    H = W = 32
+    T = 300
+    grid = tiles.tile_grid(H, W, 16)
+    movie = synth.synth_movie(H, W, T, 4)
+    store = tiles.TileStore(tmp_path / "s", grid, n_parts=2)
+    for p, (a0, b0) in enumerate([(0, 170), (170, T)]):
+        packed = tiles.pack_tiles(movie[a0:b0], grid)
+        for f, (a, b) in zip(store.open_part(p), tiles.tile_offsets(b0 - a0, grid), strict=True):
+            with f:
+                f.write(memoryview(packed[a:b]))
+    whole = pass2.run_pass2(store, grid, Params(svd_k0=6, tile=16, svd_window=0), workers=1)
+    win = pass2.run_pass2(store, grid, Params(svd_k0=6, tile=16, svd_window=100), workers=2)
+    for a, b, t in zip(whole, win, grid, strict=True):
+        Y = movie[:, t.y0 : t.y1, t.x0 : t.x1].reshape(T, -1).T.astype(np.float64)
+        Yc = Y - Y.mean(1, keepdims=True)
+        ea = np.linalg.norm(Yc - a.W @ a.V.T) / np.linalg.norm(Yc)
+        eb = np.linalg.norm(Yc - b.W @ b.V.T) / np.linalg.norm(Yc)
+        assert eb < ea + 0.03 and b.V.shape[0] == T
+
+
+def test_lag1_from_products_matches_the_formed_time_courses():
+    rng = np.random.default_rng(0)
+    P = np.cumsum(rng.standard_normal((500, 6)), axis=0) + rng.standard_normal((500, 6))
+    C = rng.standard_normal((6, 4))
+    G, G1 = P.T @ P, P[1:].T @ P[:-1]
+    rho = compress._lag1_from_products(C, G, G1, P.sum(0), P[0], P[-1], 500)
+    assert np.allclose(rho, compress.lag1_autocorr((P @ C).T), atol=1e-10)

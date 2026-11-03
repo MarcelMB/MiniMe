@@ -40,6 +40,23 @@ def lowpass(X: np.ndarray, noise_freq: float) -> np.ndarray:
     return np.fft.irfft(Xf, T, axis=-1)
 
 
+def passband_coefs(V: np.ndarray, noise_freq: float, chunk: int = 32) -> np.ndarray:
+    """Fourier coefficients of the columns of ``V`` (T, r) that ``lowpass`` keeps, scaled so
+    that ``lowpass(V.T) @ lowpass(V.T).T == Re(F^H F)``: (n_keep, r) complex128.
+
+    rFFT bin k counts twice in a dot product of real signals, except bin 0 (dropped) and the
+    Nyquist bin of an even T. Columns go ``chunk`` at a time (one float64 copy of V would be
+    as large as V twice).
+    """
+    T = V.shape[0]
+    k = np.arange(1, min(int(noise_freq * T), T // 2 + 1))
+    w = np.where(2 * k == T, 1.0, 2.0) / T
+    F = np.empty((k.size, V.shape[1]), dtype=np.complex128)
+    for c in range(0, V.shape[1], chunk):
+        F[:, c : c + chunk] = np.fft.rfft(V[:, c : c + chunk].astype(np.float64), axis=0)[k]
+    return F * np.sqrt(w)[:, None]
+
+
 # ---------------------------------------------------------------------------
 # Correlations on the factors
 # ---------------------------------------------------------------------------
@@ -54,14 +71,15 @@ class FactorCorr:
         T = f.T
         nr = int(noise_freq * T)
         f_lp = 2.0 * (nr - 1) / T  # passband share of white-noise energy
-        # Vlp is kept as float32 (half the memory: ~5 GB float64 on a 3 h session); the
-        # Gram matrices are formed in float64
-        self.Vlp: list[np.ndarray] = []
+        # the low-passed V of each tile is kept as its passband Fourier coefficients only, scaled
+        # so that Vlp_a^T Vlp_b = Re(F_a^H F_b) (Parseval): 2 x noise_freq of the size of Vlp
+        # (V itself may be a memory map: 23 GB on a 24 h session), complex64; Grams in float64
+        self.Flp: list[np.ndarray] = []
         self.Gaa: list[np.ndarray] = []
         for tf in f.tiles:
-            v = lowpass(tf.V.T, noise_freq).T
-            self.Gaa.append(v.T @ v)
-            self.Vlp.append(v.astype(np.float32))
+            F = passband_coefs(tf.V, noise_freq)
+            self.Gaa.append((F.conj().T @ F).real)
+            self.Flp.append(F.astype(np.complex64))
         self.Wd: list[np.ndarray] = [tf.W.astype(np.float64) for tf in f.tiles]
         self._G: dict[tuple[int, int], np.ndarray] = {}
         self._disks: dict[int, np.ndarray] = {}
@@ -78,7 +96,8 @@ class FactorCorr:
             return self.Gaa[a]
         key = (a, b)
         if key not in self._G:
-            self._G[key] = self.Vlp[a].T.astype(np.float64) @ self.Vlp[b].astype(np.float64)
+            Fa, Fb = self.Flp[a].astype(np.complex128), self.Flp[b].astype(np.complex128)
+            self._G[key] = (Fa.conj().T @ Fb).real
         return self._G[key]
 
     def pairs(self, src: np.ndarray, dst: np.ndarray) -> np.ndarray:
@@ -122,14 +141,19 @@ class FactorCorr:
         return idx, self.pairs(np.full(idx.size, int(seed), dtype=np.int64), idx)
 
     def traces_corr(self, C: np.ndarray) -> np.ndarray:
-        """(K, K) Pearson correlation of the low-passed rows of ``C``; 0 for flat rows."""
-        Clp = lowpass(np.atleast_2d(C), self.noise_freq)
-        Clp -= Clp.mean(axis=1, keepdims=True)
-        nrm = np.sqrt((Clp**2).sum(axis=1))
-        good = nrm > 0
-        Z = np.zeros_like(Clp)
-        Z[good] = Clp[good] / nrm[good, None]
-        R = np.clip(Z @ Z.T, -1.0, 1.0)
+        """(K, K) Pearson correlation of the low-passed rows of ``C``; 0 for flat rows.
+
+        On the passband Fourier coefficients (the low-passed rows have mean 0, as ``lowpass``
+        drops the DC bin): 2 x noise_freq of the memory of the low-passed rows, which are
+        K x T float64 (22 GB for 1569 units on a 24 h session).
+        """
+        F = passband_coefs(np.atleast_2d(C).T, self.noise_freq)
+        G = (F.conj().T @ F).real
+        d = np.diag(G).copy()
+        good = d > 0
+        nrm = np.sqrt(np.where(good, d, 1.0))
+        R = np.where(np.outer(good, good), G / np.outer(nrm, nrm), 0.0)
+        R = np.clip(R, -1.0, 1.0)
         np.fill_diagonal(R, 1.0)
         return R
 
