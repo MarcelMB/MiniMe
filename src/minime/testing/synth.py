@@ -4,7 +4,8 @@ Cells are Gaussian patches with spiking exp-decay traces on a smooth vignette ba
 with slow drift, Gaussian noise and integer random-walk rigid motion, uint8. Optional 1p
 effects (``SynthOptions``: drifting background, neuropil, overlapping cells, late-active
 cells, bleaching, vessels, large or non-rigid motion, dropped frames, cell variation,
-bursting spikes, a non-calcium blob, an edge band, out-of-focus cells) are off by default.
+bursting spikes, a non-calcium blob, an edge band, out-of-focus cells, a scattering halo)
+are off by default.
 With the defaults the RNG call order (positions, traces, motion steps, then per-chunk noise)
 is the legacy one, so a given ``(h, w, T, seed)`` reproduces the same movie as before the options
 existed; each effect draws from its own child stream, so enabling one does not move the
@@ -87,6 +88,9 @@ class SynthOptions:
     hemo: float = 0.0  # grey levels of one broad blob oscillating at 0.1 Hz
     edge_band: int = 0  # px of border multiplied by 0.2 (fixed on the sensor)
     out_of_focus: int = 0  # dim, blurred active cells of other depths; not in the truth
+    # tissue scattering: a wide, weak Gaussian tail around each cell (in the truth footprint)
+    halo: float = 0.0  # tail peak as a fraction of the core peak (0 = off)
+    halo_sigma: float = 3.0  # tail sigma in units of the cell's sigma
     # calibration to a recording (defaults = the legacy session)
     amp_scale: float = 1.0  # multiplies every cell's transient amplitude (CELL_AMP)
     cell_f0: float = BASELINE_F0  # resting fluorescence of a cell, grey levels
@@ -124,6 +128,7 @@ SCENARIOS: dict[str, SynthOptions] = {
     "edge": SynthOptions(edge_band=4),
     "grin": SynthOptions(aperture=0.97),
     "out_of_focus": SynthOptions(out_of_focus=4),
+    "halo": SynthOptions(halo=0.15),
     "realistic": SynthOptions(
         background_drift=15.0,
         neuropil=10.0,
@@ -243,15 +248,31 @@ class SynthSetup:
     oof_patches: np.ndarray  # (m, ps, ps) footprints, peak 1
 
 
-def _gauss_patch(size: int = PATCH_MIN, sigma: float = CELL_SIGMA) -> np.ndarray:
+def _gauss_patch(
+    size: int = PATCH_MIN, sigma: float = CELL_SIGMA, halo: float = 0.0, halo_sigma: float = 3.0
+) -> np.ndarray:
+    """Gaussian of ``sigma`` plus, if ``halo > 0``, a tail of peak ``halo`` and sigma
+    ``halo_sigma * sigma`` (scattering); peak 1."""
     ax = np.arange(size) - size // 2
-    g = np.exp(-(ax[:, None] ** 2 + ax[None, :] ** 2) / (2 * sigma**2))
+    r2 = ax[:, None] ** 2 + ax[None, :] ** 2
+    g = np.exp(-r2 / (2 * sigma**2))
+    if halo > 0:
+        g = g + halo * np.exp(-r2 / (2 * (halo_sigma * sigma) ** 2))
     return (g / g.max()).astype(np.float32)
 
 
 def _patch_size(sigma: np.ndarray) -> int:
     """Odd patch side holding ±2.5 sigma of the largest cell, at least the legacy 15."""
     return max(PATCH_MIN, int(np.ceil(5 * sigma.max())) | 1)
+
+
+def _clip_slices(
+    y: int, x: int, ps: int, ch: int, cw: int
+) -> tuple[tuple[slice, slice], tuple[slice, slice]]:
+    """Canvas and patch slices of a ``ps`` patch with top-left ``(y, x)``, cut at the canvas."""
+    y0, x0 = max(y, 0), max(x, 0)
+    y1, x1 = min(y + ps, ch), min(x + ps, cw)
+    return (slice(y0, y1), slice(x0, x1)), (slice(y0 - y, y1 - y), slice(x0 - x, x1 - x))
 
 
 def _cells(
@@ -366,6 +387,12 @@ def _build(
     drift = 1.0 + 0.05 * np.sin(2 * np.pi * np.arange(T) / (30 * 60))
     shifts = np.clip(np.cumsum(steps, axis=0), -m, m)
     patches = np.stack([_gauss_patch(_patch_size(sigma), s) for s in sigma])
+    if o.halo > 0:
+        # wider patches on the same centres (top-left may leave the canvas: cut when rendered)
+        ps = _patch_size(sigma * o.halo_sigma)
+        pad = (ps - patches.shape[-1]) // 2
+        ys, xs = ys - pad, xs - pad
+        patches = np.stack([_gauss_patch(ps, s, o.halo, o.halo_sigma) for s in sigma])
 
     empty_f = np.zeros((0, ch, cw), np.float32)
     empty_t = np.zeros((0, T), np.float32)
@@ -489,12 +516,11 @@ def categories(setup: SynthSetup, h: int, w: int) -> dict[str, np.ndarray]:
     """
     s, c = setup, true_centroids(setup)
     ps = s.patches.shape[-1]
-    vessel = np.array(
-        [
-            s.vessel_mask[y : y + ps, x : x + ps][s.patches[k] > 0.2].min() < 0.8
-            for k, (y, x) in enumerate(zip(s.ys, s.xs, strict=True))
-        ]
-    )
+    ch, cw = s.vessel_mask.shape
+    vessel = np.zeros(c.shape[0], bool)
+    for k, (y, x) in enumerate(zip(s.ys, s.xs, strict=True)):
+        cs, pp = _clip_slices(int(y), int(x), ps, ch, cw)
+        vessel[k] = s.vessel_mask[cs][s.patches[k][pp] > 0.2].min() < 0.8
     edge = np.minimum(c, np.array([h, w]) - 1 - c).min(axis=1) < EDGE_PX
     near_oof = np.zeros(c.shape[0], bool)
     oc = oof_centroids(s)
@@ -599,10 +625,11 @@ def _render(
     cells = np.zeros((n, ch, cw), np.float32) if want_cells else None
     ps = s.patch.shape[0]
     for k in range(s.ys.size):
-        sl = (slice(None), slice(s.ys[k], s.ys[k] + ps), slice(s.xs[k], s.xs[k] + ps))
-        canvas[sl] += s.C[k, t0:t1, None, None] * s.patches[k][None]
+        cs, pp = _clip_slices(int(s.ys[k]), int(s.xs[k]), ps, ch, cw)
+        sl, patch = (slice(None), *cs), s.patches[k][pp][None]
+        canvas[sl] += s.C[k, t0:t1, None, None] * patch
         if cells is not None:
-            cells[sl] += (s.C[k, t0:t1] - s.F0[k, t0:t1])[:, None, None] * s.patches[k][None]
+            cells[sl] += (s.C[k, t0:t1] - s.F0[k, t0:t1])[:, None, None] * patch
     ops = s.oof_patches.shape[-1]
     for k in range(s.oof_ys.size):  # out-of-focus cells are background to CNMF: not in cells
         sl = (
