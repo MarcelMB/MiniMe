@@ -1,9 +1,10 @@
 //! wasm-bindgen API for the browser worker: an AVI index over a synchronous JS read
 //! callback (`FileReaderSync` on `File.slice`), the streaming pass, the motion stage and
-//! pass 1, each fed one raw frame at a time. Results come back as the same `.npy` files the
-//! native harness writes.
+//! pass 1, each fed one raw frame at a time, and pass 2, fed one tile of the tile store at a
+//! time. Results come back as the same `.npy` files the native harness writes.
 
 use crate::avi::{self, AviIndex, ReadAt};
+use crate::compress::{self, Gaussian, Normals, Pass2Params, Recorded, TileFactors};
 use crate::motion::{self, Motion, MotionParams, Reg, TemplateBuilder};
 use crate::npy;
 use crate::pass1::{self, Pass1, Pass1Params};
@@ -436,4 +437,93 @@ impl Pass1Engine {
 #[wasm_bindgen]
 pub fn crc32(bytes: &[u8], crc: u32) -> u32 {
     pass1::crc32(bytes, crc)
+}
+
+/// Pass 2 on the tile store pass 1 left in OPFS: `compress` every tile in grid order, then
+/// `finish`. With `omega_NNN.npy` in the inputs it replays numpy's draws (`ref_pass2.py`),
+/// otherwise it draws its own (seed = tile index).
+#[wasm_bindgen]
+pub struct Pass2Engine {
+    p: Pass2Params,
+    grid: Vec<pass1::Tile>,
+    files: Map,
+    done: Vec<TileFactors>,
+}
+
+#[wasm_bindgen]
+impl Pass2Engine {
+    /// `files`: `ref_pass2.py`'s `params.json` as `pass2.json`, plus its `omega_NNN.npy`.
+    #[wasm_bindgen(constructor)]
+    pub fn new(files: &Map) -> Result<Pass2Engine, JsError> {
+        let p: Pass2Params =
+            serde_json::from_slice(&map_bytes(files, "pass2.json").map_err(|e| JsError::new(&e))?)
+                .map_err(|e| JsError::new(&format!("pass2.json: {e}")))?;
+        Ok(Pass2Engine {
+            grid: pass1::tile_grid(p.h, p.w, p.tile),
+            p,
+            files: files.clone(),
+            done: Vec::new(),
+        })
+    }
+    pub fn n_tiles(&self) -> usize {
+        self.grid.len()
+    }
+    pub fn replayed(&self) -> bool {
+        self.files.has(&JsValue::from_str("omega_000.npy"))
+    }
+
+    /// Compress the next tile (`(T, th, tw)` uint8 bytes); returns its kept rank.
+    pub fn compress(&mut self, raw: &[u8]) -> Result<usize, JsError> {
+        let k = self.done.len();
+        let p = self
+            .grid
+            .get(k)
+            .ok_or_else(|| JsError::new("all tiles done"))?
+            .pixels();
+        if raw.len() != self.p.t * p {
+            return Err(JsError::new(&format!(
+                "tile {k}: {} bytes, expected {}",
+                raw.len(),
+                self.p.t * p
+            )));
+        }
+        let mut rng: Box<dyn Normals> = if self.replayed() {
+            let b = map_bytes(&self.files, &format!("omega_{k:03}.npy")).map_err(|e| JsError::new(&e))?;
+            Box::new(Recorded::new(
+                npy::read_f32(&b).map_err(|e| JsError::new(&e))?.data,
+            ))
+        } else {
+            Box::new(Gaussian::new(k as u64))
+        };
+        let tf =
+            compress::compress_tile(raw, self.p.t, p, &self.p, rng.as_mut()).map_err(|e| JsError::new(&e))?;
+        let r = tf.rank;
+        self.done.push(tf);
+        Ok(r)
+    }
+
+    /// Output name -> `.npy` bytes (the names `minime-core pass2` writes; the summary is
+    /// `summary_pass2.json` so it sits next to pass 1's).
+    pub fn finish(&self, timing_json: &str) -> Map {
+        let mut summary: serde_json::Value = serde_json::from_str(timing_json).unwrap_or_default();
+        summary["stage"] = "pass2".into();
+        summary["frames"] = self.p.t.into();
+        summary["tiles"] = self.done.len().into();
+        summary["own_rng"] = (!self.replayed()).into();
+        summary["rank_total"] = self.done.iter().map(|t| t.rank).sum::<usize>().into();
+        let files = compress::outputs(&self.done, summary)
+            .into_iter()
+            .map(|(n, b)| {
+                (
+                    if n == "summary.json" {
+                        "summary_pass2.json".into()
+                    } else {
+                        n
+                    },
+                    b,
+                )
+            })
+            .collect();
+        npy_map(files)
+    }
 }

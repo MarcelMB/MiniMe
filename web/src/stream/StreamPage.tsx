@@ -5,8 +5,14 @@ import type { FromWorker } from "./protocol";
 
 type State =
   | { phase: "idle" }
-  | { phase: "running"; frames: number; units: number; done: number; seconds: number; stateMb: number }
-  | { phase: "done"; files: [string, string, number][]; summary: Record<string, unknown>; seconds: number }
+  | { phase: "running"; stage: string; frames: number; units: number; done: number; seconds: number; stateMb: number }
+  | {
+      phase: "done";
+      files: [string, string, number][];
+      summary: Record<string, unknown>;
+      pass2: Record<string, unknown> | null;
+      seconds: number;
+    }
   | { phase: "error"; message: string };
 
 /** Streaming MiniMe in the tab: one pass over raw AVIs with fixed footprints. */
@@ -25,7 +31,7 @@ export function StreamPage() {
       const m = e.data;
       if (m.type === "log") console.log(`[worker] ${m.message}`);
       else if (m.type === "start")
-        setSt({ phase: "running", frames: m.frames, units: m.units, done: 0, seconds: 0, stateMb: 0 });
+        setSt({ phase: "running", stage: m.stage, frames: m.frames, units: m.units, done: 0, seconds: 0, stateMb: 0 });
       else if (m.type === "progress")
         setSt((s) => (s.phase === "running" ? { ...s, done: m.done, seconds: m.seconds, stateMb: m.stateMb } : s));
       else if (m.type === "done") {
@@ -34,9 +40,11 @@ export function StreamPage() {
           URL.createObjectURL(new Blob([bytes])),
           bytes.byteLength,
         ]);
-        const sum = m.files.get("summary.json");
-        const summary = sum ? (JSON.parse(new TextDecoder().decode(sum)) as Record<string, unknown>) : {};
-        setSt({ phase: "done", files, summary, seconds: m.seconds });
+        const json = (name: string) => {
+          const b = m.files.get(name);
+          return b ? (JSON.parse(new TextDecoder().decode(b)) as Record<string, unknown>) : null;
+        };
+        setSt({ phase: "done", files, summary: json("summary.json") ?? {}, pass2: json("summary_pass2.json"), seconds: m.seconds });
         w.terminate();
       } else setSt({ phase: "error", message: m.message });
     };
@@ -99,7 +107,10 @@ export function StreamPage() {
             <p>
               Done in {fmtDuration(st.seconds)}: pass 1 on {String(st.summary.frames)} frames,{" "}
               {String(st.summary.blocks)} seed blocks, {String(st.summary.tiles)} tiles (
-              {Number(st.summary.store_mb).toFixed(0)} MB in browser storage).
+              {Number(st.summary.store_mb).toFixed(0)} MB in browser storage)
+              {st.pass2 &&
+                `; pass 2 kept ${String(st.pass2.rank_total)} components over ${String(st.pass2.tiles)} tiles`}
+              .
             </p>
           ) : st.summary.stage === "motion" ? (
             <p>
@@ -128,18 +139,19 @@ export function StreamPage() {
   );
 }
 
-function Progress(p: { frames: number; units: number; done: number; seconds: number; stateMb: number }) {
+function Progress(p: { stage: string; frames: number; units: number; done: number; seconds: number; stateMb: number }) {
   const { fps, eta } = rate(p.done, p.frames, p.seconds);
+  const what = p.stage === "pass2" ? "tiles" : "frames";
   return (
     <section className="card" aria-label="Progress">
       <div className="barrow">
         <span>
-          {p.done} / {p.frames} frames
+          {p.done} / {p.frames} {what}
         </span>
         <div className="bar" role="progressbar" aria-valuenow={p.done} aria-valuemax={p.frames}>
           <span style={{ width: `${(100 * p.done) / Math.max(p.frames, 1)}%` }} />
         </div>
-        <span>{fps.toFixed(0)} fps</span>
+        <span>{p.stage === "pass2" ? `${fps.toFixed(1)} tiles/s` : `${fps.toFixed(0)} fps`}</span>
       </div>
       <p className="muted">
         {p.units} units · state {p.stateMb.toFixed(0)} MB · {Number.isFinite(eta) ? fmtDuration(eta) : "…"} left

@@ -3,6 +3,7 @@
 
 pub mod avi;
 pub mod butter;
+pub mod compress;
 pub mod filters;
 pub mod linalg;
 pub mod motion;

@@ -34,7 +34,7 @@ browser stage is checked against it. Background and results: `docs/browser-optio
 | footprint update from sums (NNQP), size filter, merge | `spatial_from_stats`, `merge_from_stats` | **done** | rel 1e-6, same kept units |
 | motion: bandpass registration image, template, FFT estimate, quality | `motion`, `pass1.build_template` | **done** | reg + prep bit-exact, shifts ≤ 5e-6 px (native and Chrome) |
 | pass 1: max projection, block maxima, quality, tile store (OPFS in the browser) | `pass1` | **done** | max proj, block maxima, every tile bit-exact (native and Chrome) |
-| pass 2 rSVD + rank cut | `compress` | next | same rank; subspace / reconstruction (rSVD RNG injected for the check) |
+| pass 2: mean, energy, noise, rSVD + rank cut | `compress` | **done** | same rank per tile, mean + energy exact, reconstruction ≤ 6e-5 (numpy's draws replayed; native and Chrome) |
 | seeds, PNR, GMM, initA/initC, CNMF loop | `seeds`, `corr`, `init`, `cnmf` | next | per stage on one window |
 | stitch | `stream.stitch` | next | identical units |
 
@@ -134,9 +134,46 @@ STREAM_RAW=<raw dir> STREAM_INPUTS=<ref>/inputs STREAM_OUT=<ref>/rust_browser np
 python experiments/streaming/check_pass1.py <ref> <ref>/rust_browser
 ```
 
+## Pass 2 result (2026-11-02): native and Chrome match Python
+Pass 2 as `pass2.pass2_worker` does it (seed = tile index, the session's parameters) on
+pass 1's tile store of frames 0–3000. `ref_pass2.py` records every Gaussian draw of
+numpy's rSVD; the Rust core replays them (`Recorded`), or draws its own (`Gaussian`,
+xoshiro128++ with Box–Muller) when no `omega_NNN.npy` is given.
+
+| | Rust native vs Python | Rust → wasm, headless Chrome vs Python |
+|---|---|---|
+| kept rank per tile (513 in all, 1–16), last rSVD rank (40 in every tile) | identical | identical |
+| mean, energy | identical | identical |
+| noise `sigma` (float32 FFT) | ≤ 1.1e-6 rel | ≤ 1.2e-6 rel |
+| singular values | ≤ 1.4e-5 rel | ≤ 1.4e-5 rel |
+| reconstruction `W V^T` (rel. Frobenius, per tile) | ≤ 5.6e-5, median 1.8e-6 | ≤ 5.5e-5, median 1.8e-6 |
+| temporal subspace (1 − smallest principal cosine) | ≤ 4.3e-9 | ≤ 1.4e-5 relUB |
+| time, 1 thread, M1 Max | 18.7 s (100 tiles) | 27.8 s (3.6 tiles/s), tile reads 0.4 s; 92 MB wasm heap (pass 1 + 2 in one run: 1:41) |
+| Python, 1 thread (Accelerate sgemm) | 10.8 s | |
+
+- `compress.rs`: `TileMatrix` (mean, energy, noise; products with `Y` as float32
+  `matrixmultiply` GEMMs over 512-frame chunks), Householder QR in float64, the small SVD
+  from the eigenvectors of `B Bᵀ` in float64, lag-1 autocorrelation cut, rank doubling.
+- With Rust's own draws the kept rank differs by 1–2 in 19 of 100 tiles (511 vs 513):
+  that is the rSVD's own seed sensitivity at one power iteration, not a port error, so the
+  check replays numpy's draws.
+- Browser: `Pass2Engine` in `wasm.rs`; when the inputs folder also has `pass2.json`, the
+  worker runs pass 2 on pass 1's open OPFS tile files right after pass 1.
+  `ref_pass2.py`'s `inputs/` holds pass 1's inputs too, so one run does both.
+
+Run it:
+```bash
+python experiments/streaming/ref_pass2.py --t0 0 --t1 3000   # after ref_pass1.py
+minime-core pass2 --tiles <pass1 ref>/rust_native/tiles --inputs <ref>/inputs --out <ref>/rust_native
+python experiments/streaming/check_pass2.py <ref> <ref>/rust_native
+STREAM_RAW=<raw dir> STREAM_INPUTS=<ref>/inputs STREAM_OUT=<ref>/rust_browser npm --prefix web run e2e:stream
+python experiments/streaming/check_pass2.py <ref> <ref>/rust_browser
+python experiments/streaming/check_pass1.py <pass1 ref> <ref>/rust_browser
+```
+
 ## Next
-1. Discovery port, stage by stage on one 3000-frame window: ~~motion~~, ~~pass 1~~ (done) → pass 2 rSVD
-   (reads the tile store; inject the RNG for the check) → seeds/PNR/GMM → init → CNMF loop → stitch.
+1. Discovery port, stage by stage on one 3000-frame window: ~~motion~~, ~~pass 1~~, ~~pass 2~~ (done)
+   → seeds/PNR/GMM → init → CNMF loop → stitch.
 2. Speed: preprocessing in a worker pool (frames are independent), faster median
    (Perreault O(1) or a sorting-network median), then rayon + COOP/COEP.
 3. Save outputs to a folder (`showDirectoryPicker` on Chromium, OPFS elsewhere) and

@@ -4,12 +4,15 @@
 //!     minime-core --raw RAW_DIR --inputs INPUTS_DIR --out OUT_DIR [--check-frames T.npy]
 //!     minime-core motion --raw RAW_DIR --params PARAMS.json --out OUT_DIR [--check-frames T.npy]
 //!     minime-core pass1 --raw RAW_DIR --inputs INPUTS_DIR --out OUT_DIR [--estimate]
+//!     minime-core pass2 --tiles TILE_DIR --inputs INPUTS_DIR --out OUT_DIR [--own-rng]
 //!
 //! The first is one streaming pass (`ref_dump.py`), the second the motion stage on one
 //! window (`ref_motion.py`), the third pass 1 on one window (`ref_pass1.py`), with the
-//! tile store written to `OUT_DIR/tiles/`.
+//! tile store written to `OUT_DIR/tiles/`, the fourth pass 2 on that tile store
+//! (`ref_pass2.py`), replaying numpy's draws unless `--own-rng`.
 
 use minime_core::avi::{self, AviIndex, FileReader, ReadAt};
+use minime_core::compress::{self, Gaussian, Normals, Pass2Params, Recorded};
 use minime_core::motion::{self, Motion, MotionParams, Reg};
 use minime_core::pass1::{self, Pass1, Pass1Params};
 use minime_core::{finish, npy, Inputs};
@@ -230,11 +233,73 @@ fn run_pass1(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Pass 2 on the tile store `--tiles` (`tile_NNN.partPP`, parts in order), one tile at a
+/// time, writing the files `ref_pass2.py` writes under `ref/`.
+fn run_pass2(args: &[String]) -> Result<(), String> {
+    let tiles = PathBuf::from(arg(args, "--tiles").ok_or("--tiles DIR")?);
+    let inputs = PathBuf::from(arg(args, "--inputs").ok_or("--inputs DIR")?);
+    let out = PathBuf::from(arg(args, "--out").ok_or("--out DIR")?);
+    let own_rng = args.iter().any(|a| a == "--own-rng");
+    let read = |name: &str| std::fs::read(inputs.join(name)).map_err(|e| format!("{name}: {e}"));
+    let p: Pass2Params =
+        serde_json::from_slice(&read("pass2.json")?).map_err(|e| format!("pass2.json: {e}"))?;
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let grid = pass1::tile_grid(p.h, p.w, p.tile);
+    let (mut t_read, mut t_compress) = (0.0, 0.0);
+    let mut res = Vec::with_capacity(grid.len());
+    for (k, tile) in grid.iter().enumerate() {
+        let s0 = Instant::now();
+        let mut raw = Vec::new();
+        for part in 0.. {
+            match std::fs::read(tiles.join(format!("tile_{k:03}.part{part:02}"))) {
+                Ok(b) => raw.extend_from_slice(&b),
+                Err(_) if part > 0 => break,
+                Err(e) => return Err(format!("tile {k}: {e}")),
+            }
+        }
+        if raw.len() != p.t * tile.pixels() {
+            return Err(format!(
+                "tile {k}: {} bytes, expected {}",
+                raw.len(),
+                p.t * tile.pixels()
+            ));
+        }
+        let mut rng: Box<dyn Normals> = if own_rng {
+            Box::new(Gaussian::new(k as u64))
+        } else {
+            Box::new(Recorded::new(
+                npy::read_f32(&read(&format!("omega_{k:03}.npy"))?)?.data,
+            ))
+        };
+        let s1 = Instant::now();
+        res.push(compress::compress_tile(
+            &raw,
+            p.t,
+            tile.pixels(),
+            &p,
+            rng.as_mut(),
+        )?);
+        t_read += (s1 - s0).as_secs_f64();
+        t_compress += s1.elapsed().as_secs_f64();
+    }
+    let summary = serde_json::json!({
+        "frames": p.t, "tiles": grid.len(), "own_rng": own_rng,
+        "rank_total": res.iter().map(|r| r.rank).sum::<usize>(),
+        "read": t_read, "compress": t_compress,
+    });
+    eprintln!("{summary}");
+    for (name, bytes) in compress::outputs(&res, summary) {
+        std::fs::write(out.join(name), bytes).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("motion") => return run_motion(&args),
         Some("pass1") => return run_pass1(&args),
+        Some("pass2") => return run_pass2(&args),
         _ => {}
     }
     let raw = PathBuf::from(arg(&args, "--raw").ok_or("--raw RAW_DIR")?);

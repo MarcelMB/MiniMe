@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-import init, { AviFile, Engine, MotionEngine, Pass1Engine, crc32 } from "./pkg/minime_core.js";
+import init, { AviFile, Engine, MotionEngine, Pass1Engine, Pass2Engine, crc32 } from "./pkg/minime_core.js";
 import { orderAvis } from "./order";
 import type { FromWorker, ToWorker } from "./protocol";
 
@@ -155,7 +155,8 @@ const TILE_DIR = "pass1_tiles";
 const FLUSH = 100; // frames buffered before they are appended to the tile files
 
 /** Pass 1 (`minime-core pass1`) on `[t0, t1)`, with the tile store in OPFS: one file per
- * tile, written through sync access handles, read back at the end for its CRC-32s. */
+ * tile, written through sync access handles, read back at the end for its CRC-32s. With
+ * `pass2.json` in the inputs, pass 2 follows on the same tile files. */
 async function runPass1(
   avis: File[],
   files: Map<string, Uint8Array>,
@@ -219,11 +220,12 @@ async function runPass1(
     h.read(buf, { at: 0 });
     crc[k] = crc32(buf, 0);
     storeBytes += buf.length;
-    h.close();
   }
   const tCrc = (performance.now() - s) / 1e3;
   const heapMb = memory.buffer.byteLength / 2 ** 20;
   log(`pass 1 done, ${(storeBytes / 2 ** 20).toFixed(0)} MB in OPFS, wasm heap ${heapMb.toFixed(0)} MB`);
+  const p2 = files.has("pass2.json") ? runPass2(handles, files, log, memory) : null;
+  for (const h of handles) h.close();
   const timing = {
     where: "browser",
     pass: passSeconds,
@@ -235,7 +237,40 @@ async function runPass1(
   const out = engine.finish(JSON.stringify(timing), crc) as Map<string, Uint8Array>;
   engine.free();
   for (const sg of segs) sg.avi.free();
-  post({ type: "done", files: out, seconds: passSeconds }, [...out.values()].map((v) => v.buffer));
+  if (p2) for (const [name, bytes] of p2.files) out.set(name, bytes);
+  const seconds = passSeconds + (p2?.seconds ?? 0);
+  post({ type: "done", files: out, seconds }, [...out.values()].map((v) => v.buffer));
+}
+
+/** Pass 2 (`minime-core pass2`) on pass 1's open tile files, one tile at a time. */
+function runPass2(
+  handles: FileSystemSyncAccessHandle[],
+  files: Map<string, Uint8Array>,
+  log: (what: string) => void,
+  memory: WebAssembly.Memory,
+): { files: Map<string, Uint8Array>; seconds: number } {
+  const engine = new Pass2Engine(files);
+  const n = engine.n_tiles();
+  if (n !== handles.length) throw new Error(`pass2.json has ${n} tiles, the tile store ${handles.length}`);
+  log(`pass 2 on ${n} tiles, ${engine.replayed() ? "replaying numpy's draws" : "own draws"}`);
+  post({ type: "start", stage: "pass2", frames: n, units: 0, height: 0, width: 0 });
+  const start = performance.now();
+  let [tRead, rankTotal] = [0, 0];
+  for (let k = 0; k < n; k++) {
+    const s = performance.now();
+    const buf = new Uint8Array(handles[k].getSize());
+    handles[k].read(buf, { at: 0 });
+    tRead += performance.now() - s;
+    rankTotal += engine.compress(buf);
+    post({ type: "progress", done: k + 1, frames: n, seconds: (performance.now() - start) / 1e3, stateMb: 0 });
+  }
+  const seconds = (performance.now() - start) / 1e3;
+  const heapMb = memory.buffer.byteLength / 2 ** 20;
+  log(`pass 2 done, ${rankTotal} components, wasm heap ${heapMb.toFixed(0)} MB`);
+  const timing = { where: "browser", pass2: seconds, read_tiles: tRead / 1e3, wasm_heap_mb: heapMb };
+  const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
+  engine.free();
+  return { files: out, seconds };
 }
 
 self.onmessage = (e: MessageEvent<ToWorker>) => {
