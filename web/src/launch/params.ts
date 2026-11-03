@@ -52,6 +52,8 @@ export type StageRow = {
   running: boolean;
   failed: boolean;
   n?: number;
+  /** Shown after the name, muted: what the stage is doing or did ("3 settings", "41 fps"). */
+  note?: string;
 };
 
 export function stageRows(events: ProgressEvent[]): StageRow[] {

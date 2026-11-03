@@ -39,6 +39,7 @@ browser stage is checked against it. Background and results: `docs/browser-optio
 | initA, initC, initial unit merge | `init` | **done** | same footprint supports and merge groups (native: traces identical; Chrome on its own pass 2: ≤ 5.7e-6 rel) |
 | CNMF loop: spatial update (NNQP), size filter, background, traces, loop merge | `cnmf` | **done** | same supports, masks and merge groups per iteration (native: `YCt` exact; Chrome on its own factors: ≤ 2.2e-5 rel) |
 | stitch (`brightest_parent` trees of cross-window footprint cosines), window loop | `stream.stitch`, `t1_discovery.py --mode fresh` | **done** | same edges, parents, groups; footprints bit-exact on the same window units (native and Chrome); 2-window loop in Chrome = Python |
+| run from the AVIs alone: default parameters, own motion chained into the windows and the streaming pass, own rSVD draws, stage rows + `report.json`, downloads | `minime run` (`params.py` defaults, `report.json`) | **done** | same decisions as the folder-driven run with own motion (shifts ≤ 4.1e-6 px); own draws move 2 of 388 window units; 5-min synth F1 0.962 vs the batch run's 0.968 |
 
 Slice 1 inputs (until discovery is ported): footprints, shifts, mean image and noise come
 from Python as a small export (`ref_dump.py`'s `inputs/`).
@@ -471,18 +472,78 @@ python experiments/streaming/check_stitch.py <ref> <ref>/rust_chain --own-window
 python experiments/streaming/check_chain.py <ref> <ref>/rust_chain <dir with the 6 AVIs>
 ```
 
+## Run from the AVIs alone (2026-11-03): no Python involved
+`#/stream` now runs the whole pipeline from the raw AVIs: pick the files, press Run. The
+reference folder is optional and only overrides what it holds.
+
+- Parameters: `web/src/stream/session.ts` builds `session.json` from MiniMe's defaults in
+  `ref_stitch.py --session-inputs --stream`'s layout (3000-frame windows, `cos_thres` 0.7,
+  `ref_dump.py`'s streaming layout); `session.test.ts` checks it equals what Python wrote for
+  the 600² GRIN synth (`session.ref.json`), and the AVI-only run's `session.json` equals the
+  reference's bit for bit.
+- Motion: `runWindows` runs `MotionEngine` over every frame first (template from the first
+  200 frames of segment 0) unless the inputs hold `shifts.npy` and `template.npy`; its
+  float64 shifts go to the windows (`window_inputs`) and the streaming pass in memory, cast to
+  float32 as the Python sidecar is (`npy::read_f32`). Pass 2 draws its own Gaussians
+  (`Gaussian`, seed = tile index) unless `omega_*.npy` files are given.
+- Page: `minime serve`'s job-page layout (status + elapsed, one `StageRows` row per stage
+  with the running stage's frames, fps and wasm heap live, a per-window stage adds up over
+  the windows; log; results). The worker posts `progress.jsonl`-shaped stage events and
+  writes `report.json` with MiniMe's field names where they exist (`stages`, `counts`,
+  `motion.max_abs_shift_px` / `quality_median`, `pass1_cpu_seconds`, `wall_total`,
+  `workers`) plus `windows` (per-window seconds and counts) and `wasm_heap_peak_mb`.
+  Downloads: stitched `A_*`, `C.npy`, `units.csv` (centroid, size, windows, brightness,
+  kept), `shifts.npy`, `Amerged_*`, `report.json`, `session.json`, then every other file.
+- Checks on frames 0–6000 of the GRIN synth (6 files, 2 windows), one worker, M1 Max:
+
+| run | inputs | window units → stitched | against the reference (`check_stitch.py --own-windows`, `check_chain.py`) |
+|---|---|---|---|
+| reference folder (`STREAM_INPUTS=<ref>/session`) | `session.json`, Python's shifts and template, numpy's draws | 388 → 244, 144 links | PASS as before: decisions identical, footprint values ≤ 2.0e-5, chain `C`, `f`, sums exact |
+| own motion (`session.json` + `omega_*` only) | browser motion, numpy's draws | 388 → 244, 144 links | shifts ≤ 4.1e-6 px of Python's (same integer peak, all 6000 frames), template ≤ 3.2e-7; every decision identical (supports, pairs, edges, parents, groups); window footprint values ≤ 3.9e-3 (the one-grey-level pixels a 4e-6 px shift moves, pass 1 result above), brightness ≤ 1.1e-5, cosines ≤ 1.2e-5 |
+| AVIs alone | nothing | 390 → 245, 145 links | own draws: window 1 keeps 2 more units (pass 2's seed sensitivity); `session.json` identical to Python's |
+
+  Time: motion 128 s (47 fps incl. the template), pass 1 144 s (42 fps), pass 2 55 s,
+  seeds + init + CNMF 8 s, stitch < 0.1 s, streaming pass 78 s (77 fps); 6:55 wall, wasm
+  heap peak 177 MB. The folder-driven run without motion took 5:03.
+- 5-minute synthetic session (`synth_v4_5min`, 9 AVIs, 9000 frames at 30 fps, 600²), AVIs
+  alone, headless Chrome: 10:44 wall (motion 187 s, pass 1 217 s, pass 2 85 s, CNMF 25 s,
+  streaming pass 127 s), heap peak 273 MB; 3 windows (409, 400, 396 units) stitched into
+  419, 418 kept by the update, 417 after the merge; largest shift 12.1 px, quality median
+  0.83. Scored against the truth (421 cells; `browser_run_dir.py` lays the outputs out as
+  a run dir, then `minime score`): F1 **0.962** (recall 0.960, precision 0.964, detectable
+  recall 0.965), trace correlation median **0.995**. The Python batch run on the same
+  session (`minime_2026-10-28_1717`): F1 0.968 (recall 0.948, precision 0.990), traces
+  0.994. (The truth is regenerated from `meta.json`; the generator still reproduces the raw
+  frames bit for bit.)
+
+Run it:
+```bash
+npm --prefix web run wasm
+STREAM_RAW=<raw dir> STREAM_OUT=<out> npm --prefix web run e2e:stream          # AVIs alone
+STREAM_FILES=6 STREAM_RAW=<raw dir> STREAM_INPUTS=<ref>/session STREAM_OUT=<ref>/rust_browser_full npm --prefix web run e2e:stream
+python experiments/streaming/check_stitch.py <ref> <ref>/rust_browser_full --own-windows
+python experiments/streaming/check_chain.py <ref> <ref>/rust_browser_full <raw dir>
+python experiments/streaming/browser_run_dir.py <out> --raw <raw dir> && minime score <out>/run --raw <raw dir>
+```
+Do not edit `web/src` while an e2e run is going: Vite's hot reload re-renders the page and
+the run's messages are lost.
+
 ## Next
 0. Rerun the 8 h and 24 h streaming pass with the traces in OPFS (8 h scale run above);
    machine-hours, so overnight.
-1. ~~Discovery port~~ (done, stitch included). Next: the full 12-window loop in Chrome
-   (~21 min single core, so overnight): `ref_stitch.py --session-inputs` (all windows; for
-   replayed draws `ref_pass1.py`/`ref_pass2.py` per window first, or own draws and compare
-   counts), `STREAM_INPUTS=<ref>/session`, all 36 files; check with `check_stitch.py
-   --own-windows` against `ref_stitch_w3000`, watching the 2.9e-5 brightness tie.
+1. ~~Discovery port~~, ~~run from the AVIs alone~~ (done). Next: the full 36-file GRIN
+   session in Chrome with the AVIs alone (~45 min single core, so overnight), scored with
+   `browser_run_dir.py` + `minime score` against the batch run's F1 0.740 / the `fresh`
+   chain's 0.738; and the same with `STREAM_INPUTS=<ref>/session` (`ref_stitch.py
+   --session-inputs`, all windows) checked with `check_stitch.py --own-windows` against
+   `ref_stitch_w3000`, watching the 2.9e-5 brightness tie.
 1b. ~~`ymean`/`sn` for a browser-only run, window loop chained into the streaming pass~~
-   (done). Overnight with 1: the whole 36-file chain with `--stream`, scored against F1 0.738.
-   A second streaming pass on the updated footprints (`t2_stream.py --n-updates 1`'s pass 1,
-   the scored traces) is one more read of the movie; not chained yet.
+   (done). A second streaming pass on the updated footprints (`t2_stream.py --n-updates
+   1`'s pass 1, the scored traces) is one more read of the movie; not chained yet.
+1c. Fold the shift estimate into pass 1 (`Pass1` already estimates when no shift is given;
+   the shifts are the same code, so identical): the separate motion stage reads and
+   median-filters every frame once more, about a third of a run (128 of 415 s on 6000
+   frames). Keep the template build as its own short stage.
 2. Speed: preprocessing in a worker pool (frames are independent), faster median
    (Perreault O(1) or a sorting-network median), then rayon + COOP/COEP.
 3. Save outputs to a folder (`showDirectoryPicker` on Chromium, OPFS elsewhere) and

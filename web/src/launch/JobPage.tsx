@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { getJSON, postJSON, tokenQuery } from "../api";
 import { ErrorNote } from "../controls";
-import { fmtDuration, stageLabel } from "../format";
+import { fmtDuration } from "../format";
 import { go } from "../router";
 import type { Job, RunListing } from "../types";
 import { isFinal, type ProgressEvent, stageRows } from "./params";
+import { StageRows } from "./StageRows";
 
 export function JobPage({ id }: { id: string }) {
   const [job, setJob] = useState<Job | null>(null);
@@ -115,36 +116,13 @@ export function JobPage({ id }: { id: string }) {
       <div className="bento">
         <section className="card span2" aria-label="Stages">
           <span className="label">Stages</span>
-          {stageRows(events).map((r) => (
-            <div className="barrow" key={r.stage}>
-              <span>
-                {r.running && !final ? (
-                  "…"
-                ) : r.running ? (
-                  <span role="img" aria-label="stopped">
-                    –
-                  </span>
-                ) : r.failed ? (
-                  <span role="img" aria-label="failed">
-                    ✗
-                  </span>
-                ) : (
-                  <span role="img" aria-label="done">
-                    ✓
-                  </span>
-                )}{" "}
-                {stageLabel(r.stage)}
-                {r.n !== undefined && r.n > 0 && (
-                  <span className="muted">
-                    {" "}
-                    · {r.n} {r.n === 1 ? "setting" : "settings"}
-                  </span>
-                )}
-              </span>
-              <span className="spacer" />
-              <span className="mono">{r.seconds === null ? "" : fmtDuration(r.seconds)}</span>
-            </div>
-          ))}
+          <StageRows
+            rows={stageRows(events).map((r) => ({
+              ...r,
+              note: r.n !== undefined && r.n > 0 ? `${r.n} ${r.n === 1 ? "setting" : "settings"}` : undefined,
+            }))}
+            final={final}
+          />
           {events.length === 0 && (
             <span className="muted">{job.status === "queued" ? "Waiting for the run before it." : "Starting…"}</span>
           )}

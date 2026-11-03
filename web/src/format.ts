@@ -32,6 +32,13 @@ const STAGES: Record<string, string> = {
   cnmf: "CNMF",
   initA: "init footprints",
   initC: "init traces",
+  // the browser run's stages (#/stream)
+  motion: "Motion · template + shifts",
+  seeds: "Seeds · PNR + merge",
+  init: "Init · footprints, traces, merge",
+  stitch: "Stitch · windows into units",
+  stream: "Streaming pass · traces + footprint update",
+  overall: "Overall",
   tune_run: "auto-tune · the run's values",
   tune_seeds: "auto-tune · seeds",
   tune_merge: "auto-tune · merge",

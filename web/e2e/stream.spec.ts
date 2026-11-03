@@ -2,15 +2,16 @@ import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 
-// Runs one streaming pass in the browser and saves its outputs for
-// experiments/streaming/check_rust.py:
+// Runs the browser pipeline on raw AVIs and saves its outputs for the
+// experiments/streaming/check_*.py scripts:
 //   STREAM_RAW=<raw dir> STREAM_INPUTS=<ref>/inputs STREAM_OUT=<ref>/rust_browser npm run e2e:stream
+// Without STREAM_INPUTS the AVIs alone are picked (the whole pipeline, default parameters).
 const raw = process.env.STREAM_RAW;
 const inputs = process.env.STREAM_INPUTS;
 const out = process.env.STREAM_OUT;
 
 test("streams raw AVIs in the browser and saves the outputs", async ({ page }) => {
-  test.skip(!raw || !inputs || !out, "set STREAM_RAW, STREAM_INPUTS and STREAM_OUT");
+  test.skip(!raw || !out, "set STREAM_RAW and STREAM_OUT (and STREAM_INPUTS for a reference folder)");
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
@@ -24,11 +25,11 @@ test("streams raw AVIs in the browser and saves the outputs", async ({ page }) =
     .map((f) => join(raw!, f));
   const nFiles = Number(process.env.STREAM_FILES ?? avis.length);
   await page.getByLabel("Raw AVIs").setInputFiles(avis.slice(0, nFiles));
-  await page.getByLabel("Inputs folder").setInputFiles(inputs!);
+  if (inputs) await page.getByLabel("Inputs folder").setInputFiles(inputs);
   await page.getByRole("button", { name: "Run" }).click();
   const progress = setInterval(async () => {
     const t = await page
-      .getByRole("region", { name: "Progress" })
+      .getByRole("region", { name: "Stages" })
       .textContent()
       .catch(() => null);
     if (t) console.log(t);
@@ -41,8 +42,8 @@ test("streams raw AVIs in the browser and saves the outputs", async ({ page }) =
   await expect(failed).toHaveCount(0);
   mkdirSync(out!, { recursive: true });
   // read each output's blob in the page (clicking many download links trips Chrome's
-  // multiple-downloads prompt)
-  for (const link of await results.getByRole("link").all()) {
+  // multiple-downloads prompt); the secondary outputs sit in a collapsed <details>
+  for (const link of await results.getByRole("link", { includeHidden: true }).all()) {
     const [name, url] = [await link.getAttribute("download"), await link.getAttribute("href")];
     const b64 = await page.evaluate(async (u) => {
       const blob = await (await fetch(u!)).blob();
