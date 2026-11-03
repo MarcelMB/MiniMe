@@ -126,6 +126,12 @@ def test_dilate_footprints_disk():
     assert np.array_equal(sub.toarray()[0], disk)
 
 
+def test_dilate_footprints_negative_window_allows_every_pixel():
+    A = sps.csr_matrix(([1.0, 1.0], ([0, 1], [3, 40])), shape=(2, 64), dtype=np.float32)
+    sub = cnmf.dilate_footprints(A, 8, 8, -1)
+    assert sub.dtype == bool and sub.shape == (2, 64) and sub.nnz == 128
+
+
 def test_update_spatial_shrinks_outside_cells_and_keeps_units():
     f, fc, A, C = _setup()
     sn = f.sigma_flat()
