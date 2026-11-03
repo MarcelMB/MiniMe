@@ -8,6 +8,7 @@ processed/
 .claude/
 web/node_modules/
 web/test-results/
+web/dist-browser/
 web/playwright-report/
 web/e2e/.data/
 src/minime/serve/static/

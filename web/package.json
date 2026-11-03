@@ -5,10 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:browser": "vite --mode browser",
     "wasm": "cd ../rust/minime-core && RUSTFLAGS='-C target-feature=+simd128' wasm-pack build --release --target web --out-dir ../../web/src/stream/pkg",
     "build": "tsc --noEmit && vite build",
+    "build:browser": "tsc --noEmit && vite build --mode browser",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && vitest run -c vitest.browser.config.ts",
     "e2e": "playwright test",
     "e2e:stream": "playwright test -c playwright.stream.config.ts",
     "format": "biome format --write .",
