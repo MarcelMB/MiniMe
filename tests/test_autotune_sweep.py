@@ -98,8 +98,12 @@ def test_failed_settings_are_recorded_and_skipped(tiny_w2_run):
     sw = sweep.Sweep(sess, score.Checks(D), grids)
     sw.run()
     failed = [t for t in sw.trials if t.error]
-    assert failed and all("no seeds survived" in t.error for t in failed)
-    assert all(t.values["pnr_thres"] == 1e9 for t in failed)
+    huge = [t for t in sw.trials if t.values["pnr_thres"] == 1e9]
+    assert huge and all(t.error and "no seeds survived" in t.error for t in huge)
+    # anything else may only trip the runaway guard (on Intel Macs seeds_diff_thres 2 gives
+    # 64 seeds > 5 x the run's 12; 58 of 90 on arm64), and the sweep goes on past all of them
+    assert all("too many" in t.error for t in failed if t.values["pnr_thres"] != 1e9)
+    assert len(failed) < len(sw.trials)
 
 
 def test_all_failed_step_falls_back_to_the_run(tiny_w2_run):
