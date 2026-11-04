@@ -513,6 +513,103 @@ test("a raw folder picked on its own asks for an output folder and the run goes 
   expect(errors).toEqual([]);
 });
 
+// The New run form itself (not the in-page API): Runs → Change folder picks the session folder,
+// New run → Choose folder then picks its raw folder in the (stubbed) dialog. That folder lies in a
+// known Runs folder, so it is that folder's path, and Start runs into <session>/processed/<name> as
+// main does: no output folder is asked for, the frame rate comes from the session's meta.json, Home
+// gets no second folder, and the run's scratch folder is gone once it is done.
+test("New run on a raw folder inside the Runs folder runs into its processed folder from the form's Start", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+  await page.goto("/?e2e=1#/");
+  await page.waitForFunction(() => "__minimeApi" in window);
+  const files = readdirSync(RAW).map((name) => [name, readFileSync(join(RAW, name)).toString("base64")]);
+  const meta = readFileSync("e2e/.data/meta.json", "utf8");
+  await page.evaluate(
+    async ({ files, meta }) => {
+      const e2e = await (await navigator.storage.getDirectory()).getDirectoryHandle("e2e", { create: true });
+      const sess = await e2e.getDirectoryHandle("sess", { create: true });
+      const raw = await sess.getDirectoryHandle("raw", { create: true });
+      const put = async (d: FileSystemDirectoryHandle, name: string, data: Uint8Array | string) => {
+        const w = await (await d.getFileHandle(name, { create: true })).createWritable();
+        await w.write(data);
+        await w.close();
+      };
+      for (const [name, b64] of files)
+        await put(
+          raw,
+          name,
+          Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)),
+        );
+      await put(sess, "meta.json", meta);
+      const asked: unknown[] = [];
+      const queue = ["sess", "sess/raw"];
+      // biome-ignore lint/suspicious/noExplicitAny: test hooks on window
+      const w = window as any;
+      w.__dialogs = asked;
+      w.showDirectoryPicker = async (opts: unknown) => {
+        asked.push(opts);
+        let d = e2e;
+        for (const p of (queue.shift() ?? "none").split("/")) d = await d.getDirectoryHandle(p);
+        return d;
+      };
+    },
+    { files, meta },
+  );
+
+  await page.getByRole("button", { name: "Change folder" }).click();
+  await page.getByRole("button", { name: "Show runs here" }).click();
+  await expect(page.locator("h1.mono")).toHaveText("sess");
+
+  await page.getByRole("link", { name: "New run" }).first().click(); // the header's (Home has one too)
+  await page.getByRole("button", { name: "Use these videos" }).click();
+  const videos = page.getByRole("region", { name: "1. Raw videos" });
+  await expect(videos.locator(".mono").first()).toHaveText("sess/raw");
+  await expect(videos).toContainText("3 files · 300 frames · 64 × 64 · 30 fps"); // ../meta.json
+  await page.getByRole("textbox", { name: "Run name" }).fill("nr");
+  await expect(page.getByRole("region", { name: "3. Output" })).toContainText("sess/processed/nr");
+  const start = page.getByRole("button", { name: "Start run" });
+  await expect(start).toBeEnabled({ timeout: 60_000 });
+  await start.click();
+
+  const openRun = page.getByRole("button", { name: "Open run" });
+  const failed = page.getByRole("alert");
+  await expect(openRun.or(failed)).toBeVisible({ timeout: 300_000 });
+  await expect(failed).toHaveCount(0);
+  await expect(page.getByText("sess/processed/nr", { exact: true })).toBeVisible(); // the job's out_dir
+  expect(await page.evaluate(() => (window as unknown as { __dialogs: unknown[] }).__dialogs)).toEqual([
+    { id: "minime", mode: "readwrite" },
+    { id: "minime", mode: "readwrite" },
+  ]); // no output folder asked for
+
+  const listing = (path: string) =>
+    page.evaluate(async (path) => {
+      let d = await navigator.storage.getDirectory();
+      for (const p of path.split("/").filter(Boolean)) d = await d.getDirectoryHandle(p, { create: true });
+      const out: string[] = [];
+      // biome-ignore lint/suspicious/noExplicitAny: entries() is missing from the DOM lib
+      for await (const [n] of (d as any).entries() as AsyncIterable<[string, FileSystemHandle]>) out.push(n);
+      return out.sort();
+    }, path);
+  expect(await listing("e2e/sess")).toEqual(["meta.json", "processed", "raw"]);
+  expect(await listing("e2e/sess/processed/nr")).toEqual(
+    expect.arrayContaining(["params.json", "progress.jsonl", "report.json", "cnmf", "factors"]),
+  );
+  expect(await listing("e2e/sess/raw")).toEqual(files.map(([name]) => name));
+  expect(await listing("scratch")).toEqual([]); // the run's working files are gone
+  const roots = await page.evaluate(
+    // biome-ignore lint/suspicious/noExplicitAny: test hook
+    async () => ((await (window as any).__minimeApi.getJSON("/folders")) as { folders: { path: string }[] }).folders,
+  );
+  expect(roots.map((r) => r.path).sort()).toEqual(["Browser storage", "sess"]);
+  await openRun.click();
+  await expect(page.getByRole("heading", { name: "nr", exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test("a browser without OPFS gets a page that says so instead of the app", async ({ page }) => {
   await page.addInitScript(() => {
     // biome-ignore lint/suspicious/noExplicitAny: removed to look like a browser without OPFS
