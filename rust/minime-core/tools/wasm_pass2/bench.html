@@ -1,0 +1,81 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>pass 2 wasm bench</title>
+<script type="module">
+  import init, { pass2_bench_tile } from "/pkg/minime_core.js";
+
+  const npyF32 = (buf) => {
+    const hl = new DataView(buf).getUint16(8, true);
+    return new Float32Array(buf, 10 + hl);
+  };
+  const get = async (url) => (await fetch(url)).arrayBuffer();
+
+  /** tr(A^T B) of (n, r) float32 matrices stored row-major: the (r, r) cross matrix. */
+  const cross = (a, b, n, r) => {
+    const g = new Float64Array(r * r);
+    for (let i = 0; i < n; i++)
+      for (let x = 0; x < r; x++) {
+        const av = a[i * r + x];
+        for (let y = 0; y < r; y++) g[x * r + y] += av * b[i * r + y];
+      }
+    return g;
+  };
+  const trProd = (g, h, r) => {
+    let s = 0;
+    for (let x = 0; x < r; x++) for (let y = 0; y < r; y++) s += g[x * r + y] * h[y * r + x];
+    return s;
+  };
+  /** ||W V^T - W' V'^T||_F / ||W V^T||_F without forming the (P, T) products. */
+  const reconDiff = (a, b, px, t) => {
+    const r = a.rank;
+    const aa = trProd(cross(a.w, a.w, px, r), cross(a.v, a.v, t, r), r);
+    const bb = trProd(cross(b.w, b.w, px, b.rank), cross(b.v, b.v, t, b.rank), b.rank);
+    const wab = cross(a.w, b.w, px, r); // (r, r): W^T W'
+    const vba = cross(b.v, a.v, t, r); // (r, r): V'^T V
+    const ab = trProd(wab, vba, r);
+    return Math.sqrt(Math.max(aa + bb - 2 * ab, 0) / aa);
+  };
+
+  window.runBench = async (cfg) => {
+    await init();
+    const params = await (await fetch("/inputs/pass2.json")).text();
+    const T = JSON.parse(params).T;
+    const grid = cfg.grid;
+    const sums = { ref: { ms: 0, steps: {} }, new: { ms: 0, steps: {} } };
+    const worst = { recon: 0, rank: 0, meanEnergy: 0, sigmaRel: 0, sRel: 0 };
+    const perTile = [];
+    const impls = cfg.only ? [cfg.only] : ["ref", "new"];
+    for (let rep = 0; rep < cfg.reps; rep++) {
+      for (const k of cfg.ids) {
+        const id = String(k).padStart(3, "0");
+        const raw = new Uint8Array(await get(`/tiles/tile_${id}.part00`));
+        const px = raw.length / T;
+        const omega = npyF32(await get(`/inputs/omega_${id}.npy`));
+        const order = (k + rep) % 2 ? [...impls].reverse() : impls;
+        const out = {};
+        for (const which of order) {
+          const r = pass2_bench_tile(which, params, raw, px, omega);
+          out[which] = r;
+          sums[which].ms += r.ms;
+          for (const [n, v] of Object.entries(r.steps)) sums[which].steps[n] = (sums[which].steps[n] ?? 0) + v;
+        }
+        if (out.ref && out.new) {
+          const a = out.ref;
+          const b = out.new;
+          if (a.rank !== b.rank || a.k !== b.k) worst.rank++;
+          else worst.recon = Math.max(worst.recon, reconDiff(a, b, px, T));
+          let me = 0;
+          for (let i = 0; i < px; i++) me += a.mean[i] !== b.mean[i] || a.energy[i] !== b.energy[i] ? 1 : 0;
+          worst.meanEnergy += me;
+          for (let i = 0; i < px; i++)
+            worst.sigmaRel = Math.max(worst.sigmaRel, Math.abs(a.sigma[i] - b.sigma[i]) / Math.abs(a.sigma[i]));
+          if (a.rank === b.rank)
+            for (let i = 0; i < a.rank; i++) worst.sRel = Math.max(worst.sRel, Math.abs(a.s[i] - b.s[i]) / a.s[i]);
+          perTile.push([k, a.rank, b.rank, a.ms, b.ms]);
+        } else perTile.push([k, out[impls[0]].rank, impls[0] === "ref" ? out.ref.ms : out.new.ms]);
+      }
+    }
+    return { sums, worst, perTile, reps: cfg.reps, T };
+  };
+  window.benchReady = true;
+</script>

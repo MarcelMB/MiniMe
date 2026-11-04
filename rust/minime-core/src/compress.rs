@@ -7,8 +7,11 @@
 //! SVD and the autocorrelations run in float64. The Gaussian test matrices come from a
 //! `Normals` source, so a check can replay the draws numpy made (`ref_pass2.py`).
 
+use crate::fastmath::ln_f32;
 use crate::linalg::sym_eig;
 use crate::npy;
+use crate::prof;
+use realfft::num_complex::Complex;
 use realfft::RealFftPlanner;
 use serde::Deserialize;
 
@@ -139,22 +142,35 @@ pub struct TileMatrix<'a> {
 
 impl<'a> TileMatrix<'a> {
     pub fn new(raw: &'a [u8], t: usize, p: usize) -> Self {
+        let _s = prof::span("mean_energy");
         assert_eq!(raw.len(), t * p);
-        let mut acc = vec![0f64; p];
-        let mut sq = vec![0f64; p];
-        for row in raw.chunks_exact(p) {
+        // Integer column sums are exact, so `mean` and `energy` equal the float64 sums of
+        // the first implementation bit for bit; `sq` is flushed before it can overflow.
+        let mut acc = vec![0u32; p]; // 255 t < 2^32 for t < 16.8 M
+        let mut sq = vec![0u32; p]; // 65025 rows per flush < 2^32 / 65025 = 66051
+        let mut sq64 = vec![0u64; p];
+        for (n, row) in raw.chunks_exact(p).enumerate() {
             for ((a, s), &v) in acc.iter_mut().zip(sq.iter_mut()).zip(row) {
-                let v = f64::from(v);
+                let v = u32::from(v);
                 *a += v;
                 *s += v * v;
             }
+            if (n + 1) % 60_000 == 0 {
+                for (w, s) in sq64.iter_mut().zip(sq.iter_mut()) {
+                    *w += u64::from(*s);
+                    *s = 0;
+                }
+            }
         }
         let tf = t as f64;
-        let mean = acc.iter().map(|&a| (a / tf) as f32).collect();
+        let mean = acc.iter().map(|&a| (f64::from(a) / tf) as f32).collect();
         let energy = acc
             .iter()
-            .zip(&sq)
-            .map(|(&a, &s)| (s - a * a / tf).max(0.0))
+            .zip(sq.iter().zip(&sq64))
+            .map(|(&a, (&s, &w))| {
+                let a = f64::from(a);
+                ((w as f64 + f64::from(s)) - a * a / tf).max(0.0)
+            })
             .collect();
         Self {
             raw,
@@ -241,6 +257,7 @@ impl<'a> TileMatrix<'a> {
     /// `frames > 0` (and fewer than `T`) the bins are pooled over `frames / NOISE_SEG`
     /// segments spread over the tile.
     pub fn noise(&self, noise_freq: f64, frames: usize) -> Vec<f64> {
+        let _s = prof::span("noise");
         let n_seg = frames / NOISE_SEG;
         if n_seg >= 1 && n_seg * NOISE_SEG < self.t {
             return self.noise_segments(noise_freq, n_seg);
@@ -252,24 +269,48 @@ impl<'a> TileMatrix<'a> {
         }
         let mut planner = RealFftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(self.t);
-        let mut inp = fft.make_input_vec();
         let mut spec = fft.make_output_vec();
-        let tf = self.t as f32;
-        let nb = (hi - lo) as f32;
-        (0..self.p)
-            .map(|px| {
-                for (ti, v) in inp.iter_mut().enumerate() {
-                    *v = f32::from(self.raw[ti * self.p + px]);
+        let mut scratch = fft.make_scratch_vec();
+        let (tf, nb) = (self.t as f32, hi - lo);
+        let mut cols = vec![0f32; NOISE_GROUP * self.t];
+        let mut terms = vec![0f32; NOISE_GROUP * nb];
+        let mut out = Vec::with_capacity(self.p);
+        for px0 in (0..self.p).step_by(NOISE_GROUP) {
+            let n = NOISE_GROUP.min(self.p - px0);
+            self.columns(px0, n, 0, self.t, &mut cols);
+            for g in 0..n {
+                {
+                    let _s = prof::span("noise_fft");
+                    fft.process_with_scratch(
+                        &mut cols[g * self.t..(g + 1) * self.t],
+                        &mut spec,
+                        &mut scratch,
+                    )
+                    .expect("fft length");
                 }
-                fft.process(&mut inp, &mut spec).expect("fft length");
-                let mut s = 0f32;
-                for c in &spec[lo..hi] {
-                    let a = c.re.hypot(c.im);
-                    s += (a * a / tf + f32::EPSILON).ln();
-                }
-                f64::from((0.5 * (s / nb)).exp())
-            })
-            .collect()
+                let _s = prof::span("noise_log");
+                log_terms(&spec[lo..hi], tf, &mut terms[g * nb..(g + 1) * nb]);
+            }
+            let _s = prof::span("noise_sum");
+            // numpy sums the bins of a pixel in order, in float32: four pixels at a time
+            // keeps that order per pixel without waiting on one dependent add chain
+            let sums = seq_sums_f32(&terms[..n * nb], nb);
+            out.extend(sums.iter().map(|&s| f64::from((0.5 * (s / nb as f32)).exp())));
+        }
+        out
+    }
+
+    /// Pixels `px0..px0 + n` of frames `t0..t0 + len` as float32 rows of `len` (`dst[g * len + i]`):
+    /// the transpose a per-pixel FFT needs, done for a group of pixels so that every frame
+    /// row is read once, contiguously.
+    fn columns(&self, px0: usize, n: usize, t0: usize, len: usize, dst: &mut [f32]) {
+        let _s = prof::span("noise_gather");
+        for i in 0..len {
+            let row = &self.raw[(t0 + i) * self.p + px0..(t0 + i) * self.p + px0 + n];
+            for (g, &v) in row.iter().enumerate() {
+                dst[g * len + i] = f32::from(v);
+            }
+        }
     }
 
     fn noise_segments(&self, noise_freq: f64, n_seg: usize) -> Vec<f64> {
@@ -287,28 +328,33 @@ impl<'a> TileMatrix<'a> {
             .collect();
         let mut planner = RealFftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(l);
-        let mut inp = fft.make_input_vec();
         let mut spec = fft.make_output_vec();
-        let lf = l as f32;
-        let nb = (hi - lo) as f64;
-        (0..self.p)
-            .map(|px| {
-                let mut acc = 0f64;
-                for &t0 in &starts {
-                    for (ti, v) in inp.iter_mut().enumerate() {
-                        *v = f32::from(self.raw[(t0 + ti) * self.p + px]);
-                    }
-                    fft.process(&mut inp, &mut spec).expect("fft length");
+        let mut scratch = fft.make_scratch_vec();
+        let (lf, nb) = (l as f32, hi - lo);
+        let mut cols = vec![0f32; NOISE_GROUP * l];
+        let mut terms = vec![0f32; nb];
+        let mut out = vec![0f64; self.p];
+        for px0 in (0..self.p).step_by(NOISE_GROUP) {
+            let n = NOISE_GROUP.min(self.p - px0);
+            let mut acc = [0f64; NOISE_GROUP];
+            for &t0 in &starts {
+                self.columns(px0, n, t0, l, &mut cols);
+                for (g, a) in acc.iter_mut().enumerate().take(n) {
+                    fft.process_with_scratch(&mut cols[g * l..(g + 1) * l], &mut spec, &mut scratch)
+                        .expect("fft length");
+                    log_terms(&spec[lo..hi], lf, &mut terms);
                     let mut s = 0f64;
-                    for c in &spec[lo..hi] {
-                        let a = c.re.hypot(c.im);
-                        s += f64::from((a * a / lf + f32::EPSILON).ln());
+                    for &v in &terms {
+                        s += f64::from(v);
                     }
-                    acc += s / nb;
+                    *a += s / nb as f64;
                 }
-                (0.5 * acc / n_seg as f64).exp()
-            })
-            .collect()
+            }
+            for (g, a) in acc.iter().enumerate().take(n) {
+                out[px0 + g] = (0.5 * a / n_seg as f64).exp();
+            }
+        }
+        out
     }
 
     /// Too few frames for a spectrum: `1.4826 median |dy| / sqrt 2`.
@@ -337,73 +383,155 @@ impl<'a> TileMatrix<'a> {
     }
 }
 
+/// Pixels per group of the noise stage's transposed gather.
+const NOISE_GROUP: usize = 16;
+
+/// `ln(|X|^2 / len + eps)` of each bin, float32 (`|X|^2` as `re^2 + im^2`).
+fn log_terms(spec: &[Complex<f32>], len: f32, out: &mut [f32]) {
+    for (o, c) in out.iter_mut().zip(spec) {
+        *o = ln_f32((c.re * c.re + c.im * c.im) / len + f32::EPSILON);
+    }
+}
+
+/// In-order float32 sum of each row of `terms` (`(n, nb)`), `n <= NOISE_GROUP`.
+fn seq_sums_f32(terms: &[f32], nb: usize) -> Vec<f32> {
+    let n = terms.len() / nb;
+    let mut out = vec![0f32; n];
+    let mut g = 0;
+    while g + 4 <= n {
+        let r = |i: usize| &terms[(g + i) * nb..(g + i + 1) * nb];
+        let (a, b, c, d) = (r(0), r(1), r(2), r(3));
+        let mut s = [0f32; 4];
+        for i in 0..nb {
+            s[0] += a[i];
+            s[1] += b[i];
+            s[2] += c[i];
+            s[3] += d[i];
+        }
+        out[g..g + 4].copy_from_slice(&s);
+        g += 4;
+    }
+    for g in g..n {
+        out[g] = terms[g * nb..(g + 1) * nb].iter().fold(0f32, |s, &v| s + v);
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Randomized SVD and rank cut
 // ---------------------------------------------------------------------------
 
-/// Orthonormal basis (economic Householder QR, LAPACK's sign convention) of the
-/// columns of `a` `(m, n)` row-major, as `(m, n)` row-major float32.
-pub fn qr_q(a: &[f32], m: usize, n: usize) -> Vec<f32> {
-    let mut c: Vec<f64> = vec![0.0; m * n]; // column-major
-    for i in 0..m {
-        for j in 0..n {
-            c[j * m + i] = f64::from(a[i * n + j]);
+/// Columns of a register block in the QR's trailing updates.
+const QR_W: usize = 8;
+
+/// `acc[k] = sum_{i > j} v_i t[i][col0 + k]` for `k < W` over the row-major `(m, n)` matrix
+/// `t`: one pass over the rows with `W` sums in registers. Every sum runs in row order
+/// from zero with unfused products, so it equals a plain dot product, bit for bit.
+#[inline(always)]
+fn dot_cols<const W: usize>(t: &[f64], n: usize, j: usize, v: &[f64], col0: usize, acc: &mut [f64]) {
+    let mut s = [-0.0f64; W]; // `Iterator::sum` starts at -0.0
+    for (row, &vi) in t[(j + 1) * n..].chunks_exact(n).zip(v) {
+        let x = &row[col0..col0 + W];
+        for k in 0..W {
+            s[k] += vi * x[k];
         }
     }
+    acc[..W].copy_from_slice(&s);
+}
+
+/// `t[i][col0 + k] -= f[k] * v_i` for `k < W` and the rows `i > j`.
+#[inline(always)]
+fn axpy_cols<const W: usize>(t: &mut [f64], n: usize, j: usize, v: &[f64], col0: usize, f: &[f64]) {
+    let mut fv = [0f64; W];
+    fv.copy_from_slice(&f[..W]);
+    for (row, &vi) in t[(j + 1) * n..].chunks_exact_mut(n).zip(v) {
+        let x = &mut row[col0..col0 + W];
+        for k in 0..W {
+            x[k] -= fv[k] * vi;
+        }
+    }
+}
+
+/// Apply the reflector `H = I - tau [1; v] [1; v]^T` (row `j` is its implicit 1) to the
+/// columns `cols` of the row-major `(m, n)` matrix `t`: `d = t[j][k] + v . t[j + 1.., k]`,
+/// `f = tau d`, `t[j][k] -= f`, `t[i][k] -= f v_i`.
+fn reflect(t: &mut [f64], n: usize, j: usize, v: &[f64], tau: f64, cols: std::ops::Range<usize>) {
+    let mut acc = [0f64; QR_W];
+    let mut col0 = cols.start;
+    while col0 < cols.end {
+        let rem = cols.end - col0;
+        let w = match rem {
+            8.. => 8,
+            4..=7 => 4,
+            2..=3 => 2,
+            _ => 1,
+        };
+        match w {
+            8 => dot_cols::<8>(t, n, j, v, col0, &mut acc),
+            4 => dot_cols::<4>(t, n, j, v, col0, &mut acc),
+            2 => dot_cols::<2>(t, n, j, v, col0, &mut acc),
+            _ => dot_cols::<1>(t, n, j, v, col0, &mut acc),
+        }
+        for k in 0..w {
+            let d = t[j * n + col0 + k] + acc[k];
+            acc[k] = tau * d; // f
+            t[j * n + col0 + k] -= acc[k];
+        }
+        match w {
+            8 => axpy_cols::<8>(t, n, j, v, col0, &acc),
+            4 => axpy_cols::<4>(t, n, j, v, col0, &acc),
+            2 => axpy_cols::<2>(t, n, j, v, col0, &acc),
+            _ => axpy_cols::<1>(t, n, j, v, col0, &acc),
+        }
+        col0 += w;
+    }
+}
+
+/// Orthonormal basis (economic Householder QR, LAPACK's sign convention) of the
+/// columns of `a` `(m, n)` row-major, as `(m, n)` row-major float32. Float64 throughout;
+/// the operations and their order are those of a column-by-column implementation, with
+/// the sums of all trailing columns running side by side.
+pub fn qr_q(a: &[f32], m: usize, n: usize) -> Vec<f32> {
+    let _s = prof::span("qr");
+    let mut c: Vec<f64> = a.iter().map(|&x| f64::from(x)).collect(); // (m, n) row-major
+    let r = n.min(m);
     let mut tau = vec![0f64; n];
-    for j in 0..n.min(m) {
-        let (head, rest) = c.split_at_mut((j + 1) * m);
-        let col = &mut head[j * m..];
-        let alpha = col[j];
-        let xnorm = col[j + 1..].iter().map(|v| v * v).sum::<f64>().sqrt();
+    let mut v = vec![0f64; m];
+    for j in 0..r {
+        let alpha = c[j * n + j];
+        let xnorm = (j + 1..m)
+            .map(|i| c[i * n + j])
+            .fold(-0.0, |s, x| s + x * x)
+            .sqrt();
         if xnorm == 0.0 {
             continue; // H = I
         }
         let beta = -alpha.signum() * alpha.hypot(xnorm);
         let scale = 1.0 / (alpha - beta);
-        for v in &mut col[j + 1..] {
-            *v *= scale;
+        for (i, vi) in v[..m - j - 1].iter_mut().enumerate() {
+            let x = &mut c[(j + 1 + i) * n + j];
+            *x *= scale;
+            *vi = *x;
         }
         tau[j] = (beta - alpha) / beta;
-        col[j] = beta;
-        let v = &col[j..];
-        for k in 0..n - j - 1 {
-            let ck = &mut rest[k * m + j..(k + 1) * m];
-            let d = ck[0] + v[1..].iter().zip(&ck[1..]).map(|(a, b)| a * b).sum::<f64>();
-            let f = tau[j] * d;
-            ck[0] -= f;
-            for (x, &vi) in ck[1..].iter_mut().zip(&v[1..]) {
-                *x -= f * vi;
-            }
-        }
+        c[j * n + j] = beta;
+        reflect(&mut c, n, j, &v[..m - j - 1], tau[j], j + 1..n);
     }
     // Q = H_0 ... H_{n-1} I[:, :n], applied from the last reflector back
     let mut q = vec![0f64; m * n];
-    for j in 0..n.min(m) {
-        q[j * m + j] = 1.0;
+    for j in 0..r {
+        q[j * n + j] = 1.0;
     }
-    for j in (0..n.min(m)).rev() {
+    for j in (0..r).rev() {
         if tau[j] == 0.0 {
             continue;
         }
-        let v = &c[j * m + j..(j + 1) * m];
-        for k in j..n {
-            let qk = &mut q[k * m + j..(k + 1) * m];
-            let d = qk[0] + v[1..].iter().zip(&qk[1..]).map(|(a, b)| a * b).sum::<f64>();
-            let f = tau[j] * d;
-            qk[0] -= f;
-            for (x, &vi) in qk[1..].iter_mut().zip(&v[1..]) {
-                *x -= f * vi;
-            }
+        for (i, vi) in v[..m - j - 1].iter_mut().enumerate() {
+            *vi = c[(j + 1 + i) * n + j];
         }
+        reflect(&mut q, n, j, &v[..m - j - 1], tau[j], j..n);
     }
-    let mut out = vec![0f32; m * n];
-    for i in 0..m {
-        for j in 0..n {
-            out[i * n + j] = q[j * m + i] as f32;
-        }
-    }
-    out
+    q.iter().map(|&x| x as f32).collect()
 }
 
 /// Rank-`k` factors of a randomized SVD: `u` `(P, k)`, `s` `(k)`, `vt` `(k, T)`.
@@ -425,13 +553,18 @@ pub fn rsvd_streamed(y: &TileMatrix, k: usize, n_iter: usize, rng: &mut dyn Norm
         q = qr_q(&y.matmul(&z, ell), p, ell);
     }
     let bt = y.t_matmul(&q, ell); // (T, ell) = (Q^T Y)^T
-                                  // SVD of B = bt^T from the eigenvectors of B B^T, in float64
+    let _s = prof::span("small_svd");
+    // SVD of B = bt^T from the eigenvectors of B B^T, in float64
     let mut g = vec![0f64; ell * ell];
+    let mut rowf = vec![0f64; ell];
     for row in bt.chunks_exact(ell) {
+        for (d, &v) in rowf.iter_mut().zip(row) {
+            *d = f64::from(v);
+        }
         for a in 0..ell {
-            let ra = f64::from(row[a]);
-            for b in a..ell {
-                g[a * ell + b] += ra * f64::from(row[b]);
+            let ra = rowf[a];
+            for (gv, &rb) in g[a * ell + a..(a + 1) * ell].iter_mut().zip(&rowf[a..]) {
+                *gv += ra * rb;
             }
         }
     }
@@ -443,22 +576,38 @@ pub fn rsvd_streamed(y: &TileMatrix, k: usize, n_iter: usize, rng: &mut dyn Norm
     let (evals, evecs) = sym_eig(&g, ell);
     let order: Vec<usize> = (0..ell).rev().take(k).collect(); // descending
     let s: Vec<f64> = order.iter().map(|&j| evals[j].max(0.0).sqrt()).collect();
-    let mut vt = vec![0f32; k * t];
-    for (i, &j) in order.iter().enumerate() {
-        if s[i] == 0.0 {
-            continue;
+    // the kept eigenvectors as (ell, k); every output is a sum over `a` in order, the `k`
+    // outputs of a row side by side
+    let mut e2 = vec![0f64; ell * k];
+    for a in 0..ell {
+        for (i, &j) in order.iter().enumerate() {
+            e2[a * k + i] = evecs[a * ell + j];
         }
-        for (ti, row) in bt.chunks_exact(ell).enumerate() {
-            let d: f64 = (0..ell).map(|a| f64::from(row[a]) * evecs[a * ell + j]).sum();
-            vt[i * t + ti] = (d / s[i]) as f32;
+    }
+    let project = |row: &[f32], d: &mut [f64]| {
+        d.fill(-0.0);
+        for (&ra, e) in row.iter().zip(e2.chunks_exact(k)) {
+            let ra = f64::from(ra);
+            for (dv, &ev) in d.iter_mut().zip(e) {
+                *dv += ra * ev;
+            }
+        }
+    };
+    let mut d = vec![0f64; k];
+    let mut vt = vec![0f32; k * t];
+    for (ti, row) in bt.chunks_exact(ell).enumerate() {
+        project(row, &mut d);
+        for (i, &dv) in d.iter().enumerate() {
+            if s[i] != 0.0 {
+                vt[i * t + ti] = (dv / s[i]) as f32;
+            }
         }
     }
     let mut u = vec![0f32; p * k];
-    for px in 0..p {
-        let qr = &q[px * ell..(px + 1) * ell];
-        for (i, &j) in order.iter().enumerate() {
-            let d: f64 = (0..ell).map(|a| f64::from(qr[a]) * evecs[a * ell + j]).sum();
-            u[px * k + i] = d as f32;
+    for (qr, urow) in q.chunks_exact(ell).zip(u.chunks_exact_mut(k)) {
+        project(qr, &mut d);
+        for (o, &dv) in urow.iter_mut().zip(&d) {
+            *o = dv as f32;
         }
     }
     Ok(Svd { k, u, s, vt })
@@ -656,5 +805,70 @@ mod tests {
         let sigma = y.noise(0.06, 0);
         let mean_sigma = sigma.iter().sum::<f64>() / p as f64;
         assert!((mean_sigma / 2.0 - 0.75).abs() < 0.1, "{mean_sigma}"); // 0.75 sigma scale
+    }
+
+    /// The faster steps against the code they replaced (`compress_ref`, `--features
+    /// reference`): QR bit for bit on random matrices, whole tiles on a slow low-rank
+    /// signal plus noise.
+    #[cfg(feature = "reference")]
+    mod against_reference {
+        use super::*;
+        use crate::compress_ref;
+
+        #[test]
+        fn qr_is_bit_identical() {
+            for (m, n) in [(40, 6), (300, 50), (4096, 50), (17, 17), (9, 12), (64, 1)] {
+                let a = Gaussian::new(3).draw(m * n).unwrap();
+                let (q0, q1) = (compress_ref::qr_q(&a, m, n), qr_q(&a, m, n));
+                assert!(
+                    q0.iter().zip(&q1).all(|(x, y)| x.to_bits() == y.to_bits()),
+                    "{m}x{n}"
+                );
+            }
+        }
+
+        fn synthetic(t: usize, p: usize, r_true: usize, seed: u64) -> Vec<u8> {
+            let mut g = Gaussian::new(seed);
+            let noise = g.draw(t * p).unwrap();
+            let spatial = g.draw(r_true * p).unwrap();
+            let mut raw = vec![0u8; t * p];
+            for ti in 0..t {
+                for px in 0..p {
+                    let mut v = 100.0 + 2.0 * f64::from(noise[ti * p + px]);
+                    for c in 0..r_true {
+                        let ph = (std::f64::consts::TAU * (2 * (c + 1)) as f64 * ti as f64 / t as f64).sin();
+                        v += 8.0 * ph * f64::from(spatial[c * p + px]);
+                    }
+                    raw[ti * p + px] = v.round().clamp(0.0, 255.0) as u8;
+                }
+            }
+            raw
+        }
+
+        #[test]
+        fn tile_matches_reference() {
+            for (t, p, r, k0, seed) in [
+                (600, 120, 12, 4, 7),
+                (1000, 64 * 24, 5, 10, 8),
+                (300, 77, 3, 20, 9),
+            ] {
+                let raw = synthetic(t, p, r, seed);
+                let pr = params(k0);
+                let a = compress_ref::compress_tile(&raw, t, p, &pr, &mut Gaussian::new(1)).unwrap();
+                let b = compress_tile(&raw, t, p, &pr, &mut Gaussian::new(1)).unwrap();
+                assert_eq!((a.rank, a.k), (b.rank, b.k));
+                assert_eq!(a.mean, b.mean);
+                assert_eq!(a.energy, b.energy);
+                for (x, y) in a.sigma.iter().zip(&b.sigma) {
+                    assert!((x - y).abs() <= 2e-6 * x.abs(), "sigma {x} {y}");
+                }
+                let rel = |u: &[f32], v: &[f32]| {
+                    let num: f64 = u.iter().zip(v).map(|(&x, &y)| f64::from(x - y).powi(2)).sum();
+                    (num / u.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>()).sqrt()
+                };
+                assert!(rel(&a.w, &b.w) < 1e-5, "w {}", rel(&a.w, &b.w));
+                assert!(rel(&a.v, &b.v) < 1e-5, "v {}", rel(&a.v, &b.v));
+            }
+        }
     }
 }

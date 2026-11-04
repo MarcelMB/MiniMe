@@ -5,8 +5,11 @@ pub mod avi;
 pub mod butter;
 pub mod cnmf;
 pub mod compress;
+#[cfg(feature = "reference")]
+pub mod compress_ref;
 pub mod corr;
 pub mod factors;
+pub mod fastmath;
 pub mod filters;
 pub mod gmm;
 pub mod init;
@@ -17,11 +20,14 @@ pub mod npy;
 pub mod pass1;
 pub mod preprocess;
 pub mod preview;
+pub mod prof;
 pub mod seeds;
 pub mod stitch;
 pub mod stream;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
+#[cfg(all(target_arch = "wasm32", feature = "profile"))]
+pub mod wasm_bench;
 
 use stream::{Csr, Params, StreamPass};
 
