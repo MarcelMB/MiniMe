@@ -25,3 +25,13 @@ export function pyRound(x: number, digits = 0): number {
   const r = tie && lastKept % 2 === 0 ? Number(exact.slice(0, dot + 1 + digits)) : Number(ax.toFixed(digits));
   return x < 0 || Object.is(x, -0) ? -r : r;
 }
+
+/** Python's `str(x)` for a float, as it appears in main's error messages: `-1.0`, `2000.0`,
+ * `2.5`, `nan`, `inf`. (Exponent forms, which Python writes from 1e16 and below 1e-4, are not
+ * reproduced.) */
+export function pyFloat(x: number): string {
+  if (Number.isNaN(x)) return "nan";
+  if (!Number.isFinite(x)) return x < 0 ? "-inf" : "inf";
+  if (Object.is(x, -0)) return "-0.0";
+  return Number.isInteger(x) && Math.abs(x) < 1e16 ? `${x}.0` : String(x);
+}

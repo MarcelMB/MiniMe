@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pyRound, roundHalfEven } from "./num";
+import { pyFloat, pyRound, roundHalfEven } from "./num";
 
 // [x, digits, Python round(x, digits), numpy np.round(x, digits)], expected values from:
 //   python -c "import numpy as np; c=[(0.05,1),(0.15,1),(0.35,1),(0.45,1),(0.95,1),(2.675,2),(1.005,2),(0.5,0),(1.5,0),
@@ -33,5 +33,14 @@ describe("rounding", () => {
 
   it("pyRound is Python's round: exact binary value, true ties to even", () => {
     for (const [x, d, py] of table) expect(pyRound(x, d), `round(${x}, ${d})`).toBe(py);
+  });
+});
+
+describe("pyFloat", () => {
+  it("writes floats as Python's str() does", () => {
+    // python -c "print([str(x) for x in (-1.0, 0.0, -0.0, 2000.0, 2.5, 0.1, float('nan'), float('inf'), -float('inf'))])"
+    expect(
+      [-1, 0, -0, 2000, 2.5, 0.1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY].map(pyFloat),
+    ).toEqual(["-1.0", "0.0", "-0.0", "2000.0", "2.5", "0.1", "nan", "inf", "-inf"]);
   });
 });

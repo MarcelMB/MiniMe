@@ -1,0 +1,311 @@
+{
+  "groups": ["Preprocessing + motion", "Tiling + compression", "Seeds", "Initialization", "CNMF", "Execution"],
+  "params": [
+    {
+      "name": "median_ksize",
+      "group": "Preprocessing + motion",
+      "type": "int",
+      "default": 7,
+      "help": "Median filter size in px before motion correction (<= 1 skips it).",
+      "common": false,
+      "window2": false
+    },
+    {
+      "name": "tophat_wnd",
+      "group": "Preprocessing + motion",
+      "type": "int",
+      "default": 15,
+      "help": "Tophat window in px that removes the background glow; about one cell diameter.",
+      "common": false,
+      "window2": false
+    },
+    {
+      "name": "motion_max_shift",
+      "group": "Preprocessing + motion",
+      "type": "int",
+      "default": 20,
+      "help": "Largest motion correction shift in px.",
+      "common": false,
+      "window2": false
+    },
+    {
+      "name": "motion_down",
+      "group": "Preprocessing + motion",
+      "type": "int",
+      "default": 2,
+      "help": "Downsampling factor of the frames used to estimate motion.",
+      "common": false,
+      "window2": false
+    },
+    {
+      "name": "template_frames",
+      "group": "Preprocessing + motion",
+      "type": "int",
+      "default": 200,
+      "help": "Frames averaged into the motion template.",
+      "common": false,
+      "window2": false
+    },
+    {
+      "name": "motion_before_tophat",
+      "group": "Preprocessing + motion",
+      "type": "bool",
+      "default": true,
+      "help": "Estimate motion before the tophat, on band-passed frames.",
+      "common": false,
+      "window2": false
+    },
+    {
+      "name": "motion_bandpass",
+      "group": "Preprocessing + motion",
+      "type": "tuple[float, float]",
+      "default": [1.0, 6.0],
+      "help": "Difference-of-Gaussians sigmas (px) of the band-pass for motion.",
+      "common": false,
+      "window2": false
+    },
+    {
+      "name": "tile",
+      "group": "Tiling + compression",
+      "type": "int",
+      "default": 64,
+      "help": "Tile side in px for the low-rank compression.",
+      "common": false,
+      "window2": false
+    },
+    {
+      "name": "svd_k0",
+      "group": "Tiling + compression",
+      "type": "int",
+      "default": 40,
+      "help": "Starting rank of each tile's randomized SVD.",
+      "common": false,
+      "window2": false
+    },
+    {
+      "name": "svd_power_iter",
+      "group": "Tiling + compression",
+      "type": "int",
+      "default": 1,
+      "help": "Power iterations of the randomized SVD.",
+      "common": false,
+      "window2": false
+    },
+    {
+      "name": "rank_rho_min",
+      "group": "Tiling + compression",
+      "type": "float",
+      "default": 0.2,
+      "help": "Smallest correlation a component needs to be kept.",
+      "common": false,
+      "window2": false
+    },
+    {
+      "name": "rank_z",
+      "group": "Tiling + compression",
+      "type": "float",
+      "default": 4.0,
+      "help": "z-score a component's energy needs over noise to be kept.",
+      "common": false,
+      "window2": false
+    },
+    {
+      "name": "noise_frames",
+      "group": "Tiling + compression",
+      "type": "int",
+      "default": 0,
+      "help": "Frames used for the per-pixel noise (0 = all); faster, but changes the units.",
+      "common": false,
+      "window2": false
+    },
+    {
+      "name": "seeds_wnd",
+      "group": "Seeds",
+      "type": "int",
+      "default": 1000,
+      "help": "Frames per window when picking seed pixels.",
+      "common": false,
+      "window2": true
+    },
+    {
+      "name": "seeds_stp",
+      "group": "Seeds",
+      "type": "int",
+      "default": 500,
+      "help": "Step in frames between seed windows.",
+      "common": false,
+      "window2": true
+    },
+    {
+      "name": "seeds_max_wnd",
+      "group": "Seeds",
+      "type": "int",
+      "default": 15,
+      "help": "Window in px of the local-maximum search for seeds.",
+      "common": false,
+      "window2": true
+    },
+    {
+      "name": "seeds_diff_thres",
+      "group": "Seeds",
+      "type": "float",
+      "default": 3,
+      "help": "Smallest brightness difference that makes a local maximum a seed.",
+      "common": false,
+      "window2": true
+    },
+    {
+      "name": "noise_freq",
+      "group": "Seeds",
+      "type": "float",
+      "default": 0.06,
+      "help": "Frequency (fraction of the frame rate) above which a trace counts as noise.",
+      "common": false,
+      "window2": false
+    },
+    {
+      "name": "pnr_thres",
+      "group": "Seeds",
+      "type": "float | str",
+      "default": "auto",
+      "help": "Peak-to-noise threshold for seeds; 'auto' picks it from the data.",
+      "common": true,
+      "window2": true
+    },
+    {
+      "name": "gmm_refine",
+      "group": "Seeds",
+      "type": "bool",
+      "default": false,
+      "help": "Also filter seeds with a 2-component Gaussian mixture (off by default).",
+      "common": false,
+      "window2": true
+    },
+    {
+      "name": "merge_dist",
+      "group": "Seeds",
+      "type": "int",
+      "default": 10,
+      "help": "Seeds closer than this (px) can merge.",
+      "common": true,
+      "window2": true
+    },
+    {
+      "name": "merge_corr",
+      "group": "Seeds",
+      "type": "float",
+      "default": 0.8,
+      "help": "Seeds whose traces correlate above this merge.",
+      "common": false,
+      "window2": true
+    },
+    {
+      "name": "inita_corr",
+      "group": "Initialization",
+      "type": "float",
+      "default": 0.8,
+      "help": "Correlation a pixel needs with its seed to join the initial footprint.",
+      "common": false,
+      "window2": true
+    },
+    {
+      "name": "inita_wnd",
+      "group": "Initialization",
+      "type": "int",
+      "default": 10,
+      "help": "Window in px around a seed for its initial footprint.",
+      "common": false,
+      "window2": true
+    },
+    {
+      "name": "init_merge_corr",
+      "group": "Initialization",
+      "type": "float",
+      "default": 0.8,
+      "help": "Initial units whose traces correlate above this merge.",
+      "common": false,
+      "window2": true
+    },
+    {
+      "name": "loop_merge_corr",
+      "group": "Initialization",
+      "type": "float",
+      "default": 0.9,
+      "help": "Units whose traces correlate above this merge during CNMF.",
+      "common": false,
+      "window2": true
+    },
+    {
+      "name": "merge_min_dist",
+      "group": "Initialization",
+      "type": "float",
+      "default": 0.0,
+      "help": "Units closer than this (px) merge whatever their traces do; 0 = off.",
+      "common": false,
+      "window2": true
+    },
+    {
+      "name": "dl_wnd",
+      "group": "CNMF",
+      "type": "int",
+      "default": 10,
+      "help": "Dilation window in px that bounds where a footprint may grow.",
+      "common": false,
+      "window2": true
+    },
+    {
+      "name": "sparse_snr",
+      "group": "CNMF",
+      "type": "float",
+      "default": 1.0,
+      "help": "Per-pixel signal-to-noise a pixel needs to stay in a footprint.",
+      "common": true,
+      "window2": true
+    },
+    {
+      "name": "size_thres",
+      "group": "CNMF",
+      "type": "tuple[float | None, float | None]",
+      "default": [25, null],
+      "help": "Smallest and largest footprint size in px (empty = no limit).",
+      "common": false,
+      "window2": true
+    },
+    {
+      "name": "n_iter",
+      "group": "CNMF",
+      "type": "int",
+      "default": 2,
+      "help": "CNMF iterations (spatial + temporal update).",
+      "common": false,
+      "window2": true
+    },
+    {
+      "name": "background_clip",
+      "group": "CNMF",
+      "type": "bool",
+      "default": false,
+      "help": "Background of the clipped residual as Minian (about 2x slower).",
+      "common": false,
+      "window2": true
+    },
+    {
+      "name": "workers",
+      "group": "Execution",
+      "type": "int",
+      "default": 1,
+      "help": "Worker processes; about the number of CPU cores minus one or two.",
+      "common": true,
+      "window2": false
+    },
+    {
+      "name": "sub_batch",
+      "group": "Execution",
+      "type": "int",
+      "default": 100,
+      "help": "Frames per pass-1 sub-batch.",
+      "common": false,
+      "window2": false
+    }
+  ]
+}

@@ -13,6 +13,7 @@
     "test": "vitest run && vitest run -c vitest.browser.config.ts",
     "e2e": "playwright test",
     "e2e:stream": "playwright test -c playwright.stream.config.ts",
+    "fixtures": "node scripts/fixtures.mjs",
     "format": "biome format --write .",
     "check": "biome check ."
   },
