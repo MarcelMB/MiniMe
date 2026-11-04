@@ -55,7 +55,6 @@ if (process.argv.includes("--fma")) {
     0: "f64 mul_add (gram_rows)",
     3: "f64 mul + add",
     1: "f32 mul_add x16 (y_ct_pairs)",
-    2: "f32 fma32 x16 (exact emulation)",
     4: "f32 mul + add x16",
   };
   for (const [k, [ms, check]] of Object.entries(r)) {

@@ -13,6 +13,7 @@ use crate::corr::TracesCorr;
 use crate::factors::Factors;
 use crate::gmm::pairwise_sum;
 use crate::init::{centroids, gram, group_mean_a, group_mean_c, merge_labels, Csr};
+use crate::linalg::{madd64, Madd};
 use crate::nnqp::solve_nnqp;
 use crate::npy;
 use crate::stream::{self, Support};
@@ -76,14 +77,32 @@ fn unit_traces(c: &[f32], k: usize, t: usize) -> (Vec<f64>, Vec<f64>) {
     (cc, scale)
 }
 
-/// `Cc Cc^T` (`(k, k)`, symmetric as numpy's syrk).
+/// `Cc Cc^T` (`(k, k)`, symmetric as numpy's syrk). Every entry is a sum over the frames in
+/// order; four entries of a row at a time keep four independent chains busy.
 fn gram_rows(cc: &[f64], k: usize, t: usize) -> Vec<f64> {
     let mut g = vec![0f64; k * k];
     for i in 0..k {
         let a = &cc[i * t..(i + 1) * t];
-        for j in i..k {
+        let mut j = i;
+        while j + 4 <= k {
+            let r = |d: usize| &cc[(j + d) * t..(j + d + 1) * t];
+            let (b0, b1, b2, b3) = (r(0), r(1), r(2), r(3));
+            let mut s = [0f64; 4];
+            for (ti, &x) in a.iter().enumerate() {
+                s[0] = madd64(x, b0[ti], s[0]);
+                s[1] = madd64(x, b1[ti], s[1]);
+                s[2] = madd64(x, b2[ti], s[2]);
+                s[3] = madd64(x, b3[ti], s[3]);
+            }
+            for (d, &v) in s.iter().enumerate() {
+                g[i * k + j + d] = v;
+                g[(j + d) * k + i] = v;
+            }
+            j += 4;
+        }
+        for j in j..k {
             let b = &cc[j * t..(j + 1) * t];
-            let s = a.iter().zip(b).fold(0.0, |s, (&x, &y)| x.mul_add(y, s));
+            let s = a.iter().zip(b).fold(0.0, |s, (&x, &y)| madd64(x, y, s));
             g[i * k + j] = s;
             g[j * k + i] = s;
         }
@@ -242,7 +261,7 @@ fn a_dot(a: &Csr, x: &[f64]) -> Vec<f64> {
             let (idx, val) = a.row(i);
             idx.iter()
                 .zip(val)
-                .fold(0.0, |s, (&j, &v)| f64::from(v).mul_add(x[j], s))
+                .fold(0.0, |s, (&j, &v)| f64::from(v).madd(x[j], s))
         })
         .collect()
 }
@@ -269,7 +288,7 @@ fn background_unclipped(f: &Factors, a: &Csr, c: &[f32], given: Option<&[f32]>) 
                     let s = wrow
                         .iter()
                         .zip(&vm)
-                        .fold(0.0, |s, (&w, &m)| f64::from(w).mul_add(m, s));
+                        .fold(0.0, |s, (&w, &m)| f64::from(w).madd(m, s));
                     ymean[px] = s + f64::from(tf.mean[l]);
                 }
             }
@@ -284,7 +303,7 @@ fn background_unclipped(f: &Factors, a: &Csr, c: &[f32], given: Option<&[f32]>) 
             for (i, &cm) in cmean.iter().enumerate() {
                 let (idx, val) = a.row(i);
                 for (&j, &v) in idx.iter().zip(val) {
-                    fit[j] = f64::from(v).mul_add(cm, fit[j]);
+                    fit[j] = f64::from(v).madd(cm, fit[j]);
                 }
             }
             ymean.iter().zip(&fit).map(|(&y, &x)| (y - x).max(0.0)).collect()
@@ -293,7 +312,7 @@ fn background_unclipped(f: &Factors, a: &Csr, c: &[f32], given: Option<&[f32]>) 
     let ab = a_dot(a, &b64);
     let mut num = vec![0f64; t];
     for (ti, n) in num.iter_mut().enumerate() {
-        let s = (0..k).fold(0.0, |s, i| f64::from(c[i * t + ti]).mul_add(ab[i], s));
+        let s = (0..k).fold(0.0, |s, i| f64::from(c[i * t + ti]).madd(ab[i], s));
         *n = -s;
     }
     for (bi, tf) in f.tiles.iter().enumerate() {
@@ -304,19 +323,19 @@ fn background_unclipped(f: &Factors, a: &Csr, c: &[f32], given: Option<&[f32]>) 
         for (l, &px) in rows.iter().enumerate() {
             let bv = b64[px];
             for (s, &w) in wb.iter_mut().zip(&tf.w[l * r..(l + 1) * r]) {
-                *s = f64::from(w).mul_add(bv, *s);
+                *s = f64::from(w).madd(bv, *s);
             }
-            mb = f64::from(tf.mean[l]).mul_add(bv, mb);
+            mb = f64::from(tf.mean[l]).madd(bv, mb);
         }
         for (n, vrow) in num.iter_mut().zip(tf.v.chunks_exact(r.max(1))) {
             *n += vrow
                 .iter()
                 .zip(&wb)
-                .fold(0.0, |s, (&v, &w)| f64::from(v).mul_add(w, s));
+                .fold(0.0, |s, (&v, &w)| f64::from(v).madd(w, s));
         }
         num.iter_mut().for_each(|n| *n += mb);
     }
-    let bb = b64.iter().fold(0.0, |s, &v| v.mul_add(v, s));
+    let bb = b64.iter().fold(0.0, |s, &v| v.madd(v, s));
     let fb = num
         .iter()
         .map(|&n| if bb > 0.0 { (n / bb) as f32 } else { 0.0 })
@@ -485,7 +504,7 @@ fn background_clipped(f: &Factors, a: &Csr, c: &[f32], given: Option<&[f32]>) ->
     }
     let bb = b_out
         .iter()
-        .fold(0f64, |s, &v| f64::from(v).mul_add(f64::from(v), s));
+        .fold(0f64, |s, &v| f64::from(v).madd(f64::from(v), s));
     let fb = num
         .iter()
         .map(|&n| if bb > 0.0 { (n / bb) as f32 } else { 0.0 })
@@ -539,9 +558,9 @@ fn a_ty64(f: &Factors, a: &Csr) -> Vec<f64> {
             for &(_, l, v) in &part[s..e] {
                 let v = f64::from(v);
                 for (uk, &wk) in u.iter_mut().zip(&tf.w[l * r..(l + 1) * r]) {
-                    *uk = v.mul_add(f64::from(wk), *uk);
+                    *uk = v.madd(f64::from(wk), *uk);
                 }
-                m = v.mul_add(f64::from(tf.mean[l]), m);
+                m = v.madd(f64::from(tf.mean[l]), m);
             }
             for (o, vrow) in out[i * t..(i + 1) * t]
                 .iter_mut()
@@ -550,7 +569,7 @@ fn a_ty64(f: &Factors, a: &Csr) -> Vec<f64> {
                 let low = u
                     .iter()
                     .zip(vrow)
-                    .fold(0.0, |acc, (&x, &y)| x.mul_add(f64::from(y), acc));
+                    .fold(0.0, |acc, (&x, &y)| x.madd(f64::from(y), acc));
                 *o += low;
                 *o += m;
             }
@@ -576,7 +595,7 @@ pub fn compute_trace(f: &Factors, a: &Csr, b: &[f32], c: &[f32], fb: &[f32]) -> 
         .map(|i| {
             let s = a.row(i).1.iter().fold(0f64, |s, &v| {
                 let v = f64::from(v);
-                (v * v).mul_add(1.0, s)
+                (v * v).madd(1.0, s)
             });
             1.0 / s
         })
@@ -595,7 +614,7 @@ pub fn compute_trace(f: &Factors, a: &Csr, b: &[f32], c: &[f32], fb: &[f32]) -> 
         for ti in 0..t {
             let cta = nbr[j]
                 .iter()
-                .fold(0.0, |s, &(i, g)| f64::from(c[i * t + ti]).mul_add(g, s));
+                .fold(0.0, |s, &(i, g)| f64::from(c[i * t + ti]).madd(g, s));
             let v = f64::from(c[j * t + ti]) + (yta[j * t + ti] - cta) * norm[j];
             out[j * t + ti] = v.max(0.0) as f32;
         }
@@ -1033,5 +1052,31 @@ mod tests {
         assert_eq!(&cc[3..], &[0.0, 0.0, 0.0]);
         let g = gram_rows(&cc, 2, 3);
         assert!((g[0] - 1.0).abs() < 1e-15);
+    }
+
+    /// The four-chain Gram equals the plain sum over the frames bit for bit (fused natively).
+    #[test]
+    fn gram_chains_keep_the_sum_order() {
+        let (k, t) = (11, 257);
+        let mut s = 7u64;
+        let cc: Vec<f64> = (0..k * t)
+            .map(|_| {
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+            })
+            .collect();
+        let g = gram_rows(&cc, k, t);
+        for i in 0..k {
+            for j in 0..k {
+                let (a, b) = (&cc[i.min(j) * t..], &cc[i.max(j) * t..]);
+                let want = a[..t]
+                    .iter()
+                    .zip(&b[..t])
+                    .fold(0.0, |s, (&x, &y)| madd64(x, y, s));
+                assert_eq!(g[i * k + j].to_bits(), want.to_bits(), "{i} {j}");
+            }
+        }
     }
 }

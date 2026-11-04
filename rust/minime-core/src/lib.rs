@@ -12,7 +12,6 @@ pub mod corr;
 pub mod factors;
 pub mod fastmath;
 pub mod filters;
-pub mod fma;
 pub mod gmm;
 pub mod init;
 pub mod linalg;
