@@ -1,4 +1,3 @@
-import { fmtBytes } from "../format";
 import { isFinal, type ProgressEvent } from "../launch/params";
 import type { FromWorker, ToWorker } from "../stream/protocol";
 import { DEFAULTS, unusedParams, WINDOW_FRAMES } from "../stream/session";
@@ -9,7 +8,7 @@ import { type Folders, OPFS_NAME } from "./folders";
 import type { KV } from "./kv";
 import { pyFloat, pyRepr } from "./num";
 import { HttpError } from "./router";
-import { ASSUMED_UNITS, estimateRunBytes, pickDirectory, support } from "./support";
+import { ASSUMED_UNITS, estimateRunBytes, pickDirectory, quotaMessage, RUN_LOCK, support } from "./support";
 import { joinVpath, parentVpath, splitVpath } from "./vpath";
 
 export type JobBody = {
@@ -118,10 +117,21 @@ async function resetOutDir(processed: Dir, name: string, outDir: string, overwri
   return out;
 }
 
-/** One run at a time in this tab (main: `jobs.JobManager`, which queues). Job records live in
+/** The part of the browser's Web Locks (`navigator.locks`) the job manager uses. */
+export type Locks = Pick<LockManager, "request" | "query">;
+
+/** One run at a time (main: `jobs.JobManager`, which queues), in this tab and, with the run lock,
+ * across the site's tabs: they share browser storage and its scratch folder. Job records live in
  * `kv`; a run is a worker that writes its run folder into `<raw parent>/processed/<name>`. */
 export class JobManager {
   private jobs = new Map<string, JobRecord>();
+  /** The job this tab runs (the last one), the run lock's release while it goes, and a start
+   * that is between its checks and its worker (a second one in this tab waits for neither). */
+  private own: JobRecord | null = null;
+  private unlock: (() => void) | null = null;
+  private starting = false;
+  /** This tab holds the run lock (from a start's lock to its run's end). */
+  private holding = false;
   private history = new Map<string, [string, unknown][]>();
   private listeners = new Map<string, Set<Emit>>();
   private worker: Worker | null = null;
@@ -130,7 +140,9 @@ export class JobManager {
   private onVisible: (() => void) | null = null;
   private persisted = false;
   /** `pickOutput` is the folder dialog (the system's where the browser has one) and `index` how
-   * the raw videos are indexed; both are replaced in tests. */
+   * the raw videos are indexed; both are replaced in tests. `locks` are the browser's Web Locks
+   * (none: only this tab's check) and `scratch` the OPFS folder that holds each run's working files
+   * in `<job id>/` (the pass-1 tile store, the traces on their way to the run folder). */
   constructor(
     private o: {
       kv: KV;
@@ -139,6 +151,8 @@ export class JobManager {
       now?: () => number;
       pickOutput?: () => Promise<Dir>;
       index?: Indexer;
+      locks?: Locks | null;
+      scratch?: () => Promise<Dir | null>;
     },
   ) {}
 
@@ -146,12 +160,23 @@ export class JobManager {
     return (this.o.now ?? (() => Date.now() / 1e3))();
   }
 
-  /** Read the saved jobs; one that was going when the page went away is `interrupted`. */
+  /** Read the saved jobs. One that was going when its page went away is `interrupted`, and the
+   * scratch folders runs left are removed, but only when no tab holds the run lock: a job another
+   * tab still runs stays as it is. */
   async load(): Promise<void> {
+    if (!(await this.refresh())) await this.sweepScratch();
+  }
+
+  /** The saved jobs as they are now (other tabs save theirs), with a job that is not final and that
+   * no tab runs any more marked `interrupted`; returns whether another tab runs a job. */
+  async refresh(): Promise<boolean> {
+    const elsewhere = await this.runsElsewhere();
     for (const k of await this.o.kv.keys()) {
-      const j = await this.o.kv.get<JobRecord>(k);
-      if (!j) continue;
-      if (!isFinal(j.status)) {
+      if (k === this.own?.id) continue;
+      const saved = await this.o.kv.get<JobRecord>(k);
+      if (!saved) continue;
+      const j = { ...saved }; // as IndexedDB gives it: a copy
+      if (!isFinal(j.status) && !elsewhere) {
         j.status = "interrupted";
         j.error = STOPPED;
         j.ended = this.now();
@@ -159,6 +184,52 @@ export class JobManager {
       }
       this.jobs.set(j.id, j);
     }
+    return elsewhere;
+  }
+
+  /** Whether another tab holds the run lock (this tab holds it while its own run goes). Without
+   * Web Locks, never: a job found going was going when its page went away. */
+  private async runsElsewhere(): Promise<boolean> {
+    if (this.holding) return false;
+    const state = await this.o.locks?.query().catch(() => null);
+    return !!state?.held?.some((l) => l.name === RUN_LOCK);
+  }
+
+  /** The run lock (one run at a time across the site's tabs), held until the returned function is
+   * called; null when another tab holds it. Without Web Locks there is only this tab's check. */
+  private lock(): Promise<(() => void) | null> {
+    const locks = this.o.locks;
+    if (!locks) return Promise.resolve(() => {});
+    return new Promise((ok, no) => {
+      locks
+        .request(RUN_LOCK, { ifAvailable: true }, (lock) => {
+          if (!lock) return ok(null);
+          return new Promise<void>((release) => ok(() => release()));
+        })
+        .catch(no);
+    });
+  }
+
+  /** Remove run `id`'s scratch folder (`scratch/<id>/`). The stopped worker's files may stay open a
+   * moment longer (a removal fails meanwhile), so it is tried again a few times. */
+  private dropScratch(id: string): void {
+    void (async () => {
+      const dir = await this.o.scratch?.();
+      for (let i = 0; dir && i < 5; i++) {
+        await dir.remove(id, { recursive: true }).catch(() => undefined);
+        if (!(await dir.entries()).some((e) => e.name === id)) return;
+        await new Promise((r) => setTimeout(r, 200 * (i + 1)));
+      }
+    })().catch(() => undefined);
+  }
+
+  /** Remove every scratch folder: only while no run goes in any tab (what is there was left by a
+   * run whose tab went away, or a removal that failed). */
+  private async sweepScratch(): Promise<void> {
+    const dir = await this.o.scratch?.().catch(() => null);
+    if (!dir) return;
+    for (const e of await dir.entries().catch(() => []))
+      await dir.remove(e.name, { recursive: true }).catch(() => undefined);
   }
 
   list(): JobRecord[] {
@@ -220,11 +291,7 @@ export class JobManager {
         Math.ceil(v.frames / WINDOW_FRAMES),
         keepStore,
       );
-      if (need > quota - usage)
-        throw new HttpError(
-          400,
-          `this run needs about ${fmtBytes(need)} of browser storage, ${fmtBytes(Math.max(0, quota - usage))} are free; pick a folder on disk under Runs → Change folder`,
-        );
+      if (need > quota - usage) throw new HttpError(400, quotaMessage(need, quota - usage));
     }
     if (!this.persisted) {
       this.persisted = true;
@@ -249,12 +316,44 @@ export class JobManager {
     checkRunName(b.name);
     const bad = unusedParams(b.params);
     if (bad.length) throw new HttpError(400, `${bad.join(", ")}: not used by the browser app`);
-    if ([...this.jobs.values()].some((j) => !isFinal(j.status)))
+    if (this.starting || (this.own && !isFinal(this.own.status)))
       throw new HttpError(400, "a run is already going in this tab; wait for it or cancel it");
+    this.starting = true;
+    try {
+      const release = await this.lock();
+      if (!release) throw new HttpError(400, "a run is already going in another tab; wait for it or cancel it there");
+      this.holding = true;
+      const unlock = () => {
+        this.holding = false;
+        release();
+      };
+      try {
+        await this.sweepScratch(); // the lock is ours: no run goes anywhere
+        return await this.begin(b, rawDir, raw, listed, picked, dialog !== null, unlock);
+      } catch (e) {
+        unlock();
+        throw e;
+      }
+    } finally {
+      this.starting = false;
+    }
+  }
+
+  /** The rest of `submit`, with the run lock held (`unlock` lets it go when the run ends). */
+  private async begin(
+    b: JobBody,
+    rawDir: string,
+    raw: Dir,
+    listed: Awaited<ReturnType<typeof listSegments>>,
+    picked: Dir | null,
+    hasDialog: boolean,
+    unlock: () => void,
+  ): Promise<JobRecord> {
+    const { files } = listed;
     const video = await openRawVideo(rawDir, raw, { index: this.o.index, listed }); // as New run indexed it
     checkFrameSize(video.height, video.width, b.params);
     await checkPickedOutsideRaw(raw, picked, rawDir, b.name);
-    const holder = await this.holder(rawDir, picked, dialog !== null);
+    const holder = await this.holder(rawDir, picked, hasDialog);
     const outDir = joinVpath(holder.vpath, b.name);
     checkOutDir(rawDir, outDir);
     if (splitVpath(outDir).root === OPFS_NAME) await this.checkStorage(video, b.keep_store);
@@ -282,9 +381,12 @@ export class JobManager {
       tune_args: {},
       fps: b.fps,
     };
-    this.jobs.set(job.id, job);
     await this.o.kv.set(job.id, job);
     await this.o.folders.touch(splitVpath(holder.vpath).root, rawDir);
+    // from here on the run ends through `finish`, which lets the lock go
+    this.jobs.set(job.id, job);
+    this.own = job;
+    this.unlock = unlock;
     this.record(job.id, "status", { ...job });
     this.start(job, files, out, { ...b, raw_dir: rawDir });
     return job;
@@ -300,6 +402,8 @@ export class JobManager {
       keepStore: b.keep_store,
       rawDir: b.raw_dir,
       fps: b.fps,
+      scratch: job.id,
+      browserStorage: splitVpath(job.out_dir).root === OPFS_NAME,
     };
     try {
       const w = this.o.makeWorker();
@@ -364,11 +468,20 @@ export class JobManager {
     await this.wake?.release().catch(() => undefined);
     this.wake = null;
     await this.o.kv.set(job.id, job);
+    // saved first: a tab that sees the lock free finds the job final, not one to interrupt
+    this.unlock?.();
+    this.unlock = null;
+    this.dropScratch(job.id);
     this.record(job.id, "status", { ...job });
   }
 
   async cancel(id: string): Promise<JobRecord> {
-    const job = this.get(id);
+    let job = this.get(id);
+    if (job !== this.own && !isFinal(job.status)) {
+      await this.refresh(); // its tab may have finished it, or gone away
+      job = this.get(id);
+      if (!isFinal(job.status)) throw new HttpError(400, "this run is going in another tab; cancel it there");
+    }
     if (!isFinal(job.status)) {
       job.status = "cancelled";
       job.ended = this.now();

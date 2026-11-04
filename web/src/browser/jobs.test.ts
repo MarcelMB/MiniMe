@@ -1001,3 +1001,154 @@ describe("JobManager and folder permissions", () => {
     ).rejects.toMatchObject({ status: 403, message: expect.stringMatching(/was opened read-only/) });
   });
 });
+
+/** The browser's Web Locks, shared by the "tabs" (managers) of one test: one holder of a name at a
+ * time; `drop` lets go as a tab that was closed does. */
+function fakeLocks() {
+  const held = new Map<string, () => void>();
+  const locks = {
+    request: (name: string, _o: { ifAvailable: boolean }, cb: (lock: unknown) => unknown) => {
+      if (held.has(name)) return Promise.resolve(cb(null));
+      return new Promise((done) => {
+        held.set(name, () => {
+          held.delete(name);
+          done(undefined);
+        });
+        void Promise.resolve(cb({ name, mode: "exclusive" })).then(() => held.get(name)?.());
+      });
+    },
+    query: async () => ({ held: [...held.keys()].map((name) => ({ name, mode: "exclusive" })), pending: [] }),
+  };
+  return { locks: locks as unknown as LockManager, held, drop: (name: string) => held.get(name)?.() };
+}
+
+describe("JobManager and runs in two tabs (one browser storage, one run at a time)", () => {
+  /** Two tabs of the app: one saved job list, one set of folders, one lock manager, one scratch folder. */
+  async function twoTabs() {
+    const kv = memoryKV();
+    const a = await setup(kv);
+    const { locks, held, drop } = fakeLocks();
+    const scratch = new NodeDir(mkdtempSync(join(tmpdir(), "scratch-")));
+    const tab = async () => {
+      const workers: FakeWorker[] = [];
+      const m = new JobManager({
+        kv,
+        folders: a.folders,
+        locks,
+        scratch: async () => scratch,
+        makeWorker: () => {
+          const w = new FakeWorker();
+          workers.push(w);
+          return w as unknown as Worker;
+        },
+      });
+      await m.load();
+      return { m, workers };
+    };
+    return { tab, body: a.body, held, drop, scratch, kv, top: a.top };
+  }
+  const scratchOf = async (d: Dir) => (await d.entries()).map((e) => e.name).sort();
+  /** What the worker of a job makes in the scratch folder: its own `scratch/<id>/`. */
+  const workerScratch = (d: NodeDir, id: string) => mkdirSync(join(d.path, id, "pass1_tiles"), { recursive: true });
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await tick();
+  };
+
+  it("holds the run lock while its run goes, and refuses a run in a second tab meanwhile", async () => {
+    const { tab, body, held } = await twoTabs();
+    const one = await tab();
+    const job = await one.m.submit(body);
+    expect(held.has("minime-run")).toBe(true);
+    const two = await tab(); // opened while the run goes
+    expect(two.m.get(job.id).status).toBe("running"); // not interrupted: a tab still runs it
+    await expect(two.m.submit({ ...body, name: "t2" })).rejects.toMatchObject({
+      status: 400,
+      message: "a run is already going in another tab; wait for it or cancel it there",
+    });
+    await expect(two.m.cancel(job.id)).rejects.toMatchObject({
+      status: 400,
+      message: "this run is going in another tab; cancel it there",
+    });
+    one.workers[0].say({ type: "done", files: new Map(), seconds: 1 });
+    await settle();
+    expect(held.has("minime-run")).toBe(false);
+    await two.m.refresh(); // the second tab sees what the first saved
+    expect(two.m.get(job.id).status).toBe("done");
+    await expect(two.m.submit({ ...body, name: "t2" })).resolves.toMatchObject({ status: "running" });
+  });
+
+  it("marks a job interrupted once no tab holds the run lock (its tab was closed)", async () => {
+    const { tab, body, drop } = await twoTabs();
+    const one = await tab();
+    const job = await one.m.submit(body);
+    const two = await tab();
+    expect(two.m.get(job.id).status).toBe("running");
+    drop("minime-run"); // the first tab goes away mid-run
+    await two.m.refresh();
+    expect(two.m.get(job.id)).toMatchObject({ status: "interrupted", error: "the server stopped during the run" });
+    const three = await tab();
+    expect(three.m.get(job.id).status).toBe("interrupted");
+  });
+
+  it("lets the lock go when a start is refused after it was taken, and takes one start at a time in a tab", async () => {
+    const { tab, body, held, top } = await twoTabs();
+    const one = await tab();
+    await expect(one.m.submit({ ...body, name: "a/b" })).rejects.toMatchObject({ status: 400 }); // before the lock
+    const old = join(top, "processed", "t9");
+    mkdirSync(old, { recursive: true });
+    writeFileSync(join(old, "params.json"), JSON.stringify({ source: "browser" }));
+    writeFileSync(join(old, "report.json"), JSON.stringify({ stages: [] }));
+    await expect(one.m.submit({ ...body, name: "t9" })).rejects.toThrow("already holds a run"); // after it
+    expect(held.has("minime-run")).toBe(false);
+    const [first, second] = await Promise.allSettled([one.m.submit(body), one.m.submit({ ...body, name: "t2" })]);
+    expect(first).toMatchObject({ status: "fulfilled" });
+    expect(second).toMatchObject({
+      status: "rejected",
+      reason: expect.objectContaining({ message: "a run is already going in this tab; wait for it or cancel it" }),
+    });
+    expect(one.workers).toHaveLength(1);
+  });
+
+  it("gives each job its own scratch folder and removes it when the run ends, is cancelled or was interrupted", async () => {
+    const { tab, body, scratch, drop } = await twoTabs();
+    const one = await tab();
+    const done = await one.m.submit(body);
+    expect(one.workers[0].sent[0]).toMatchObject({ scratch: done.id, browserStorage: false });
+    workerScratch(scratch, done.id);
+    one.workers[0].say({ type: "done", files: new Map(), seconds: 1 });
+    await settle();
+    expect(await scratchOf(scratch)).toEqual([]);
+
+    const failed = await one.m.submit({ ...body, name: "t2" });
+    workerScratch(scratch, failed.id);
+    one.workers[1].say({ type: "error", message: "out of memory" });
+    await settle();
+    expect(await scratchOf(scratch)).toEqual([]);
+
+    const cancelled = await one.m.submit({ ...body, name: "t3" });
+    workerScratch(scratch, cancelled.id);
+    await one.m.cancel(cancelled.id);
+    await settle();
+    expect(await scratchOf(scratch)).toEqual([]);
+
+    // a tab closed mid-run leaves its scratch; the next tab opened while no run goes clears it
+    const lost = await one.m.submit({ ...body, name: "t4" });
+    workerScratch(scratch, lost.id);
+    const two = await tab(); // the run still goes: its scratch stays
+    expect(await scratchOf(scratch)).toEqual([lost.id]);
+    drop("minime-run");
+    const three = await tab();
+    expect(three.m.get(lost.id).status).toBe("interrupted");
+    expect(await scratchOf(scratch)).toEqual([]);
+    expect(two.m.get(lost.id).status).toBe("running"); // until it looks again
+  });
+
+  it("clears scratch folders left behind before a run starts (it holds the lock: no other run is going)", async () => {
+    const { tab, body, scratch } = await twoTabs();
+    const one = await tab();
+    workerScratch(scratch, "0123456789");
+    const job = await one.m.submit(body);
+    expect(await scratchOf(scratch)).toEqual([]);
+    expect(one.workers[0].sent[0]).toMatchObject({ scratch: job.id });
+  });
+});

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { estimateRunBytes, support } from "./support";
+import { fmtBytes } from "../format";
+import { checkTraceRoom, estimateRunBytes, quotaMessage, support } from "./support";
 
 describe("support", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -44,5 +45,34 @@ describe("estimateRunBytes", () => {
       estimateRunBytes(K, T, P, W + 1),
     ])
       expect(more).toBeGreaterThan(base);
+  });
+});
+
+describe("checkTraceRoom (the second storage check, once the stitch has found K units)", () => {
+  const storage = (quota: number, usage: number) => ({ estimate: async () => ({ quota, usage }) });
+  const [K, T] = [800, 216000]; // twice the units the pre-run check assumed, 3 h at 20 fps
+  const traces = K * T * 4;
+
+  it("counts the traces twice for a run in Browser storage and refuses with the real numbers", async () => {
+    await expect(checkTraceRoom(K, T, true, storage(2 * traces + 1e6, 1e6))).resolves.toBeUndefined();
+    await expect(checkTraceRoom(K, T, true, storage(2 * traces, 1e6))).rejects.toThrow(
+      `this run needs about ${fmtBytes(2 * traces)} of browser storage, ${fmtBytes(2 * traces - 1e6)} are free; pick a folder on disk under Runs → Change folder`,
+    );
+  });
+
+  it("counts the scratch copy alone for a run in a folder on disk", async () => {
+    await expect(checkTraceRoom(K, T, false, storage(traces + 1, 0))).resolves.toBeUndefined();
+    await expect(checkTraceRoom(K, T, false, storage(traces - 1, 0))).rejects.toThrow(
+      quotaMessage(traces, traces - 1, true),
+    );
+    expect(quotaMessage(traces, 5e9, true)).toMatch(/for its traces on their way to the run folder/);
+  });
+
+  it("checks nothing where the browser cannot say", async () => {
+    await expect(checkTraceRoom(K, T, true, undefined)).resolves.toBeUndefined();
+    await expect(checkTraceRoom(K, T, true, { estimate: async () => ({}) })).resolves.toBeUndefined();
+    await expect(
+      checkTraceRoom(K, T, true, { estimate: () => Promise.reject(new Error("no")) }),
+    ).resolves.toBeUndefined();
   });
 });

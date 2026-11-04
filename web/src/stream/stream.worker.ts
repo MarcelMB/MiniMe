@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import { HandleDir, walk } from "../browser/dir";
+import { checkTraceRoom } from "../browser/support";
 import {
   foldMaxProj,
   keepForSession,
@@ -33,6 +34,14 @@ import { DEFAULTS, MOTION_PARAMS, sessionFor } from "./session";
 const post = (m: FromWorker, transfer: Transferable[] = []) => self.postMessage(m, transfer);
 const BLOCK = 64; // frames per File.slice read
 const TRACE_DIR = "stream_out";
+const SCRATCH = "scratch";
+/** The run's own folder in OPFS for its working files (the pass-1 tile store, the streaming pass's
+ * traces), `scratch/<id>/` with the job's id: runs in two tabs never share one, and the job manager
+ * removes it when the run ends however it ends. */
+let scratchId = "";
+const scratchParent = async () =>
+  (await navigator.storage.getDirectory()).getDirectoryHandle(SCRATCH, { create: true });
+const scratchDir = async () => (await scratchParent()).getDirectoryHandle(scratchId, { create: true });
 const DRAIN = 4096; // frames of traces held in wasm before they go to C.npy in OPFS
 
 let wasmMemory: WebAssembly.Memory | null = null;
@@ -78,8 +87,20 @@ const progress = (done: number, frames: number, seconds: number, stateMb = 0) =>
 const encode = (v: unknown) => new TextEncoder().encode(JSON.stringify(v, null, 1));
 const decode = (b: Uint8Array) => JSON.parse(new TextDecoder().decode(b)) as Record<string, unknown>;
 
-async function run({ avis, inputs, out: dest, params, rawDir, fps, keepStore }: ToWorker): Promise<void> {
+async function run({
+  avis,
+  inputs,
+  out: dest,
+  params,
+  rawDir,
+  fps,
+  keepStore,
+  scratch,
+  browserStorage,
+}: ToWorker): Promise<void> {
   const tl = performance.now();
+  scratchId = scratch ?? crypto.randomUUID();
+  await (await scratchParent()).removeEntry(scratchId, { recursive: true }).catch(() => undefined); // an earlier run's
   progressLog = new ProgressLog(dest ? new HandleDir(dest) : null);
   const log = (what: string) =>
     post({ type: "log", message: `${what} at ${((performance.now() - tl) / 1e3).toFixed(1)} s` });
@@ -100,6 +121,7 @@ async function run({ avis, inputs, out: dest, params, rawDir, fps, keepStore }: 
       rawDir,
       fps,
       keepStore,
+      browserStorage,
     });
   if (files.has("stitch.json")) return runStitch(files, log, wasm.memory);
   if (files.has("template.npy")) return runPass1(avis, files, log, wasm.memory);
@@ -124,7 +146,7 @@ async function streamPass(
   const [T, H, W] = [engine.frames(), engine.height(), engine.width()];
   const K = engine.units();
   // traces go to C.npy ((K, T) float32) in OPFS as the pass goes: they grow with T
-  const root = await navigator.storage.getDirectory();
+  const root = await scratchDir();
   await root.removeEntry(TRACE_DIR, { recursive: true }).catch(() => undefined);
   const cFile = await (await root.getDirectoryHandle(TRACE_DIR, { create: true })).getFileHandle("C.npy", {
     create: true,
@@ -313,7 +335,7 @@ function motionStage(
 const TILE_DIR = "pass1_tiles";
 const FLUSH = 100; // frames buffered before they are appended to the tile files
 
-/** Copy window `i`'s tile store (OPFS `TILE_DIR`, one `tile_KKK.part00` per tile) into the run
+/** Copy window `i`'s tile store (`TILE_DIR` in the scratch folder, one `tile_KKK.part00` per tile) into the run
  * folder's `tiles/wNN/`, file by file as a stream: a window's store is `frames * H * W` bytes, too
  * much to hold in memory twice. Called before the store is removed for the next window. */
 async function keepTiles(root: FileSystemDirectoryHandle, to: HandleDir, i: number): Promise<void> {
@@ -352,6 +374,7 @@ type RunOpts = {
   rawDir?: string;
   fps?: number | null;
   keepStore?: boolean;
+  browserStorage?: boolean;
 };
 
 /** The whole pipeline on the session: its motion (unless the inputs hold `shifts.npy` and
@@ -400,7 +423,7 @@ async function runWindows(
   const n = flat.length / 2;
   log(`${segs.length} files, ${T} frames: ${n} windows of about ${length} frames`);
   const stitch = new StitchEngine(new Map([["session.json", session]]));
-  const root = await navigator.storage.getDirectory();
+  const root = await scratchDir();
   const windows: Record<string, unknown>[] = [];
   // with `opts.out` each window's factors go to the run folder as it finishes; only what the
   // session-wide steps at the end read stays in memory (`kept`, `maxProj`)
@@ -442,6 +465,9 @@ async function runWindows(
   // with a "stream" object the streaming pass follows on the stitched footprints, the
   // session's shifts and the windows' mean image and noise
   if (sessionObj.stream) {
+    // the units are known now: their traces have to fit in browser storage before the pass allocates them
+    const indptr = st.files.get("A_indptr.npy");
+    if (indptr) await checkTraceRoom(readNpy(indptr).shape[0] - 1, T, !!opts.browserStorage);
     const sf = new Map<string, Uint8Array>([
       ["params.json", stream_params(session, T)],
       ["shifts.npy", shifts],
@@ -476,7 +502,7 @@ type RunData = {
   report: Record<string, unknown>;
 };
 
-/** Write the run folder into `dir` (`browser/writer.ts`), then delete the traces' scratch file
+/** Write the run folder into `dir` (`browser/writer.ts`), then delete the run's scratch folder
  * in OPFS; returns `cnmf/C.npy` of the run folder. `motion` holds the motion stage's outputs
  * (`template.npy`, `quality.npy`), which only a run that estimated its own motion has. */
 async function saveRun(
@@ -520,8 +546,7 @@ async function saveRun(
     traces,
     progress: progressLog.lines,
   });
-  const root = await navigator.storage.getDirectory();
-  await root.removeEntry(TRACE_DIR, { recursive: true }).catch(() => undefined);
+  await (await scratchParent()).removeEntry(scratchId, { recursive: true }).catch(() => undefined);
   return (await to.dir("cnmf")).file("C.npy");
 }
 
@@ -653,7 +678,7 @@ async function windowPass1(
   for (const { file, avi } of segs)
     if (avi.height() !== H || avi.width() !== W)
       throw new Error(`${file.name}: ${avi.height()}x${avi.width()} frames, inputs say ${H}x${W}`);
-  const root = await navigator.storage.getDirectory();
+  const root = await scratchDir();
   await root.removeEntry(TILE_DIR, { recursive: true }).catch(() => undefined);
   const dir = await root.getDirectoryHandle(TILE_DIR, { create: true });
   const handles: FileSystemSyncAccessHandle[] = [];

@@ -2,7 +2,7 @@ import { addEventProvider } from "../events";
 import { type JobBody, JobManager } from "../jobs";
 import { idbKV } from "../kv";
 import { HttpError, router } from "../router";
-import { state } from "../state";
+import { opfsDir, state } from "../state";
 
 let manager: Promise<JobManager> | null = null;
 
@@ -13,6 +13,8 @@ export function jobs(): Promise<JobManager> {
       kv: idbKV("jobs"),
       folders: state.folders,
       makeWorker: () => new Worker(new URL("../../stream/stream.worker.ts", import.meta.url), { type: "module" }),
+      locks: globalThis.navigator?.locks ?? null,
+      scratch: () => opfsDir("scratch"),
     });
     await m.load();
     return m;
@@ -43,9 +45,18 @@ function jobBody(raw: unknown): JobBody {
   };
 }
 
-router.add("GET", "/jobs", async () => ({ json: { jobs: (await jobs()).list() } }));
+/** The lists read the saved jobs again: another tab saves the jobs it runs. */
+router.add("GET", "/jobs", async () => {
+  const m = await jobs();
+  await m.refresh();
+  return { json: { jobs: m.list() } };
+});
 router.add("POST", "/jobs", async (q) => ({ json: await (await jobs()).submit(jobBody(q.body)) }));
-router.add("GET", "/jobs/:jid", async (_q, p) => ({ json: (await jobs()).get(p.jid) }));
+router.add("GET", "/jobs/:jid", async (_q, p) => {
+  const m = await jobs();
+  await m.refresh();
+  return { json: m.get(p.jid) };
+});
 router.add("POST", "/jobs/:jid/cancel", async (_q, p) => ({ json: await (await jobs()).cancel(p.jid) }));
 
 /** `/jobs/<id>/events`. The events reach the page after `openEvents` has returned (the manager
