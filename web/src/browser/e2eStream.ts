@@ -6,7 +6,7 @@ import { defaultRunName } from "../launch/params";
 import type { FromWorker, ToWorker } from "../stream/protocol";
 import { RUN_LOCK } from "./support";
 
-export type StreamOptions = { keepStore?: boolean; workers?: number };
+export type StreamOptions = { keepStore?: boolean; workers?: number; tileCrc?: boolean };
 export type StreamResult = {
   files: { name: string; size: number }[];
   seconds: number;
@@ -58,7 +58,10 @@ async function stream(avis: File[], inputs: File[], opts: StreamOptions): Promis
       worker.onerror = (e) => reject(new Error(`worker failed: ${e.message || "could not start"}`));
       // one scratch folder for these runs, cleared by the next one (reference runs return their
       // traces from it, so it stays until then)
-      const params = opts.workers ? { workers: opts.workers } : undefined;
+      const params = {
+        ...(opts.workers ? { workers: opts.workers } : {}),
+        ...(opts.tileCrc ? { tile_crc: true } : {}),
+      };
       const msg: ToWorker = { avis, inputs, out, params, keepStore: opts.keepStore, scratch: "e2e-stream" };
       worker.postMessage(msg);
     });
