@@ -2,8 +2,8 @@
 //! `tools/wasm-bench/`): every kernel in its old (scalar reference) and new form on one frame.
 
 use crate::filters::{
-    area_down2_f32, area_down2_u8, gauss_f32, gauss_f32_scalar, gauss_u8, gauss_u8_scalar, resize_up2_f32,
-    resize_up2_f32_scalar,
+    area_down2_f32, area_down2_f32_scalar, area_down2_u8, area_down2_u8_scalar, gauss_f32, gauss_f32_scalar,
+    gauss_u8, gauss_u8_scalar, resize_up2_f32, resize_up2_f32_scalar,
 };
 use crate::motion::{registration_from_denoised, Motion, MotionParams, Reg};
 use crate::preprocess::{
@@ -95,7 +95,10 @@ fn job(kernel: &str, new: bool, frame: &[u8], h: usize, w: usize) -> Result<Job,
         }
         ("resize_up2", false) => Box::new(move || f32_bytes(&resize_up2_f32_scalar(&half, h / 2, w / 2))),
         ("resize_up2", true) => Box::new(move || f32_bytes(&resize_up2_f32(&half, h / 2, w / 2))),
-        ("area_down2_u8", _) => Box::new(move || area_down2_u8(&f, h, w)),
+        ("area_down2_u8", false) => Box::new(move || area_down2_u8_scalar(&f, h, w)),
+        ("area_down2_u8", true) => Box::new(move || area_down2_u8(&f, h, w)),
+        ("area_down2_f32", false) => Box::new(move || f32_bytes(&area_down2_f32_scalar(&ff, h, w))),
+        ("area_down2_f32", true) => Box::new(move || f32_bytes(&area_down2_f32(&ff, h, w))),
         _ => return Err(JsError::new(&format!("unknown kernel {kernel}"))),
     })
 }

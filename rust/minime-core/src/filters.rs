@@ -9,8 +9,9 @@
 //!
 //! All borders are OpenCV's default `BORDER_REFLECT_101`.
 
-use crate::fsimd::{add, ld, mul, splat, st, zip_hi, zip_lo, D4, F4};
+use crate::fsimd::{add, even, ld, mul, odd, splat, st, zip_hi, zip_lo, D4, F4};
 use crate::preprocess::fma;
+use crate::simd::{load, mean2x2, store};
 
 /// Index `i` reflected into `0..n` without repeating the edge (`gfedcb|abcdefgh|gfedcba`).
 fn reflect101(i: isize, n: usize) -> usize {
@@ -279,14 +280,33 @@ pub fn gauss_f32_scalar(src: &[f32], h: usize, w: usize, sigma: f64) -> Vec<f32>
 }
 
 /// `cv2.resize(src, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)` on uint8 with
-/// even `h`, `w`: rounded mean of each 2 x 2 block.
+/// even `h`, `w`: rounded mean of each 2 x 2 block (sixteen blocks at a time).
 pub fn area_down2_u8(src: &[u8], h: usize, w: usize) -> Vec<u8> {
     let (oh, ow) = (h / 2, w / 2);
     let mut out = vec![0u8; oh * ow];
     for (y, o) in out.chunks_exact_mut(ow.max(1)).enumerate().take(oh) {
         let r0 = &src[2 * y * w..2 * y * w + 2 * ow];
         let r1 = &src[(2 * y + 1) * w..(2 * y + 1) * w + 2 * ow];
-        for ((o, a), b) in o.iter_mut().zip(r0.as_chunks::<2>().0).zip(r1.as_chunks::<2>().0) {
+        let (o16, o_rest) = o.as_chunks_mut::<16>();
+        let (a16, a_rest) = r0.as_chunks::<32>();
+        let (b16, b_rest) = r1.as_chunks::<32>();
+        for ((o, a), b) in o16.iter_mut().zip(a16).zip(b16) {
+            // SAFETY: `a` and `b` are 32 readable bytes, `o` 16 writable ones.
+            unsafe {
+                let v = mean2x2(
+                    load(a.as_ptr()),
+                    load(a.as_ptr().add(16)),
+                    load(b.as_ptr()),
+                    load(b.as_ptr().add(16)),
+                );
+                store(o.as_mut_ptr(), v);
+            }
+        }
+        for ((o, a), b) in o_rest
+            .iter_mut()
+            .zip(a_rest.as_chunks::<2>().0)
+            .zip(b_rest.as_chunks::<2>().0)
+        {
             let s = u16::from(a[0]) + u16::from(a[1]) + u16::from(b[0]) + u16::from(b[1]);
             *o = ((s + 2) >> 2) as u8;
         }
@@ -298,11 +318,50 @@ pub fn area_down2_u8(src: &[u8], h: usize, w: usize) -> Vec<u8> {
 pub fn area_down2_f32(src: &[f32], h: usize, w: usize) -> Vec<f32> {
     let (oh, ow) = (h / 2, w / 2);
     let mut out = vec![0f32; oh * ow];
+    let quarter = splat(0.25);
     for (y, o) in out.chunks_exact_mut(ow.max(1)).enumerate().take(oh) {
         let r0 = &src[2 * y * w..2 * y * w + 2 * ow];
         let r1 = &src[(2 * y + 1) * w..(2 * y + 1) * w + 2 * ow];
-        for ((o, a), b) in o.iter_mut().zip(r0.as_chunks::<2>().0).zip(r1.as_chunks::<2>().0) {
-            *o = ((a[0] + a[1]) + (b[0] + b[1])) * 0.25;
+        let mut x = 0;
+        while x + 4 <= ow {
+            let (a0, a1, b0, b1) = (ld(r0, 2 * x), ld(r0, 2 * x + 4), ld(r1, 2 * x), ld(r1, 2 * x + 4));
+            let top = add(even(a0, a1), odd(a0, a1));
+            let bottom = add(even(b0, b1), odd(b0, b1));
+            st(o, x, mul(add(top, bottom), quarter));
+            x += 4;
+        }
+        for (x, o) in o.iter_mut().enumerate().skip(x) {
+            *o = ((r0[2 * x] + r0[2 * x + 1]) + (r1[2 * x] + r1[2 * x + 1])) * 0.25;
+        }
+    }
+    out
+}
+
+/// `area_down2_u8` one pixel at a time: its reference.
+pub fn area_down2_u8_scalar(src: &[u8], h: usize, w: usize) -> Vec<u8> {
+    let (oh, ow) = (h / 2, w / 2);
+    let mut out = Vec::with_capacity(oh * ow);
+    for y in 0..oh {
+        let (r0, r1) = (&src[2 * y * w..], &src[(2 * y + 1) * w..]);
+        for x in 0..ow {
+            let s = u16::from(r0[2 * x])
+                + u16::from(r0[2 * x + 1])
+                + u16::from(r1[2 * x])
+                + u16::from(r1[2 * x + 1]);
+            out.push(((s + 2) >> 2) as u8);
+        }
+    }
+    out
+}
+
+/// `area_down2_f32` one pixel at a time: its reference.
+pub fn area_down2_f32_scalar(src: &[f32], h: usize, w: usize) -> Vec<f32> {
+    let (oh, ow) = (h / 2, w / 2);
+    let mut out = Vec::with_capacity(oh * ow);
+    for y in 0..oh {
+        let (r0, r1) = (&src[2 * y * w..], &src[(2 * y + 1) * w..]);
+        for x in 0..ow {
+            out.push(((r0[2 * x] + r0[2 * x + 1]) + (r1[2 * x] + r1[2 * x + 1])) * 0.25);
         }
     }
     out
@@ -549,7 +608,12 @@ mod tests {
                 }
             }
             assert_eq!(area_down2_u8(&f, h, w), want_u8, "{h}x{w}");
+            assert_eq!(area_down2_u8(&f, h, w), area_down2_u8_scalar(&f, h, w), "{h}x{w}");
             assert!(same_bits_f32(&area_down2_f32(&ff, h, w), &want_f32), "{h}x{w}");
+            assert!(
+                same_bits_f32(&area_down2_f32(&ff, h, w), &area_down2_f32_scalar(&ff, h, w)),
+                "{h}x{w}"
+            );
         }
     }
 
