@@ -3,7 +3,16 @@
 // a time from the run's worker. It never holds more than a chunk of frames or one tile.
 
 import { forFrames, indexSegments, type Segment } from "./frames";
-import init, { Pass1Engine, Pass2Engine, StreamLane, StreamSolver, TemplateWorker } from "./pkg/minime_core.js";
+import init, {
+  CnmfEngine,
+  InitEngine,
+  Pass1Engine,
+  Pass2Engine,
+  SeedsEngine,
+  StreamLane,
+  StreamSolver,
+  TemplateWorker,
+} from "./pkg/minime_core.js";
 import type { FromFrameWorker, ToFrameWorker } from "./poolProtocol";
 import { FLUSH, readTile, slabName } from "./slabs";
 
@@ -103,6 +112,8 @@ async function handle(m: ToFrameWorker): Promise<void> {
     case "t1":
     case "t2":
       return templateFrames(m);
+    case "w1":
+      return windowUnits(m);
   }
 }
 
@@ -255,6 +266,57 @@ function templateFrames(m: Extract<ToFrameWorker, { type: "t1" | "t2" }>): void 
 
 // one message at a time, in order: a worker may be dealt several tasks up front
 let queue: Promise<void> = Promise.resolve();
+/** A window's seeds, init and CNMF loop, as the run's worker chains them (`runSeeds`, `runInit`,
+ * `runCnmf`), on the window's pass 1 maxima and pass 2 factors. */
+function windowUnits(m: Extract<ToFrameWorker, { type: "w1" }>): void {
+  const began = performance.now();
+  const files = new Map<string, Uint8Array>();
+  const take = (out: Map<string, Uint8Array>) => {
+    for (const [name, bytes] of out) files.set(name, bytes);
+  };
+  const p1 = new Pass1Engine(m.files);
+  const p2 = new Pass2Engine(m.files);
+  const engines: { free(): void }[] = [p1, p2];
+  try {
+    p1.set_maxima(m.maxProj, m.blockMax);
+    for (const [k, b] of m.tiles.entries()) p2.set_tile(k, b);
+    const seconds: number[] = [];
+    const notes: string[] = [];
+    let t = performance.now();
+    const step = (note: string, i: number) => {
+      const now = performance.now();
+      seconds.push((now - t) / 1e3);
+      notes.push(note);
+      t = now;
+      if (i < 3) post({ type: "progress", id: m.id, done: i, note, seconds: seconds[i - 1] });
+    };
+    post({ type: "progress", id: m.id, done: 0 });
+    const seeds = new SeedsEngine(m.files, p1, p2);
+    engines.push(seeds);
+    const merged = seeds.run();
+    step(`${merged} merged seeds`, 1);
+    take(seeds.finish(JSON.stringify({ where: "browser", seeds: seconds[0], wasm_heap_mb: heapMb() })));
+    const initE = new InitEngine(m.files);
+    engines.push(initE);
+    const units = initE.run(seeds);
+    step(`${units} units after the merge`, 2);
+    take(initE.finish(JSON.stringify({ where: "browser", init: seconds[1], wasm_heap_mb: heapMb() })));
+    const cnmf = new CnmfEngine(m.files);
+    engines.push(cnmf);
+    const final = cnmf.run(seeds, initE);
+    step(`${final} units`, 3);
+    take(cnmf.finish(JSON.stringify({ where: "browser", cnmf: seconds[2], wasm_heap_mb: heapMb() })));
+    const window = cnmf.window_bytes();
+    const r = { files, window, seconds, notes };
+    post({ type: "done", kind: "w1", id: m.id, ms: performance.now() - began, heapMb: heapMb(), ...r }, [
+      ...[...files.values()].map((b) => b.buffer),
+      window.buffer,
+    ]);
+  } finally {
+    for (const e of engines.reverse()) e.free();
+  }
+}
+
 self.onmessage = (e: MessageEvent<ToFrameWorker>) => {
   const id = "id" in e.data ? e.data.id : -1;
   queue = queue

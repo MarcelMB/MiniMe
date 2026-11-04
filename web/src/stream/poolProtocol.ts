@@ -36,6 +36,9 @@ export type ToFrameWorker =
   | { type: "f1"; id: number; n: number; y8: Uint8Array; cc: Float64Array }
   /** This lane's sums. */
   | { type: "f2"; id: number }
+  /** A window's seeds, init and CNMF loop: `files` its stage files, pass 1's maxima, pass 2's factors
+   * per tile (`Pass2Engine.tile_bytes`). Posts progress 0, 1, 2 as seeds, init, CNMF begin. */
+  | { type: "w1"; id: number; files: FileMap; maxProj: Uint8Array; blockMax: Uint8Array; tiles: Uint8Array[] }
   /** Compress tile `k` of the window's tile store. */
   | { type: "p2"; id: number; k: number };
 
@@ -52,6 +55,9 @@ export type P1Result = {
 };
 /** `parts[j]`: the frames' pixels of fold lane `j`, frame after frame. */
 export type S1Result = { parts: Uint8Array[]; cc: Float64Array; f: Float32Array };
+/** A window's seeds, init and CNMF outputs, its final units for the stitch (`window_bytes`), and each
+ * stage's seconds and stage-row note. */
+export type W1Result = { files: FileMap; window: Uint8Array; seconds: number[]; notes: string[] };
 /** A fold lane's range (`StreamLane.range`) and sums (`done_flat`, `seg_flat`). */
 export type F2Result = { range: Uint32Array; done: Float64Array; seg: Float64Array };
 export type P2Result = { factors: Uint8Array; readMs: number };
@@ -61,11 +67,13 @@ export type TResult = { preps: Float32Array };
 type Meta = { id: number; ms: number; heapMb: number };
 export type FromFrameWorker =
   | { type: "ack"; heapMb: number }
-  | { type: "progress"; id: number; done: number }
+  /** A running task's count; a window task (`w1`) also says what the step before did and how long it took. */
+  | { type: "progress"; id: number; done: number; note?: string; seconds?: number }
   | { type: "error"; id: number; message: string }
   | ({ type: "done"; kind: "p1" } & Meta & P1Result)
   | ({ type: "done"; kind: "s1" } & Meta & S1Result)
   | ({ type: "done"; kind: "p2" } & Meta & P2Result)
   | ({ type: "done"; kind: "t1" | "t2" } & Meta & TResult)
   | ({ type: "done"; kind: "f0" | "f1" } & Meta)
-  | ({ type: "done"; kind: "f2" } & Meta & F2Result);
+  | ({ type: "done"; kind: "f2" } & Meta & F2Result)
+  | ({ type: "done"; kind: "w1" } & Meta & W1Result);

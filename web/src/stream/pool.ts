@@ -10,7 +10,7 @@
 import type { FromFrameWorker, ToFrameWorker } from "./poolProtocol";
 
 type Task = Extract<ToFrameWorker, { id: number }>;
-type TaskKind = "p1" | "s1" | "p2" | "t1" | "t2" | "f0" | "f1" | "f2";
+type TaskKind = "p1" | "s1" | "p2" | "t1" | "t2" | "f0" | "f1" | "f2" | "w1";
 type Done<K extends TaskKind> = Extract<FromFrameWorker, { type: "done"; kind: K }>;
 type Without<T, K extends string> = T extends unknown ? Omit<T, K> : never;
 
@@ -29,11 +29,13 @@ export type RunOptions<K extends TaskKind> = {
   maxAhead?: number;
   onResult: (i: number, r: Done<K>) => void;
   /** A running task's own count (frames done so far). */
-  onProgress?: (i: number, done: number) => void;
+  onProgress?: (i: number, done: number, m: Extract<FromFrameWorker, { type: "progress" }>) => void;
   /** Deal every task to a worker up front (task `i` to worker `i % size`, which runs its tasks in
    * order) instead of handing one out whenever a worker is idle: the work then goes on while the
    * caller's thread is busy elsewhere and cannot hand anything out. */
   deal?: boolean;
+  /** Buffers to transfer with task `i`'s message instead of copying them. */
+  transfer?: (i: number) => Transferable[];
   /** Hand out no more tasks while this holds (results of other kinds, `onSide`, end the hold). */
   hold?: () => boolean;
   /** A result of another kind (a task posted with `post` while this run goes). */
@@ -52,7 +54,7 @@ export function workerCount(params: Record<string, unknown>): number {
 
 export class Pool {
   /** Milliseconds all tasks of each kind kept a worker busy, for the stage's utilisation. */
-  readonly busyMs: Record<TaskKind, number> = { p1: 0, s1: 0, p2: 0, t1: 0, t2: 0, f0: 0, f1: 0, f2: 0 };
+  readonly busyMs: Record<TaskKind, number> = { p1: 0, s1: 0, p2: 0, t1: 0, t2: 0, f0: 0, f1: 0, f2: 0, w1: 0 };
   private constructor(private readonly slots: Slot[]) {}
 
   /** `n` workers, each with the session's AVIs indexed; rejects (and stops them) when one fails to start in `timeoutMs`. */
@@ -138,7 +140,7 @@ export class Pool {
           if (over || next >= count || (opts.ordered && next - given >= maxAhead)) return;
           if (s.busy) continue;
           s.busy = true;
-          s.w.postMessage({ ...make(next), id: next });
+          s.w.postMessage({ ...make(next), id: next }, opts.transfer?.(next) ?? []);
           next++;
         }
       };
@@ -152,7 +154,7 @@ export class Pool {
         s.handler = (m) => {
           try {
             if (m.type === "error") return fail(new Error(m.message));
-            if (m.type === "progress") return opts.onProgress?.(m.id, m.done);
+            if (m.type === "progress") return opts.onProgress?.(m.id, m.done, m);
             if (m.type !== "done") return;
             s.heapMb = m.heapMb;
             if (m.kind !== kind) {
@@ -182,7 +184,8 @@ export class Pool {
       }
       if (count === 0) return resolve();
       if (opts.deal) {
-        for (let i = 0; i < count; i++) this.slots[i % this.slots.length].w.postMessage({ ...make(i), id: i });
+        for (let i = 0; i < count; i++)
+          this.slots[i % this.slots.length].w.postMessage({ ...make(i), id: i }, opts.transfer?.(i) ?? []);
         return;
       }
       pump();
