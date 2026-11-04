@@ -30,6 +30,12 @@ describe("npy", () => {
 
   it("aligns the data to 64 bytes and reports where it starts", () => {
     const h = readNpyHeader(writeNpy([5, 7], new Float32Array(35)));
-    expect(h).toEqual({ shape: [5, 7], descr: "<f4", offset: 128 });
+    expect(h).toEqual({ shape: [5, 7], descr: "<f4", offset: 128, fortran: false });
+  });
+
+  it("says when the header's data is in Fortran order", () => {
+    const bytes = writeNpy([5, 7], new Float32Array(35));
+    bytes.set(new TextEncoder().encode("True "), new TextDecoder("latin1").decode(bytes).indexOf("False"));
+    expect(readNpyHeader(bytes)).toMatchObject({ shape: [5, 7], fortran: true });
   });
 });

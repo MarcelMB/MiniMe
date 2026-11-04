@@ -10,6 +10,9 @@ export async function tracesShape(r: RunInfo, kind: "C" | "YrA") {
   });
   const h = readNpyHeader(new Uint8Array(await file.slice(0, 4096).arrayBuffer()));
   if (h.descr !== "<f4" || h.shape.length !== 2) throw new HttpError(500, `cnmf/${kind}.npy is not (K, T) float32`);
+  // a unit's trace is read as one slice of the file: in Fortran order it would come out transposed
+  if (h.fortran && h.shape[0] > 1 && h.shape[1] > 1)
+    throw new HttpError(500, `cnmf/${kind}.npy is stored in Fortran order, which the browser app does not read`);
   return { K: h.shape[0], T: h.shape[1], file, offset: h.offset };
 }
 
