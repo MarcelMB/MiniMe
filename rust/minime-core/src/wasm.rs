@@ -767,6 +767,24 @@ pub fn motion_check(
     serde_json::to_string(&r).map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// The viewer's motion residual (`derived.block_residual`) of `n` block maxima (`block_max`,
+/// `n * h * w` float32) against the session's max projection (`h * w` float32): `(n, 3)` flat,
+/// dy, dx and correlation per block. `params_json` is the pass-1 parameter object (its
+/// `motion_max_shift` is the search window).
+#[wasm_bindgen]
+pub fn block_residual(
+    block_max: &[f32],
+    n: usize,
+    h: usize,
+    w: usize,
+    max_proj: &[f32],
+    params_json: &str,
+) -> Result<Vec<f32>, JsError> {
+    let err = |e: String| JsError::new(&e);
+    let p = preview::motion_params(params_json, h, w).map_err(err)?;
+    motion::block_residual(block_max, n, max_proj, &p).map_err(err)
+}
+
 /// `stream.time_windows` on the segment starts `edges` (with the end `t`): `[t0, t1)` pairs,
 /// flat.
 #[wasm_bindgen]

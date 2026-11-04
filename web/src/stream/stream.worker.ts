@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 
-import { HandleDir } from "../browser/dir";
-import { foldMaxProj, keepForSession, type WindowParts, writeRun, writeWindow } from "../browser/writer";
+import { HandleDir, walk } from "../browser/dir";
+import { foldMaxProj, keepForSession, type WindowParts, windowDir, writeRun, writeWindow } from "../browser/writer";
 import { readNpy } from "./npy";
 import { orderAvis } from "./order";
 import init, {
@@ -69,7 +69,7 @@ const progress = (done: number, frames: number, seconds: number, stateMb = 0) =>
 const encode = (v: unknown) => new TextEncoder().encode(JSON.stringify(v, null, 1));
 const decode = (b: Uint8Array) => JSON.parse(new TextDecoder().decode(b)) as Record<string, unknown>;
 
-async function run({ avis, inputs, out: dest, params, rawDir, fps }: ToWorker): Promise<void> {
+async function run({ avis, inputs, out: dest, params, rawDir, fps, keepStore }: ToWorker): Promise<void> {
   const tl = performance.now();
   const log = (what: string) =>
     post({ type: "log", message: `${what} at ${((performance.now() - tl) / 1e3).toFixed(1)} s` });
@@ -84,7 +84,13 @@ async function run({ avis, inputs, out: dest, params, rawDir, fps }: ToWorker): 
   // the motion; stitch.json alone stitches ref_stitch.py's window units; an inputs folder
   // with a template is ref_pass1.py's, one without footprints ref_motion.py's
   if (files.has("session.json") || !files.size)
-    return runWindows(avis, files, log, wasm.memory, tl, { out: dest, params: params ?? {}, rawDir, fps });
+    return runWindows(avis, files, log, wasm.memory, tl, {
+      out: dest,
+      params: params ?? {},
+      rawDir,
+      fps,
+      keepStore,
+    });
   if (files.has("stitch.json")) return runStitch(files, log, wasm.memory);
   if (files.has("template.npy")) return runPass1(avis, files, log, wasm.memory);
   if (!files.has("A_data.npy")) return runMotion(avis, files, log, wasm.memory);
@@ -297,6 +303,21 @@ function motionStage(
 const TILE_DIR = "pass1_tiles";
 const FLUSH = 100; // frames buffered before they are appended to the tile files
 
+/** Copy window `i`'s tile store (OPFS `TILE_DIR`, one `tile_KKK.part00` per tile) into the run
+ * folder's `tiles/wNN/`, file by file as a stream: a window's store is `frames * H * W` bytes, too
+ * much to hold in memory twice. Called before the store is removed for the next window. */
+async function keepTiles(root: FileSystemDirectoryHandle, to: HandleDir, i: number): Promise<void> {
+  const from = await root.getDirectoryHandle(TILE_DIR);
+  const dest = (await walk(to, `tiles/${windowDir(i)}`, { create: true })) as HandleDir;
+  // biome-ignore lint/suspicious/noExplicitAny: entries() is missing from TS 5.6's DOM lib
+  for await (const [name, h] of (from as any).entries() as AsyncIterable<[string, FileSystemHandle]>) {
+    if (h.kind !== "file" || !name.endsWith(".part00")) continue;
+    const file = await (h as FileSystemFileHandle).getFile();
+    const out = await (await dest.handle.getFileHandle(name, { create: true })).createWritable();
+    await file.stream().pipeTo(out); // closes `out` when the file is through
+  }
+}
+
 /** Pass 1 and what follows on one window (`ref_pass1.py`'s ... `ref_cnmf.py`'s inputs). */
 async function runPass1(
   avis: File[],
@@ -313,13 +334,14 @@ async function runPass1(
   );
 }
 
-/** What a run folder needs besides the pipeline's outputs (`ToWorker`'s `out`, `params`, `rawDir`
- * and `fps`). */
+/** What a run folder needs besides the pipeline's outputs (`ToWorker`'s `out`, `params`, `rawDir`,
+ * `fps` and `keepStore`). */
 type RunOpts = {
   out?: FileSystemDirectoryHandle;
   params: Record<string, unknown>;
   rawDir?: string;
   fps?: number | null;
+  keepStore?: boolean;
 };
 
 /** The whole pipeline on the session: its motion (unless the inputs hold `shifts.npy` and
@@ -397,6 +419,7 @@ async function runWindows(
       await writeWindow(to, i, w.files);
       maxProj = foldMaxProj(maxProj, w.files);
       kept.push({ t0, t1, files: keepForSession(w.files) });
+      if (opts.keepStore) await keepTiles(root, to, i);
     }
     await root.removeEntry(TILE_DIR, { recursive: true }).catch(() => undefined);
   }

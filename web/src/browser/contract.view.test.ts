@@ -11,13 +11,14 @@ beforeAll(async () => {
 });
 
 const MINE = ["/image/", "/motion", "/seeds", "/units", "/frame/"];
-/** Answered differently on a Python run (its factors, residual and tile store differ from the
- * browser's): the browser says 404 for these, which is all that is checked. */
+/** Answered differently on a Python run (its factors, and so the noise image, the residual and
+ * the reconstruction, are not in the browser's format): the browser says 404 for these, which is
+ * all that is checked. The preprocessed frames are not in this list: a Python run's flat tile
+ * store is read like main reads it, so `frame/100?source=pre` is compared byte for byte. */
 const BROWSER_ONLY = [
-  "GET /runs/{rid}/image/noise", // Python factors: 404 in the browser for Python runs
+  "GET /runs/{rid}/image/noise",
   "GET /runs/{rid}/motion/residual",
   "GET /runs/{rid}/frame/299?source=recon",
-  "GET /runs/{rid}/frame/100?source=pre",
 ];
 
 const close = (a: ArrayLike<number>, b: ArrayLike<number>, tol: number) => {

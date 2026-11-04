@@ -1,6 +1,8 @@
 import { RawVideo } from "../avi";
 import { computing } from "../compute";
 import { linspaceInt, percentile, toU8 } from "../derived/contrast";
+import { hasPre, hasRecon, preFrame, reconFrame } from "../derived/recon";
+import { computeResidual } from "../derived/residual";
 import { tileMap } from "../derived/tiles";
 import { centroids, unitPolygons } from "../derived/units";
 import { exists, fileAt, readBytes } from "../dir";
@@ -10,6 +12,7 @@ import { pyRound, roundHalfEven } from "../num";
 import { HttpError, router } from "../router";
 import type { RunInfo } from "../runs";
 import { state } from "../state";
+import { windowDir } from "../writer";
 
 const f32 = (shape: number[], data: ArrayLike<number>) => ({
   array: { shape, dtype: "float32" as const, data: data instanceof Float32Array ? data : Float32Array.from(data) },
@@ -51,11 +54,16 @@ router.add("GET", "/runs/:rid/motion", async (_q, p) => {
   return f32([q.length, 3], out);
 });
 
-// Task 10 adds the computation of a missing residual; until then only a cached one is answered.
+/** The motion residual (the leftover shift of each block's max projection): the cached one, else
+ * computed from the windows' block maxima of a browser run (a 202 until done). A run without them
+ * (Python's factors are not in the browser's format) has none. */
 router.add("GET", "/runs/:rid/motion/residual", async (_q, p) => {
   const r = await state.registry.get(p.rid);
   const cache = await state.cache(r.id);
-  if (!(await cache.has("residual.npy"))) throw notAvailable("the motion residual");
+  if (!(await cache.has("residual.npy"))) {
+    if (!(await exists(r.dir, `factors/${windowDir(0)}/block_max.npy`))) throw notAvailable("the motion residual");
+    return computing(`${r.id}:${r.stamp}:residual`, () => computeResidual(r, cache));
+  }
   const a = await cache.loadNpy("residual.npy");
   return f32(a.shape, a.data);
 });
@@ -113,7 +121,7 @@ async function peaks(r: RunInfo, K: number): Promise<number[]> {
 type Frames = (t: number) => Promise<Float32Array>;
 const sources = new Map<string, Promise<Frames>>();
 
-/** Frame `t` of `source` as float32 (before the contrast); Task 10 adds "pre" and "recon". */
+/** Frame `t` of `source` as float32 (before the contrast). */
 export function frameSource(r: RunInfo, source: "raw" | "pre" | "recon"): Promise<Frames> {
   const key = `${r.id}:${r.stamp}:${source}`;
   let s = sources.get(key);
@@ -125,8 +133,15 @@ export function frameSource(r: RunInfo, source: "raw" | "pre" | "recon"): Promis
   return s;
 }
 
-async function open(r: RunInfo, source: string): Promise<Frames> {
-  if (source !== "raw") throw notAvailable(`${source} frames`);
+async function open(r: RunInfo, source: "raw" | "pre" | "recon"): Promise<Frames> {
+  if (source === "pre") {
+    if (!(await hasPre(r))) throw notAvailable("pre frames");
+    return (t) => preFrame(r, t);
+  }
+  if (source === "recon") {
+    if (!(await hasRecon(r))) throw notAvailable("recon frames");
+    return (t) => reconFrame(r, t);
+  }
   const dir = await state.registry.rawDir(r).catch((e: unknown) => {
     if (e instanceof HttpError && e.status === 403) throw e; // the folder has to be reconnected
     throw new HttpError(404, `raw videos not found in ${String(r.params.raw_dir ?? "None")}`);

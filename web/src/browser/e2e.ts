@@ -10,10 +10,12 @@ declare global {
     /** Copy `files` into OPFS `e2e/<name>/raw/` and remember `e2e/<name>` as a picked folder;
      * returns its root name (a vpath starts with it). */
     __minimeAddFolder?: (name: string, files: File[]) => Promise<string>;
-    /** `api.ts`'s `getJSON` and `postJSON` over the in-page router. */
+    /** `api.ts`'s `getJSON` and `postJSON` over the in-page router, and `getArray` for an array
+     * answer (asked again while it is computing). */
     __minimeApi?: {
       getJSON: (path: string) => Promise<unknown>;
       postJSON: (path: string, body: unknown) => Promise<unknown>;
+      getArray: (path: string) => Promise<{ shape: number[]; dtype: string; data: number[] }>;
     };
   }
 }
@@ -38,10 +40,25 @@ async function call(path: string, init?: RequestInit): Promise<unknown> {
   if (!r.ok) throw new Error(String(doc.detail));
   return doc;
 }
+async function getArray(path: string): Promise<{ shape: number[]; dtype: string; data: number[] }> {
+  for (;;) {
+    const r = await browserFetch(`/api${path}`);
+    if (r.status === 202) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      continue;
+    }
+    if (!r.ok) throw new Error(String((await r.json()).detail));
+    const dtype = r.headers.get("X-Dtype") ?? "";
+    const buf = await r.arrayBuffer();
+    const data =
+      dtype === "uint8" ? new Uint8Array(buf) : dtype === "int32" ? new Int32Array(buf) : new Float32Array(buf);
+    return { shape: (r.headers.get("X-Shape") ?? "").split(",").map(Number), dtype, data: Array.from(data) };
+  }
+}
 const getJSON = (path: string) => call(path);
 const postJSON = (path: string, body: unknown) => call(path, { method: "POST", body: JSON.stringify(body) });
 
 if (import.meta.env.MODE === "browser" && new URLSearchParams(location.search).has("e2e")) {
   window.__minimeAddFolder = addFolder;
-  window.__minimeApi = { getJSON, postJSON };
+  window.__minimeApi = { getJSON, postJSON, getArray };
 }
