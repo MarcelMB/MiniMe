@@ -6,6 +6,12 @@ description = "Bounded-memory streaming MiniMe core (native check harness + wasm
 license = "GPL-3.0-or-later"
 publish = false
 
+[features]
+# wasm-only micro-benchmark entry point (`bench_wasm.rs`), built by tools/wasm-bench/run.sh
+bench = []
+# rustfft's wasm simd128 butterflies (browser build only; changes the FFT's rounding, so off by default)
+fft-simd = ["rustfft/wasm_simd"]
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
