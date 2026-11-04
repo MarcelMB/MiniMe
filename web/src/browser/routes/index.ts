@@ -3,3 +3,5 @@ import "./runs";
 import "./params";
 import "./traces";
 import "./view";
+import "./jobs";
+import "./raw";
