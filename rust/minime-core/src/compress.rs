@@ -326,7 +326,11 @@ impl<'a> TileMatrix<'a> {
             for g in (0..n).step_by(4) {
                 let _s = prof::span("noise_fft");
                 let sums = plan.sums_u8(&blk, 16, g, &mut work);
-                out.extend(sums.iter().take(n - g).map(|&s| (0.5 * (s / nb as f64)).exp()));
+                out.extend(
+                    sums.iter()
+                        .take(n - g)
+                        .map(|&s| f64::from((0.5 * (s / nb as f32)).exp())),
+                );
             }
         }
         out
@@ -884,15 +888,21 @@ mod tests {
                 (1000, 64 * 24, 5, 10, 8),
                 (300, 77, 3, 20, 9),
             ] {
-                let raw = synthetic(t, p, r, seed);
+                let mut raw = synthetic(t, p, r, seed);
+                for ti in 0..t {
+                    raw[ti * p] = 100; // a constant pixel: its spectrum is rounding noise or zero
+                }
                 let pr = params(k0);
                 let a = compress_ref::compress_tile(&raw, t, p, &pr, &mut Gaussian::new(1)).unwrap();
                 let b = compress_tile(&raw, t, p, &pr, &mut Gaussian::new(1)).unwrap();
                 assert_eq!((a.rank, a.k), (b.rank, b.k));
                 assert_eq!(a.mean, b.mean);
                 assert_eq!(a.energy, b.energy);
-                for (x, y) in a.sigma.iter().zip(&b.sigma) {
-                    assert!((x - y).abs() <= 1e-5 * x.abs(), "sigma {x} {y}");
+                for (i, (x, y)) in a.sigma.iter().zip(&b.sigma).enumerate() {
+                    // the constant pixel (0) is a sum of identical logarithms in float32, whose
+                    // rounding the two sums (and the rounding noise of two FFTs) do not share
+                    let tol = if i == 0 { 1e-4 } else { 1e-5 };
+                    assert!((x - y).abs() <= tol * x.abs(), "sigma {i}: {x} {y}");
                 }
                 let rel = |u: &[f32], v: &[f32]| {
                     let num: f64 = u.iter().zip(v).map(|(&x, &y)| f64::from(x - y).powi(2)).sum();
