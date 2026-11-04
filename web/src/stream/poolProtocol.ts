@@ -15,7 +15,7 @@ export type ToFrameWorker =
   | { type: "s0"; files: FileMap }
   /** Build pass 2's engine for a window (`pass2.json`, `omega_*.npy`) and open its tile store, whose
    * slabs hold `chunks[c]` frames each (`slabs.ts`). */
-  | { type: "p2ctx"; files: FileMap; chunks: number[] }
+  | { type: "p2ctx"; files: FileMap; chunks: number[]; tiles: string }
   /** The motion template's workers (`TemplateWorker`) from the stage's `params.json`. */
   | { type: "t0"; params: Uint8Array }
   /** Round 1's mean image, which round 2 aligns to. */
@@ -27,7 +27,7 @@ export type ToFrameWorker =
   | { type: "free" }
   /** Pass 1 on frames `[a, b)` of the window `files` describe (`params.json`, `template.npy`,
    * optionally `shifts.npy`), its tiles written to slab `chunk`. */
-  | { type: "p1"; id: number; files: FileMap; a: number; b: number; chunk: number }
+  | { type: "p1"; id: number; files: FileMap; a: number; b: number; chunk: number; tiles: string }
   /** Preprocess and solve frames `[a, b)` of the session. */
   | { type: "s1"; id: number; a: number; b: number }
   /** Compress tile `k` of the window's tile store. */

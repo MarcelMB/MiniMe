@@ -261,7 +261,15 @@ function indexSegments(avis: File[]): Segment[] {
 
 /** What a window run keeps besides its outputs: tile CRCs (the pass 1 check reads the whole
  * tile store back) and the CNMF loop's engine, handed over before it is freed. */
-type WindowOpts = { crc: boolean; onPass2?: (engine: Pass2Engine) => void; onCnmf?: (engine: CnmfEngine) => void };
+type WindowOpts = {
+  crc: boolean;
+  /** The window's tile store folder in the scratch folder (default `TILE_DIR`). */
+  tiles?: string;
+  /** The window's pass 1, started ahead on the pool (`beginPass1`). */
+  ahead?: Ahead;
+  onPass2?: (engine: Pass2Engine) => void;
+  onCnmf?: (engine: CnmfEngine) => void;
+};
 type Out = { files: Map<string, Uint8Array>; seconds: number };
 
 /** Calls `push` on raw frames `[from, to)` of the session, reading `BLOCK` frames per slice. */
@@ -373,13 +381,15 @@ async function motionStage(
 }
 
 const TILE_DIR = "pass1_tiles";
+/** Window `i`'s tile store folder: two windows' stores exist at once when the next window's pass 1 runs ahead. */
+const tilesDir = (i: number) => `${TILE_DIR}_${i}`;
 const FLUSH = 100; // frames buffered before they are appended to the tile files
 
 /** Copy window `i`'s tile store (`TILE_DIR` in the scratch folder, one `tile_KKK.part00` per tile) into the run
  * folder's `tiles/wNN/`, file by file as a stream: a window's store is `frames * H * W` bytes, too
  * much to hold in memory twice. Called before the store is removed for the next window. */
 async function keepTiles(root: FileSystemDirectoryHandle, to: HandleDir, i: number): Promise<void> {
-  const from = await root.getDirectoryHandle(TILE_DIR);
+  const from = await root.getDirectoryHandle(tilesDir(i));
   const dest = (await walk(to, `tiles/${windowDir(i)}`, { create: true })) as HandleDir;
   if (slabStore) {
     // a pooled run's store is slabs: write the tiles as the one-worker files
@@ -507,19 +517,39 @@ async function runSession(
   const to = opts.out ? new HandleDir(opts.out) : null;
   const kept: WindowParts[] = [];
   let maxProj: Float32Array | null = null;
-  for (let i = 0; i < n; i++) {
+  /** The stage files of window `i`. */
+  const windowFiles = (i: number): Map<string, Uint8Array> => {
     const [t0, t1] = [flat[2 * i], flat[2 * i + 1]];
-    const before = new Map(stageSeconds);
     const wf = new Map(files);
     for (const [name, bytes] of window_inputs(session, shifts ?? new Uint8Array(0), t0, t1) as Map<string, Uint8Array>)
       wf.set(name, bytes);
     const prefix = `omega_${String(t0).padStart(6, "0")}_`;
     for (const [name, bytes] of files) if (name.startsWith(prefix)) wf.set(`omega_${name.slice(prefix.length)}`, bytes);
+    return wf;
+  };
+  let ahead: Ahead | undefined;
+  let dropStore: Promise<void> | undefined;
+  for (let i = 0; i < n; i++) {
+    const [t0, t1] = [flat[2 * i], flat[2 * i + 1]];
+    const before = new Map(stageSeconds);
     stageLabel = `window ${i + 1}/${n}`;
     log(`window ${i + 1}/${n}: frames ${t0}-${t1}`);
-    const w = await windowPass1(segs, wf, log, memory, {
+    const mine = ahead;
+    ahead = undefined;
+    const w = await windowPass1(segs, windowFiles(i), log, memory, {
       crc: Boolean(opts.params.tile_crc), // the tile store's checksums (the e2e check), read back at some cost
-      onPass2: (engine) => stitch.add_pass2(engine, t0, t1),
+      tiles: tilesDir(i),
+      ahead: mine,
+      onPass2: (engine) => {
+        stitch.add_pass2(engine, t0, t1);
+        // The next window's pass 1 starts now on the pool, under this window's seeds, init and CNMF. This
+        // window's tile store is not needed any more (unless it is kept): it goes first, so that two
+        // stores never take the room at once (a private window has only a couple of GB).
+        if (pool && i + 1 < n && !opts.keepStore) {
+          dropStore = root.removeEntry(tilesDir(i), { recursive: true }).catch(() => undefined);
+          ahead = beginPass1(pool, windowFiles(i + 1), tilesDir(i + 1), log);
+        }
+      },
       onCnmf: (engine) => stitch.add_cnmf(engine, t0, t1),
     });
     total += w.seconds;
@@ -537,7 +567,8 @@ async function runSession(
       kept.push({ t0, t1, files: keepForSession(w.files) });
       if (opts.keepStore) await keepTiles(root, to, i);
     }
-    await root.removeEntry(TILE_DIR, { recursive: true }).catch(() => undefined);
+    await dropStore;
+    await root.removeEntry(tilesDir(i), { recursive: true }).catch(() => undefined);
   }
   for (const sg of segs) sg.avi.free();
   stageLabel = "";
@@ -773,6 +804,21 @@ function runStitchEngine(engine: StitchEngine, log: (what: string) => void, memo
   return { files: out, seconds };
 }
 
+/** A window's pass 1 started ahead on the pool: its engine, the chunks' result, when it began and where
+ * its progress goes once the window's turn comes. */
+type Ahead = { engine: Pass1Engine; done: Promise<Store>; began: number; sink: { progress?: typeof progress } };
+
+/** Start a window's pass 1 on the pool without waiting for it: the chunks are dealt to the workers
+ * now, so they go on while this thread is busy with the previous window's seeds, init and CNMF. */
+function beginPass1(p: Pool, files: Map<string, Uint8Array>, tiles: string, log: (what: string) => void): Ahead {
+  const engine = new Pass1Engine(files);
+  const sink: Ahead["sink"] = {};
+  const ctx = { progress: (...a: Parameters<typeof progress>) => sink.progress?.(...a), log };
+  const done = pass1Pooled(p, engine, files, engine.t1() - engine.t0(), ctx, tiles, true);
+  done.catch(() => undefined); // an error surfaces where the window waits for it
+  return { engine, done, began: performance.now(), sink };
+}
+
 /** Pass 1 (`minime-core pass1`) on `[t0, t1)`, with the tile store in OPFS: one file per
  * tile, written through sync access handles, read back at the end for its CRC-32s (with
  * `opts.crc`). With `pass2.json` in the inputs, pass 2 follows on the same tile files (and
@@ -784,14 +830,15 @@ async function windowPass1(
   memory: WebAssembly.Memory,
   opts: WindowOpts,
 ): Promise<Out> {
-  const engine = new Pass1Engine(files);
+  const tiles = opts.tiles ?? TILE_DIR;
+  const engine = opts.ahead?.engine ?? new Pass1Engine(files);
   const [H, W, t0, t1, nTiles] = [engine.height(), engine.width(), engine.t0(), engine.t1(), engine.n_tiles()];
   for (const { file, avi } of segs)
     if (avi.height() !== H || avi.width() !== W)
       throw new Error(`${file.name}: ${avi.height()}x${avi.width()} frames, inputs say ${H}x${W}`);
   const root = await scratchDir();
-  await root.removeEntry(TILE_DIR, { recursive: true }).catch(() => undefined);
-  const dir = await root.getDirectoryHandle(TILE_DIR, { create: true });
+  if (!opts.ahead) await root.removeEntry(tiles, { recursive: true }).catch(() => undefined);
+  const dir = await root.getDirectoryHandle(tiles, { create: true });
   const handles: FileSystemSyncAccessHandle[] = [];
   // with a pool each worker writes its own parts of the tile files, so none is open here
   for (let k = 0; k < (pool ? 0 : nTiles); k++) {
@@ -802,6 +849,10 @@ async function windowPass1(
   log(`${segs.length} files indexed; ${nTiles} tile files in OPFS; frames ${t0}-${t1}`);
   start("pass1", t1 - t0, 0, H, W);
   const began = performance.now();
+  // a pass 1 that ran ahead began when its chunks were dealt: the stage row counts from there, while the
+  // seconds the run adds up (`passSeconds`) only count from now, as the time before overlapped another stage
+  const stageBegan = opts.ahead?.began ?? began;
+  currentBegan = stageBegan;
   let tWrite = 0;
   const flush = () => {
     const s = performance.now();
@@ -816,10 +867,13 @@ async function windowPass1(
     tWrite += performance.now() - s;
   };
   let lastPost = 0;
-  let pooled: Store = { frames: [], pixels: [], bytes: 0 };
+  let pooled: Store = { tiles, frames: [], pixels: [], bytes: 0 };
   slabStore = undefined;
-  if (pool) slabStore = pooled = await pass1Pooled(pool, engine, files, t1 - t0, { progress, log });
-  else {
+  if (pool) {
+    if (opts.ahead) opts.ahead.sink.progress = progress;
+    slabStore = pooled = await (opts.ahead?.done ??
+      pass1Pooled(pool, engine, files, t1 - t0, { progress, log }, tiles));
+  } else {
     forFrames(
       segs,
       t0,
@@ -857,7 +911,7 @@ async function windowPass1(
   const mb = memory.buffer.byteLength / 2 ** 20;
   log(`pass 1 done, ${(storeBytes / 2 ** 20).toFixed(0)} MB in OPFS, wasm heap ${mb.toFixed(0)} MB`);
   end(
-    `${t1 - t0} frames, ${((t1 - t0) / passSeconds).toFixed(0)} fps; ${(storeBytes / 2 ** 20).toFixed(0)} MB of tiles`,
+    `${t1 - t0} frames, ${((t1 - t0) / ((performance.now() - stageBegan) / 1e3)).toFixed(0)} fps; ${(storeBytes / 2 ** 20).toFixed(0)} MB of tiles`,
   );
   const p2 = files.has("pass2.json") ? await runPass2(handles, files, log, memory, engine, opts, pooled) : null;
   for (const h of handles) h.close();

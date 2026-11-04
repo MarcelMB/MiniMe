@@ -30,6 +30,10 @@ export type RunOptions<K extends TaskKind> = {
   onResult: (i: number, r: Done<K>) => void;
   /** A running task's own count (frames done so far). */
   onProgress?: (i: number, done: number) => void;
+  /** Deal every task to a worker up front (task `i` to worker `i % size`, which runs its tasks in
+   * order) instead of handing one out whenever a worker is idle: the work then goes on while the
+   * caller's thread is busy elsewhere and cannot hand anything out. */
+  deal?: boolean;
 };
 
 /** Frame workers to use: `params.workers` when it is a whole number >= 1, else the machine's
@@ -123,6 +127,7 @@ export class Pool {
         reject(e);
       };
       const pump = () => {
+        if (opts.deal) return;
         for (const s of this.slots) {
           if (over || next >= count || (opts.ordered && next - given >= maxAhead)) return;
           if (s.busy) continue;
@@ -165,6 +170,10 @@ export class Pool {
         };
       }
       if (count === 0) return resolve();
+      if (opts.deal) {
+        for (let i = 0; i < count; i++) this.slots[i % this.slots.length].w.postMessage({ ...make(i), id: i });
+        return;
+      }
       pump();
     });
   }
