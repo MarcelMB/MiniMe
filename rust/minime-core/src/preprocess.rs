@@ -15,9 +15,10 @@ pub fn check_median_ksize(k: usize) -> Result<(), String> {
 /// Median filter with a `k x k` window (odd `k`, see `check_median_ksize`), replicated border.
 ///
 /// The default `k = 7` runs on `median::median7` (sorting networks on sixteen pixels at a
-/// time), any other odd `k` on `median_blur_huang`; both give the same bits.
+/// time; only where `simd::NATIVE_LANES`), any other odd `k` on `median_blur_huang`; both give the
+/// same bits.
 pub fn median_blur(src: &[u8], h: usize, w: usize, k: usize) -> Vec<u8> {
-    if k == 7 {
+    if k == 7 && crate::simd::NATIVE_LANES {
         return crate::median::median7(src, h, w);
     }
     median_blur_huang(src, h, w, k)
