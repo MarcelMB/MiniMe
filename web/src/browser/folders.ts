@@ -68,7 +68,10 @@ export class Folders {
     if (r.kind === "files" && mode === "readwrite")
       throw new HttpError(403, `${root} was opened read-only; runs from it go to Browser storage`);
     if (!(await r.dir.permission(mode, false)))
-      throw new HttpError(403, `Reconnect the folder ${root} (Runs → Reconnect) to read it again`);
+      throw new HttpError(
+        403,
+        `Reconnect the folder ${root}: pick it again (Runs → Change folder) to give this page access`,
+      );
     return walk(r.dir, rel);
   }
 
@@ -76,5 +79,23 @@ export class Folders {
   async reconnect(name: string): Promise<boolean> {
     const r = (await this.all()).get(name);
     return r ? r.dir.permission("readwrite", true) : false;
+  }
+
+  /** A folder the system dialog just returned (it asked for write access): the root that is the
+   * same folder, with its permission asked for again (it may have needed reconnecting), else a
+   * new root. */
+  async pick(dir: Dir): Promise<string> {
+    const same = await this.sameRoot(dir);
+    if (same === null) return this.add(dir, "picked");
+    await this.reconnect(same);
+    return same;
+  }
+
+  /** The name of the root that is the same entry as `dir` (handles only), or null. */
+  private async sameRoot(dir: Dir): Promise<string | null> {
+    if (!(dir instanceof HandleDir)) return null;
+    for (const r of (await this.all()).values())
+      if (r.dir instanceof HandleDir && (await r.dir.handle.isSameEntry(dir.handle).catch(() => false))) return r.name;
+    return null;
   }
 }

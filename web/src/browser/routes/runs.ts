@@ -11,6 +11,15 @@ router.add("GET", "/folders", async () => {
   };
 });
 
+/** The folder's permission asked for again. A browser shows its prompt only for a request that
+ * comes from a click; the page's `FolderPicker` does this itself (`Folders.pick`) when a folder
+ * that is a root already is picked again. */
+router.add("POST", "/folders/reconnect", async (q) => {
+  const name = (q.body as { name?: unknown } | null)?.name;
+  if (typeof name !== "string") throw new HttpError(422, "name must be text");
+  return { json: { ok: await state.folders.reconnect(name) } };
+});
+
 router.add("GET", "/fs", () => {
   throw new HttpError(404, "the browser app picks folders with the system dialog");
 });

@@ -8,6 +8,7 @@ const src = resolve(import.meta.dirname, "src");
 const SWAP: Record<string, string> = {
   [resolve(src, "transport.ts")]: resolve(src, "browser/transport.ts"),
   [resolve(src, "features.ts")]: resolve(src, "browser/features.ts"),
+  [resolve(src, "home/FolderPicker.tsx")]: resolve(src, "browser/FolderPicker.tsx"),
 };
 
 function swap(map: Record<string, string>): Plugin {

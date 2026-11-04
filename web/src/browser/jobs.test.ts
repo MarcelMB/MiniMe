@@ -1,12 +1,15 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { fmtBytes } from "../format";
 import type { FromWorker, ToWorker } from "../stream/protocol";
-import type { Dir } from "./dir";
+import type { Indexer } from "./avi";
+import { type Dir, FileListDir } from "./dir";
 import { Folders } from "./folders";
 import { type JobBody, JobManager } from "./jobs";
 import { memoryKV } from "./kv";
+import { ASSUMED_UNITS, estimateRunBytes } from "./support";
 import { NodeDir } from "./testing/nodeDir";
 
 class FakeWorker {
@@ -542,5 +545,291 @@ describe("JobManager and the screen wake lock", () => {
     vi.stubGlobal("navigator", {});
     const { m, body } = await setup();
     await expect(m.submit(body)).resolves.toMatchObject({ status: "running" });
+  });
+});
+
+/** Raw folders picked on their own (nothing beside them), with or without Browser storage. */
+async function rawRoot(o: { opfs?: boolean; pickOutput?: () => Promise<Dir>; index?: Indexer } = {}) {
+  const top = mkdtempSync(join(tmpdir(), "jobs-"));
+  cpSync(resolve(__dirname, "../../e2e/.data/raw"), join(top, "raw"), { recursive: true });
+  const opfs = mkdtempSync(join(tmpdir(), "opfs-"));
+  const folders = new Folders(memoryKV(), async () => (o.opfs ? new NodeDir(opfs) : null));
+  const raw = await folders.add(new NodeDir(join(top, "raw")), "picked");
+  const workers: FakeWorker[] = [];
+  const makeWorker = () => {
+    const w = new FakeWorker();
+    workers.push(w);
+    return w as unknown as Worker;
+  };
+  const m = new JobManager({ kv: memoryKV(), folders, makeWorker, pickOutput: o.pickOutput, index: o.index });
+  const body: JobBody = {
+    raw_dir: raw,
+    name: "t1",
+    params: {},
+    keep_store: false,
+    overwrite: false,
+    tune: false,
+    tune_args: {},
+    fps: null,
+  };
+  return { m, workers, folders, top, opfs, raw, body, rawEntries: () => readdirSync(join(top, "raw")).sort() };
+}
+
+const abort = () => Object.assign(new Error("The user aborted a request."), { name: "AbortError" });
+
+describe("JobManager and the output folder of a raw folder picked on its own (Review Focus 3)", () => {
+  it("asks for the output folder before it awaits anything, and writes the run there", async () => {
+    const out = mkdtempSync(join(tmpdir(), "out-"));
+    const pickOutput = vi.fn(async () => new NodeDir(out) as Dir);
+    const { m, body, raw, folders, rawEntries } = await rawRoot({ pickOutput });
+    const before = rawEntries();
+    const submitted = m.submit(body);
+    expect(pickOutput).toHaveBeenCalledTimes(1); // the Start click's user activation is still there
+    const job = await submitted;
+    expect(job).toMatchObject({ status: "running", raw_dir: raw, out_dir: `${basename(out)}/t1` });
+    expect(JSON.parse(readFileSync(join(out, "t1", "params.json"), "utf8"))).toMatchObject({
+      source: "browser",
+      raw_dir: raw,
+    });
+    expect(rawEntries()).toEqual(before); // nothing in the raw folder
+    // the picked folder is a root now, with this raw folder as its last one
+    expect((await folders.list()).find((r) => r.name === basename(out))?.raw).toBe(raw);
+  });
+
+  it("does not ask when the raw folder has a folder beside it", async () => {
+    const pickOutput = vi.fn(async () => new NodeDir(mkdtempSync(join(tmpdir(), "out-"))) as Dir);
+    const { m, workers, body, name } = await setupWith(pickOutput);
+    await expect(m.submit(body)).resolves.toMatchObject({ out_dir: `${name}/processed/t1` });
+    expect(pickOutput).not.toHaveBeenCalled();
+    expect(workers).toHaveLength(1);
+  });
+
+  it("answers 400 naming what to pick when the dialog is cancelled, and writes nothing in the raw folder", async () => {
+    const { m, body, top, opfs, rawEntries } = await rawRoot({
+      opfs: true,
+      pickOutput: async () => {
+        throw abort();
+      },
+    });
+    const before = rawEntries();
+    await expect(m.submit(body)).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringMatching(
+        /has no parent folder the app can write to: .*pick the folder the run should be written to/,
+      ),
+    });
+    expect(rawEntries()).toEqual(before);
+    expect(existsSync(join(top, "processed"))).toBe(false);
+    expect(readdirSync(opfs)).toEqual([]); // a browser that has the dialog does not fall back to Browser storage
+  });
+
+  it("answers the same 400 where there is neither a dialog nor Browser storage", async () => {
+    const { m, body, top, rawEntries } = await rawRoot();
+    const before = rawEntries();
+    await expect(m.submit(body)).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringMatching(
+        /^.* has no parent folder the app can write to: .*pick the folder the run should be written to/,
+      ),
+    });
+    expect(rawEntries()).toEqual(before);
+    expect(existsSync(join(top, "processed"))).toBe(false);
+  });
+});
+
+/** The usual `setup()` with a dialog the manager must not use. */
+async function setupWith(pickOutput: () => Promise<Dir>) {
+  const s = await setup();
+  const workers: FakeWorker[] = [];
+  const m = new JobManager({
+    kv: memoryKV(),
+    folders: s.folders,
+    makeWorker: () => {
+      const w = new FakeWorker();
+      workers.push(w);
+      return w as unknown as Worker;
+    },
+    pickOutput,
+  });
+  return { m, workers, body: s.body, name: s.name };
+}
+
+describe("JobManager and Browser storage", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const storage = (estimate: { quota: number; usage: number } | null) => {
+    const persist = vi.fn(async () => true);
+    vi.stubGlobal("navigator", { storage: { ...(estimate && { estimate: async () => estimate }), persist } });
+    return persist;
+  };
+  /** What a run of the e2e raw folder (64 x 64 px, 300 frames, one window) is expected to need. */
+  const need = estimateRunBytes(ASSUMED_UNITS, 300, 64 * 64, 1);
+
+  it("writes the run into Browser storage in a browser without the folder dialog", async () => {
+    storage({ quota: 1e12, usage: 0 });
+    const { m, body, opfs, rawEntries, raw } = await rawRoot({ opfs: true });
+    const before = rawEntries();
+    const job = await m.submit(body);
+    expect(job.out_dir).toBe("Browser storage/t1");
+    expect(existsSync(join(opfs, "t1", "params.json"))).toBe(true);
+    expect(rawEntries()).toEqual(before);
+    expect(job.raw_dir).toBe(raw);
+  });
+
+  it("refuses a run that does not fit, with the numbers, before it touches the old run or starts", async () => {
+    const persist = storage({ quota: need + 100_000, usage: 200_000 });
+    const { m, workers, body, opfs } = await rawRoot({ opfs: true });
+    mkdirSync(join(opfs, "t1"));
+    writeFileSync(join(opfs, "t1", "params.json"), JSON.stringify({ source: "browser" }));
+    writeFileSync(join(opfs, "t1", "report.json"), JSON.stringify({ stages: [] }));
+    await expect(m.submit({ ...body, overwrite: true })).rejects.toMatchObject({
+      status: 400,
+      message: `this run needs about ${fmtBytes(need)} of browser storage, ${fmtBytes(need - 100_000)} are free; pick a folder on disk under Runs → Change folder`,
+    });
+    expect(existsSync(join(opfs, "t1", "report.json"))).toBe(true); // the run it would replace is still there
+    expect(workers).toHaveLength(0);
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it("counts the tile store when it is kept", async () => {
+    storage({ quota: need + 100_000, usage: 0 });
+    const { m, body } = await rawRoot({ opfs: true });
+    await expect(m.submit({ ...body, keep_store: true })).rejects.toThrow(
+      `this run needs about ${fmtBytes(estimateRunBytes(ASSUMED_UNITS, 300, 64 * 64, 1, true))}`,
+    );
+  });
+
+  it("asks the browser to keep its storage once, and starts a run that fits", async () => {
+    const persist = storage({ quota: need * 2, usage: 0 });
+    const { m, workers, body } = await rawRoot({ opfs: true });
+    const first = await m.submit(body);
+    workers[0].say({ type: "done", files: new Map(), seconds: 1 });
+    await tick();
+    expect(m.get(first.id).status).toBe("done");
+    await m.submit({ ...body, name: "t2" });
+    expect(workers).toHaveLength(2);
+    expect(persist).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs where the browser cannot say how much room there is", async () => {
+    const persist = storage(null);
+    const { m, body } = await rawRoot({ opfs: true });
+    await expect(m.submit(body)).resolves.toMatchObject({ out_dir: "Browser storage/t1" });
+    expect(persist).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not check a folder on disk", async () => {
+    const persist = storage({ quota: 1, usage: 0 });
+    const out = mkdtempSync(join(tmpdir(), "out-"));
+    const { m, body } = await rawRoot({ opfs: true, pickOutput: async () => new NodeDir(out) });
+    await expect(m.submit(body)).resolves.toMatchObject({ out_dir: `${basename(out)}/t1` });
+    expect(persist).not.toHaveBeenCalled();
+  });
+});
+
+describe("JobManager and the frame size", () => {
+  /** Every video is 100 frames of `h` x `w` px. */
+  const sized =
+    (h: number, w: number): Indexer =>
+    async (files) =>
+      files.map(() => ({ n: 100, height: h, width: w, offsets: [], sizes: [] }));
+  const odd = (index: Indexer, params: Record<string, unknown>) =>
+    rawRoot({ index }).then(({ m, body, top }) => ({ run: () => m.submit({ ...body, params }), top }));
+
+  it("refuses an odd height or width for the band-pass image, in the preview's words, before anything is written", async () => {
+    const { run, top } = await odd(sized(63, 64), {});
+    await expect(run()).rejects.toMatchObject({
+      status: 400,
+      message: "63 x 64 frames: the band-pass registration image needs an even size",
+    });
+    const wide = await odd(sized(64, 65), {});
+    await expect(wide.run()).rejects.toThrow("64 x 65 frames: the band-pass registration image needs an even size");
+    expect(readdirSync(top)).toEqual(["raw"]);
+  });
+
+  it("refuses an odd size for the 2x downsampling of the motion estimate when the band-pass is off", async () => {
+    const { run } = await odd(sized(63, 64), { motion_before_tophat: false });
+    await expect(run()).rejects.toThrow("63 x 64 frames: 2x downsampling needs an even size");
+  });
+
+  it("takes an odd size when neither step needs an even one", async () => {
+    const { run } = await odd(sized(63, 65), { motion_before_tophat: false, motion_down: 1 });
+    await expect(run()).rejects.toThrow("has no parent folder"); // past the size check: on to the output folder
+  });
+});
+
+describe("JobManager and folder permissions", () => {
+  it("answers 403 Reconnect, without asking, when the folder lost its write permission", async () => {
+    const top = mkdtempSync(join(tmpdir(), "jobs-"));
+    cpSync(resolve(__dirname, "../../e2e/.data/raw"), join(top, "raw"), { recursive: true });
+    const d: Dir = new NodeDir(top);
+    const asked: [string, boolean][] = [];
+    d.permission = async (mode, ask) => {
+      asked.push([mode, ask]);
+      return mode === "read";
+    };
+    const folders = new Folders(memoryKV(), async () => null);
+    const name = await folders.add(d, "picked");
+    const m = new JobManager({ kv: memoryKV(), folders, makeWorker: () => new FakeWorker() as unknown as Worker });
+    await expect(
+      m.submit({
+        raw_dir: `${name}/raw`,
+        name: "t1",
+        params: {},
+        keep_store: false,
+        overwrite: false,
+        tune: false,
+        tune_args: {},
+        fps: null,
+      }),
+    ).rejects.toMatchObject({ status: 403, message: expect.stringMatching(/^Reconnect the folder /) });
+    expect(asked.some(([, ask]) => ask)).toBe(false); // a prompt here would have no user activation
+    expect(asked).toContainEqual(["readwrite", false]);
+    expect(existsSync(join(top, "processed"))).toBe(false);
+  });
+
+  it("passes on a 403 from the raw folder as it is, rather than saying nothing was found", async () => {
+    const top = mkdtempSync(join(tmpdir(), "jobs-"));
+    cpSync(resolve(__dirname, "../../e2e/.data/raw"), join(top, "raw"), { recursive: true });
+    const d: Dir = new NodeDir(top);
+    d.permission = async () => false;
+    const folders = new Folders(memoryKV(), async () => null);
+    const name = await folders.add(d, "picked");
+    const m = new JobManager({ kv: memoryKV(), folders, makeWorker: () => new FakeWorker() as unknown as Worker });
+    await expect(
+      m.submit({
+        raw_dir: `${name}/raw`,
+        name: "t1",
+        params: {},
+        keep_store: false,
+        overwrite: false,
+        tune: false,
+        tune_args: {},
+        fps: null,
+      }),
+    ).rejects.toMatchObject({ status: 403, message: expect.stringMatching(/^Reconnect the folder /) });
+    expect(existsSync(join(top, "processed"))).toBe(false);
+  });
+
+  it("says a read-only upload cannot hold the run, not that it needs reconnecting", async () => {
+    const files = ["0.avi", "1.avi", "2.avi"].map((n) => {
+      const f = new File([readFileSync(resolve(__dirname, "../../e2e/.data/raw", n))], n);
+      Object.defineProperty(f, "webkitRelativePath", { value: `sess/raw/${n}` });
+      return f;
+    });
+    const folders = new Folders(memoryKV(), async () => null);
+    const name = await folders.add(FileListDir.fromFiles(files), "files");
+    const m = new JobManager({ kv: memoryKV(), folders, makeWorker: () => new FakeWorker() as unknown as Worker });
+    await expect(
+      m.submit({
+        raw_dir: `${name}/raw`,
+        name: "t1",
+        params: {},
+        keep_store: false,
+        overwrite: false,
+        tune: false,
+        tune_args: {},
+        fps: null,
+      }),
+    ).rejects.toMatchObject({ status: 403, message: expect.stringMatching(/was opened read-only/) });
   });
 });

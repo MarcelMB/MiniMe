@@ -1,5 +1,6 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
 // The browser build on the e2e raw folder (300 frames): a run is started through the in-page
@@ -7,6 +8,8 @@ import { expect, type Locator, type Page, test } from "@playwright/test";
 // job page follows it, and the finished run opens in the viewer. Same small-session parameters
 // as `e2e/make_run.py`.
 const RAW = "e2e/.data/raw";
+/** Python for `minime score` (as `playwright.config.ts` finds it), run from this branch's `src`. */
+const PY = process.env.MINIME_PYTHON ?? resolve(process.cwd(), "../.venv/bin/python");
 const PARAMS = {
   tile: 32,
   seeds_wnd: 100,
@@ -215,8 +218,8 @@ test("a run of two windows keeps each window's tile store and factors", async ({
   expect(errors).toEqual([]);
 });
 
-async function expectEveryPage(page: Page): Promise<void> {
-  await expect(page.getByRole("heading", { name: "e2e", exact: true })).toBeVisible();
+async function expectEveryPage(page: Page, name = "e2e"): Promise<void> {
+  await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
   const stage = page.getByRole("group", { name: "Stage" });
   for (const [p, marker] of PAGES) {
     const button = stage.getByRole("button", { name: p });
@@ -275,3 +278,195 @@ async function expectResidual(page: Page): Promise<void> {
   const residual = page.getByRole("region", { name: "Residual shift per block" });
   await expect(residual.locator(".uplot")).toHaveCount(2, { timeout: 60_000 });
 }
+
+/** Copy the e2e raw videos into Browser storage itself (OPFS `runs/<folder>/raw/`): a run on
+ * them is written beside them, into Browser storage. */
+async function putRawInBrowserStorage(page: Page, folder: string): Promise<void> {
+  const files = readdirSync(RAW).map((name) => [name, readFileSync(join(RAW, name)).toString("base64")]);
+  await page.evaluate(
+    async ({ files, folder }) => {
+      let d = await navigator.storage.getDirectory();
+      for (const p of ["runs", folder, "raw"]) d = await d.getDirectoryHandle(p, { create: true });
+      for (const [name, b64] of files) {
+        const w = await (await d.getFileHandle(name, { create: true })).createWritable();
+        await w.write(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+        await w.close();
+      }
+    },
+    { files, folder },
+  );
+}
+
+// A run in Browser storage (the raw videos are in it) has a "Download run (.zip)" button. The
+// zip unzips to the run folder: main's `minime score` reads it, and, picked as a folder upload in
+// a browser that has no copy of the run and no folder dialog (a read-only folder), it opens in the
+// viewer with every page.
+test("a run in Browser storage downloads as a zip that minime score reads and that reopens read-only", async ({
+  page,
+  browser,
+  baseURL,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+  await page.goto("/?e2e=1#/");
+  await page.waitForFunction(() => "__minimeApi" in window);
+  await putRawInBrowserStorage(page, "dl");
+  const job = await startJob(page, "Browser storage/dl", "dl", PARAMS);
+  const openRun = page.getByRole("button", { name: "Open run" });
+  const failed = page.getByRole("alert");
+  await expect(openRun.or(failed)).toBeVisible({ timeout: 300_000 });
+  await expect(failed).toHaveCount(0);
+  expect(job.out_dir).toBe("Browser storage/dl/processed/dl");
+  await openRun.click();
+  await expect(page.getByRole("heading", { name: "dl", exact: true })).toBeVisible();
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.getByRole("button", { name: "Download run (.zip)" }).click(),
+  ]);
+  expect(download.suggestedFilename()).toBe("dl.zip");
+  const unzipped = "e2e/.data/download";
+  rmSync(unzipped, { recursive: true, force: true });
+  mkdirSync(unzipped, { recursive: true });
+  await download.saveAs("e2e/.data/download.zip");
+  execFileSync("unzip", ["-q", "e2e/.data/download.zip", "-d", unzipped]);
+  const files = readdirSync(unzipped);
+  expect(files).toEqual(expect.arrayContaining(["params.json", "report.json", "cnmf", "factors", "motion"]));
+  execFileSync(PY, ["-m", "minime", "score", unzipped, "--raw", RAW], {
+    env: { ...process.env, PYTHONPATH: "../src" },
+    stdio: "pipe",
+  });
+
+  // another browser (no OPFS copy of the run, no folder dialog): the unzipped folder is an upload
+  const other = await browser.newContext({ baseURL });
+  await other.addInitScript(() => {
+    // biome-ignore lint/suspicious/noExplicitAny: Chromium-only API, removed to look like Firefox or Safari
+    delete (window as any).showDirectoryPicker;
+  });
+  const page2 = await other.newPage();
+  page2.on("pageerror", (e) => errors.push(e.message));
+  page2.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+  await page2.goto("/#/");
+  await page2.getByRole("button", { name: "Change folder" }).click();
+  await expect(page2.getByText("This browser opens folders read-only")).toBeVisible();
+  await page2.locator('input[type="file"]').setInputFiles(unzipped);
+  await page2.getByRole("link", { name: "Open run download" }).click();
+  await expect(page2.getByRole("group", { name: "Stage" })).toBeVisible(); // the run page, not Home's card of the same name
+  await expectEveryPage(page2, "download");
+  await expect(page2.getByRole("button", { name: "Download run (.zip)" })).toHaveCount(0); // not in Browser storage
+  await other.close();
+  expect(errors).toEqual([]);
+});
+
+// Playwright cannot drive the system folder dialog, so `showDirectoryPicker` is replaced by a
+// function that hands out OPFS folders. A raw folder picked on its own (the videos are in the
+// folder itself) has nothing beside it: Start asks for a second folder, the run goes there and
+// the raw folder is not written to; picking a folder again gives the root it already was.
+test("a raw folder picked on its own asks for an output folder and the run goes there", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+  await page.goto("/?e2e=1#/");
+  await page.waitForFunction(() => "__minimeApi" in window);
+  const files = readdirSync(RAW).map((name) => [name, readFileSync(join(RAW, name)).toString("base64")]);
+  await page.evaluate(
+    async ({ files, hand }) => {
+      const e2e = await (await navigator.storage.getDirectory()).getDirectoryHandle("e2e", { create: true });
+      const raw = await e2e.getDirectoryHandle("rawonly", { create: true });
+      await e2e.getDirectoryHandle("outonly", { create: true });
+      for (const [name, b64] of files) {
+        const w = await (await raw.getFileHandle(name, { create: true })).createWritable();
+        await w.write(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+        await w.close();
+      }
+      const asked: unknown[] = [];
+      const queue = [...hand];
+      // biome-ignore lint/suspicious/noExplicitAny: test hooks on window
+      const w = window as any;
+      w.__dialogs = asked;
+      w.showDirectoryPicker = async (opts: unknown) => {
+        asked.push(opts);
+        return e2e.getDirectoryHandle(queue.shift() ?? "none");
+      };
+    },
+    { files, hand: ["rawonly", "outonly", "outonly"] },
+  );
+  const dialogs = () => page.evaluate(() => (window as unknown as { __dialogs: unknown[] }).__dialogs);
+  const pickFolder = async () => {
+    await page.getByRole("button", { name: "Change folder" }).click();
+    await page.getByRole("button", { name: "Show runs here" }).click();
+  };
+
+  // Runs → Change folder → the dialog: the raw folder becomes a root, writable (asked for at once)
+  await pickFolder();
+  await expect(page.locator("h1.mono")).toHaveText("rawonly");
+  expect(await dialogs()).toEqual([{ id: "minime", mode: "readwrite" }]);
+
+  // Start: nothing is beside the videos, so the output folder is asked for
+  const job = await page.evaluate(
+    async ({ params }) =>
+      // biome-ignore lint/suspicious/noExplicitAny: test hook
+      (await (window as any).__minimeApi.postJSON("/jobs", {
+        raw_dir: "rawonly",
+        name: "oo",
+        params,
+        keep_store: false,
+        overwrite: false,
+        tune: false,
+        tune_args: {},
+        fps: 30,
+      })) as { id: string; out_dir: string },
+    { params: PARAMS },
+  );
+  expect(job.out_dir).toBe("outonly/oo");
+  expect(await dialogs()).toEqual([
+    { id: "minime", mode: "readwrite" },
+    { id: "minime-out", mode: "readwrite" },
+  ]);
+  await page.evaluate((id) => {
+    window.location.hash = `#/job/${id}`;
+  }, job.id);
+  const openRun = page.getByRole("button", { name: "Open run" });
+  const failed = page.getByRole("alert");
+  await expect(openRun.or(failed)).toBeVisible({ timeout: 300_000 });
+  await expect(failed).toHaveCount(0);
+
+  // the run is in the output folder; the raw folder holds its videos and nothing else
+  const entries = (name: string) =>
+    page.evaluate(async (name) => {
+      let d = await navigator.storage.getDirectory();
+      for (const p of ["e2e", name]) d = await d.getDirectoryHandle(p);
+      const out: string[] = [];
+      // biome-ignore lint/suspicious/noExplicitAny: entries() is missing from the DOM lib
+      for await (const [n] of (d as any).entries() as AsyncIterable<[string, FileSystemHandle]>) out.push(n);
+      return out.sort();
+    }, name);
+  expect(await entries("rawonly")).toEqual(files.map(([name]) => name));
+  expect(await entries("outonly")).toEqual(["oo"]);
+
+  // the folder the run went to is a root now; picking it again is the same root, with its run listed
+  await page.evaluate(() => {
+    window.location.hash = "#/";
+  });
+  await pickFolder();
+  await expect(page.locator("h1.mono")).toHaveText("outonly");
+  await expect(page.getByRole("link", { name: "Open run oo" })).toBeVisible();
+  const roots = await page.evaluate(
+    // biome-ignore lint/suspicious/noExplicitAny: test hook
+    async () => ((await (window as any).__minimeApi.getJSON("/folders")) as { folders: { path: string }[] }).folders,
+  );
+  expect(roots.map((r) => r.path).sort()).toEqual(["Browser storage", "outonly", "rawonly"]);
+  expect(errors).toEqual([]);
+});
+
+test("a browser without OPFS gets a page that says so instead of the app", async ({ page }) => {
+  await page.addInitScript(() => {
+    // biome-ignore lint/suspicious/noExplicitAny: removed to look like a browser without OPFS
+    delete (StorageManager.prototype as any).getDirectory;
+  });
+  await page.goto("/#/");
+  await expect(page.getByRole("heading", { name: "This browser cannot run MiniMe" })).toBeVisible();
+  await expect(page.getByText("recent Chrome, Edge, Firefox or Safari")).toBeVisible();
+  await expect(page.getByRole("link", { name: "New run" })).toHaveCount(0); // the app is gone
+});
