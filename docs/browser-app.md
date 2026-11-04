@@ -346,43 +346,53 @@ python experiments/streaming/check_pass1.py <pass1 ref> <ref>/rust_browser
 ```
 
 ## Pass 2 and CNMF speed (2026-11-04, branch `speed/gemm`)
-Where pass 2 spent its 27.7 s in Chrome (100 tiles of 3000 frames, 1 thread, M1 Max;
-`rust/minime-core/tools/wasm_pass2/`, `examples/bench_pass2.rs`, both `--features
-profile,reference`): GEMM 11.4 s (41 %: the two products `Y Z` and `Y^T Q`, twice each),
-noise 11.4 s (41 %: 4096 FFTs of 3000 points per tile 4.6 s, a strided column gather 2.4 s, a
-libm `ln`/`hypot` per bin 4.3 s), QR 3.3 s (12 %), small SVD 1.1 s, float32 copies of the
-tile 0.6 s, mean/energy 0.5 s. `matrixmultiply` 0.3.11 *has* a wasm simd128 kernel (8 x 8)
-and runs at 38 GFLOP/s of the 51 an M1 core has without fused multiply-add; a hand-written
-12 x 4 / 8 x 5 kernel with packing straight from the uint8 tile was within +-7 % of it (and
-bit-identical), so it was dropped. With `+relaxed-simd` (fused `f32x4.relaxed_madd`, Chrome 114+,
-Firefox 146+, Safari unconfirmed) the same GEMMs run 1.26x faster; not enabled.
+Where pass 2 spent its 28 s in Chrome (100 tiles of 3000 frames, 1 thread, M1 Max, load 4-7;
+`rust/minime-core/tools/wasm_pass2/` for wasm, `examples/bench_pass2.rs` native, both
+`--features profile,reference`, old and new code alternating per tile): the two GEMMs
+`Y Z` and `Y^T Q`, twice each, 12.3 s (44 %, with the float32 copy of the tile), the noise
+10.9 s (39 %: 4096 FFTs of 3000 points per tile 3.8 s, a strided column gather 2.6 s, a libm
+`ln` and `hypot` per bin 4.4 s), QR 3.4 s (12 %), small SVD 1.1 s, mean/energy 0.5 s.
+`matrixmultiply` 0.3.11 *has* a wasm simd128 kernel (8 x 8) and runs at 38 GFLOP/s of the 51
+an M1 core has without a fused multiply-add. A hand-written 8 x 5 / 12 x 4 kernel packing
+straight from the uint8 tile was within +-7 % of it (bit-identical results), so it was
+dropped. With `-C target-feature=+relaxed-simd` (fused `f32x4.relaxed_madd`; Chrome and Edge
+114+, Firefox 146+, Safari unconfirmed) the same GEMMs run 1.26x faster; not enabled, it
+needs a second wasm file for browsers without it and the sums stop being the same on every
+machine.
 
-What changed (`compress.rs`, `bfft.rs`, `fastmath.rs`): mean/energy from integer column sums
-(exact, same bits); the noise of four pixels per vector in a Stockham FFT (`bfft.rs`; any `T`
-whose half is 5-smooth, `realfft` otherwise) with the logarithms of a bin as one vectorised
-Cephes `logf`, the 16-pixel groups read once per frame row; the QR's trailing updates for all
-columns at once, eight columns in registers, in the order of the column-by-column code (bit
-for bit the same Q); the small SVD's products with the eigenvectors the same way (bit for
-bit). `rustfft`'s `wasm_simd` feature is on (1.2x on its own).
+What changed (`compress.rs`, `bfft.rs`, `fastmath.rs`): mean and energy from integer column
+sums (exact: same bits); the noise of four pixels per vector in a Stockham FFT of the pixels'
+bytes (`bfft.rs`; any `T` whose half is 5-smooth, `realfft` otherwise), the logarithms of the
+bins as one vectorised Cephes `logf`, summed in order in float32 per pixel as numpy does; the
+QR's trailing updates for all columns at once, eight columns in registers, in the order of
+the column-by-column code (the same Q bit for bit); the small SVD's products with the
+eigenvectors the same way (bit for bit).
 
 | 100 tiles, 3000 frames, 1 thread | before | after | |
 |---|---|---|---|
-| wasm in Chrome, in-process A/B | 27.7 s | 18.3 s | 1.5x |
-| native, in-process A/B | 18.4 s | 11.8 s (`minime-core pass2`) | 1.6x |
+| pass 2, Chrome, in-process A/B | 28.3 s | 18.3 s | 1.54x |
+| pass 2, Chrome, whole stage of the e2e run | 27.7 s | 17.7 s | 1.57x |
+| pass 2, native, in-process A/B (`minime-core pass2`: 11.8 s) | 18.6 s | 11.6 s | 1.60x |
+| noise / QR / small SVD / mean+energy, Chrome | 10.9 / 3.4 / 1.1 / 0.5 s | 3.3 / 1.9 / 0.6 / 0.2 s | 3.3 / 1.8 / 1.8 / 2.5x |
+| GEMMs, Chrome and native | 12.3 s, 6.5 s | unchanged | 1.0x |
 
-Checks (`check_pass2.py`, `check_seeds.py`, `check_init.py`, `check_cnmf.py` on the browser
-run with numpy's draws replayed): same rank and last rank in 100 of 100 tiles, mean and
-energy exact, `W`, `V`, `s` bit-identical to the previous native run, `sigma` <= 1.27e-6
-relative (was 1.1e-6 native / 1.2e-6 Chrome), reconstruction <= 5.5e-5; seeds, masks, merge
-pairs, units identical, every float within the old tolerances (e.g. `B` 3.2e-6, footprints
-2.2e-5, traces 1.8e-5).
+Checks on the browser run with numpy's draws replayed (`check_pass2.py`, `check_seeds.py`,
+`check_init.py`, `check_cnmf.py`): the kept and last rank in 100 of 100 tiles, mean and energy
+exact; `W`, `V`, `s`, ranks of the native run bit-identical to the previous native run;
+`sigma` <= 1.27e-6 relative to numpy (was 1.1e-6 native, 1.2e-6 Chrome: another FFT, the
+same sums); reconstruction <= 5.5e-5; seeds, masks, merge pairs, units identical, every float
+within the old tolerances and as close as before (`B` 3.2e-6, footprints 2.2e-5, traces
+1.8e-5, 189 final units). A constant pixel's `sigma` is a float32 sum of 1320 equal logarithms
+and agrees with numpy only if summed in order: a faster sum through mantissa products was
+1e-4 off numpy's on the 123 constant pixels of this session and was dropped.
 
 CNMF in Chrome was 8x slower than native because `f64::mul_add` on wasm32 is a software
-`fma` (15.6 ns, against 0.9 ns for a multiply and an add): the Gram matrix `Cc Cc^T` alone
-is 54 M of them per iteration, 0.84 s of the 1.1 s of a spatial update. `linalg::madd64` is
-fused natively (native outputs bit-identical, 53 of 53 `.npy` files) and a multiply and an
-add on wasm32; the Gram runs four chains side by side. Spatial update 1.09 / 1.06 s ->
-0.17 / 0.16 s, CNMF stage 2.63 s -> 0.85 s; `f32::mul_add` (2 ns on wasm) stays.
+`fma`: 15.6 ns, against 0.9 ns for a multiply and an add. The Gram matrix `Cc Cc^T` alone is
+54 M of them per iteration, 0.84 s of the 1.1 s of a spatial update (`f32::mul_add` is 2 ns
+there and stays). `linalg::madd64` is fused natively (the native CNMF outputs are
+bit-identical, 53 of 53 `.npy` files) and a multiply and an add on wasm32, and the Gram runs
+four sums side by side. CNMF stage in Chrome 2.63 s -> 0.38 s (spatial 1.09 / 1.06 ->
+0.16 / 0.14 s per iteration, traces 0.098 -> 0.018 s, background 0.06-0.10 -> 0.004-0.02 s).
 
 ## 8 h scale run (2026-11-03): motion ok, stream pass fails at the end
 First 8 h (576 files, 576 000 frames) of the real V4 24 h recording in headless Chrome, one
