@@ -76,7 +76,59 @@ fn gauss_kernel_fixed(n: usize, sigma: f64) -> Vec<u32> {
 }
 
 /// `cv2.GaussianBlur(src, (0, 0), sigma)` on uint8.
+///
+/// The fixed-point sums are exact integers, so the order of the two passes is free: first
+/// down the columns in `u16` (the weights sum to 256, so a sum is at most 255 * 256), one
+/// output row at a time, then along that row in `u32`, round and clamp. Written as plain
+/// loops over equal-length slices, which LLVM vectorises on NEON and wasm `simd128`.
 pub fn gauss_u8(src: &[u8], h: usize, w: usize, sigma: f64) -> Vec<u8> {
+    let n = gauss_ksize(sigma, 3.0);
+    let k = gauss_kernel_fixed(n, sigma);
+    let r = n / 2;
+    let mut out = vec![0u8; h * w];
+    let mut col = vec![0u16; w];
+    let mut line = vec![0u16; w + 2 * r];
+    let mut acc = vec![0u32; w];
+    for y in 0..h {
+        let centre = &src[y * w..(y + 1) * w];
+        let kc = k[r] as u16;
+        for (c, &v) in col.iter_mut().zip(centre) {
+            *c = kc * u16::from(v);
+        }
+        for j in 1..=r {
+            let kj = k[r + j] as u16;
+            let up = &src[reflect101(y as isize - j as isize, h) * w..][..w];
+            let dn = &src[reflect101(y as isize + j as isize, h) * w..][..w];
+            for ((c, &u), &d) in col.iter_mut().zip(up).zip(dn) {
+                *c += kj * (u16::from(u) + u16::from(d));
+            }
+        }
+        line[r..r + w].copy_from_slice(&col);
+        for i in 1..=r {
+            line[r - i] = col[reflect101(-(i as isize), w)];
+            line[r + w - 1 + i] = col[reflect101((w - 1 + i) as isize, w)];
+        }
+        let kc = k[r];
+        for (a, &v) in acc.iter_mut().zip(&line[r..r + w]) {
+            *a = kc * u32::from(v);
+        }
+        for j in 1..=r {
+            let kj = k[r + j];
+            let (l, rt) = (&line[r - j..r - j + w], &line[r + j..r + j + w]);
+            for ((a, &x), &z) in acc.iter_mut().zip(l).zip(rt) {
+                *a += kj * (u32::from(x) + u32::from(z));
+            }
+        }
+        for (o, &a) in out[y * w..(y + 1) * w].iter_mut().zip(&acc) {
+            *o = ((a + (1 << 15)) >> 16).min(255) as u8;
+        }
+    }
+    out
+}
+
+/// `gauss_u8` as first written (per-pixel reflected indices, two full passes): the reference
+/// of the fast one.
+pub fn gauss_u8_scalar(src: &[u8], h: usize, w: usize, sigma: f64) -> Vec<u8> {
     let n = gauss_ksize(sigma, 3.0);
     let k = gauss_kernel_fixed(n, sigma);
     let r = (n / 2) as isize;
@@ -241,6 +293,40 @@ mod tests {
     fn reflect101_mirrors_without_the_edge() {
         let got: Vec<usize> = (-3..8).map(|i| reflect101(i, 5)).collect();
         assert_eq!(got, vec![3, 2, 1, 0, 1, 2, 3, 4, 3, 2, 1]);
+    }
+
+    fn noise(n: usize, seed: u64, levels: u16) -> Vec<u8> {
+        let mut s = seed;
+        (0..n)
+            .map(|_| {
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                ((s >> 40) as u16 % levels) as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn gauss_u8_matches_the_scalar_reference() {
+        for h in [1, 2, 3, 4, 7, 8, 9, 31, 40] {
+            for w in [1, 2, 3, 6, 7, 8, 9, 15, 16, 17, 33, 100] {
+                for sigma in [0.3, 0.8, 1.0, 1.7, 2.5, 4.0] {
+                    for levels in [256, 2] {
+                        let f = noise(h * w, (h * 1000 + w) as u64, levels);
+                        assert_eq!(
+                            gauss_u8(&f, h, w, sigma),
+                            gauss_u8_scalar(&f, h, w, sigma),
+                            "{h}x{w} sigma {sigma}"
+                        );
+                    }
+                }
+            }
+        }
+        let f = noise(600 * 600, 5, 256);
+        assert_eq!(gauss_u8(&f, 600, 600, 1.0), gauss_u8_scalar(&f, 600, 600, 1.0));
+        let ones = vec![255u8; 601 * 599];
+        assert_eq!(gauss_u8(&ones, 601, 599, 1.0), ones);
     }
 
     #[test]

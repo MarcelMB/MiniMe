@@ -14,10 +14,21 @@ pub fn check_median_ksize(k: usize) -> Result<(), String> {
 
 /// Median filter with a `k x k` window (odd `k`, see `check_median_ksize`), replicated border.
 ///
+/// The default `k = 7` runs on `median::median7` (sorting networks on sixteen pixels at a
+/// time), any other odd `k` on `median_blur_huang`; both give the same bits.
+pub fn median_blur(src: &[u8], h: usize, w: usize, k: usize) -> Vec<u8> {
+    if k == 7 {
+        return crate::median::median7(src, h, w);
+    }
+    median_blur_huang(src, h, w, k)
+}
+
+/// `median_blur` for any odd `k`, scalar: the reference of `median::median7`.
+///
 /// Huang's sliding histogram per row: the window moves one column at a time and the
 /// median is tracked with the count of values below it, so it moves only a few levels
 /// per step.
-pub fn median_blur(src: &[u8], h: usize, w: usize, k: usize) -> Vec<u8> {
+pub fn median_blur_huang(src: &[u8], h: usize, w: usize, k: usize) -> Vec<u8> {
     if k <= 1 {
         return src.to_vec();
     }
@@ -229,8 +240,14 @@ fn morph(src: &[u8], h: usize, w: usize, r: usize, is_min: bool) -> Vec<u8> {
     out
 }
 
-/// White tophat with a `(2 wnd + 1)` square kernel: `f - dilate(erode(f))`.
+/// White tophat with a `(2 wnd + 1)` square kernel: `f - dilate(erode(f))`, on
+/// `morph::tophat` (sixteen pixels at a time; the same bits as `tophat_scalar`).
 pub fn tophat(src: &[u8], h: usize, w: usize, wnd: usize) -> Vec<u8> {
+    crate::morph::tophat(src, h, w, wnd)
+}
+
+/// `tophat`, scalar van Herk / Gil-Werman: its reference.
+pub fn tophat_scalar(src: &[u8], h: usize, w: usize, wnd: usize) -> Vec<u8> {
     if wnd == 0 {
         return src.to_vec();
     }
@@ -303,6 +320,92 @@ mod tests {
         let f = noise(h * w, 3);
         assert_eq!(median_blur(&f, h, w, 7), brute_median(&f, h, w, 7));
         assert_eq!(median_blur(&f, h, w, 3), brute_median(&f, h, w, 3));
+    }
+
+    /// `noise` squeezed to `levels` grey levels (many ties).
+    fn coarse(n: usize, seed: u64, levels: u8) -> Vec<u8> {
+        noise(n, seed)
+            .iter()
+            .map(|&v| v / (256 / u16::from(levels)) as u8)
+            .collect()
+    }
+
+    #[test]
+    fn median7_matches_huang_and_brute_force_on_every_small_size() {
+        for h in 1..=20 {
+            for w in 1..=40 {
+                for (seed, levels) in [(1, 255), (2, 3), (3, 2)] {
+                    let f = coarse(h * w, seed + (h * 100 + w) as u64, levels);
+                    let got = median_blur(&f, h, w, 7);
+                    assert_eq!(got, median_blur_huang(&f, h, w, 7), "{h}x{w} levels {levels}");
+                    assert_eq!(got, brute_median(&f, h, w, 7), "{h}x{w} levels {levels}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn median7_matches_huang_on_odd_and_large_sizes_and_extreme_values() {
+        for (h, w) in [
+            (600, 600),
+            (601, 599),
+            (64, 641),
+            (7, 7),
+            (6, 100),
+            (100, 6),
+            (513, 17),
+        ] {
+            let f = noise(h * w, 9);
+            assert_eq!(
+                median_blur(&f, h, w, 7),
+                median_blur_huang(&f, h, w, 7),
+                "{h}x{w}"
+            );
+            // only the extreme grey levels, and a constant image
+            let ext: Vec<u8> = f.iter().map(|&v| if v & 1 == 0 { 0 } else { 255 }).collect();
+            assert_eq!(
+                median_blur(&ext, h, w, 7),
+                median_blur_huang(&ext, h, w, 7),
+                "{h}x{w}"
+            );
+            let flat = vec![255u8; h * w];
+            assert_eq!(median_blur(&flat, h, w, 7), flat);
+        }
+    }
+
+    #[test]
+    fn other_kernel_sizes_still_use_the_scalar_filter() {
+        let (h, w) = (31, 45);
+        let f = noise(h * w, 4);
+        for k in [1, 3, 5, 9, 11] {
+            assert_eq!(median_blur(&f, h, w, k), median_blur_huang(&f, h, w, k));
+        }
+    }
+
+    #[test]
+    fn tophat_matches_the_scalar_filter_on_every_small_size_and_radius() {
+        for h in [1, 2, 3, 7, 16, 17, 31, 40] {
+            for w in [1, 2, 5, 15, 16, 17, 31, 33, 64, 65, 70, 130] {
+                for wnd in [0, 1, 2, 3, 4, 5, 7, 8, 15, 16, 20, 33] {
+                    for (seed, levels) in [(h as u64 * 31 + w as u64, 255), (7, 3)] {
+                        let f = coarse(h * w, seed, levels);
+                        assert_eq!(
+                            tophat(&f, h, w, wnd),
+                            tophat_scalar(&f, h, w, wnd),
+                            "{h}x{w} wnd {wnd}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tophat_matches_the_scalar_filter_on_frame_sizes() {
+        for (h, w) in [(600, 600), (601, 599), (64, 641), (513, 17)] {
+            let f = noise(h * w, 11);
+            assert_eq!(tophat(&f, h, w, 15), tophat_scalar(&f, h, w, 15), "{h}x{w}");
+        }
     }
 
     #[test]
