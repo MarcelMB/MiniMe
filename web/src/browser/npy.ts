@@ -1,9 +1,22 @@
-/** Read a little-endian `.npy` (version 1–3, C order) into a typed array; int64 comes back
- * as `Float64Array` (exact below 2^53, which indices and counts are). */
-export function readNpy(bytes: Uint8Array): {
-  shape: number[];
-  data: Float32Array | Float64Array | Int32Array | Uint8Array;
-} {
+type Typed = Float32Array | Float64Array | Int32Array | Uint8Array;
+
+/** The elements of a Fortran-order array (first index fastest) in C order. */
+function toCOrder<T extends Typed>(data: T, shape: number[]): T {
+  if (shape.length < 2) return data;
+  const out = new (data.constructor as new (n: number) => T)(data.length);
+  const stride = shape.map((_, i) => shape.slice(0, i).reduce((a, b) => a * b, 1));
+  const at = shape.map(() => 0);
+  for (let c = 0; c < data.length; c++) {
+    out[c] = data[at.reduce((f, a, i) => f + a * stride[i], 0)];
+    for (let i = shape.length - 1; i >= 0 && ++at[i] === shape[i]; i--) at[i] = 0;
+  }
+  return out;
+}
+
+/** Read a little-endian `.npy` (version 1–3) into a typed array in C order (a Fortran-order file,
+ * which `np.save` writes for a transposed array, is reordered); int64 comes back as
+ * `Float64Array` (exact below 2^53, which indices and counts are). */
+export function readNpy(bytes: Uint8Array): { shape: number[]; data: Typed } {
   const magic = String.fromCharCode(...bytes.subarray(1, 6));
   if (bytes[0] !== 0x93 || magic !== "NUMPY") throw new Error("not a .npy file");
   const major = bytes[6];
@@ -14,7 +27,7 @@ export function readNpy(bytes: Uint8Array): {
   const descr = /'descr':\s*'([^']+)'/.exec(header)?.[1];
   const order = /'fortran_order':\s*(True|False)/.exec(header)?.[1];
   const shapeText = /'shape':\s*\(([^)]*)\)/.exec(header)?.[1];
-  if (!descr || order !== "False" || shapeText === undefined) throw new Error(`unsupported .npy header: ${header}`);
+  if (!descr || !order || shapeText === undefined) throw new Error(`unsupported .npy header: ${header}`);
   const shape = shapeText
     .split(",")
     .map((s) => s.trim())
@@ -32,18 +45,19 @@ export function readNpy(bytes: Uint8Array): {
     for (let i = 0; i < n; i++) out[i] = get(i * size);
     return out;
   };
+  const done = (data: Typed) => ({ shape, data: order === "True" ? toCOrder(data, shape) : data });
   switch (descr) {
     case "<f4":
-      return { shape, data: read(new Float32Array(n), (o) => dv.getFloat32(o, true), 4) };
+      return done(read(new Float32Array(n), (o) => dv.getFloat32(o, true), 4));
     case "<f8":
-      return { shape, data: read(new Float64Array(n), (o) => dv.getFloat64(o, true), 8) };
+      return done(read(new Float64Array(n), (o) => dv.getFloat64(o, true), 8));
     case "<i4":
-      return { shape, data: read(new Int32Array(n), (o) => dv.getInt32(o, true), 4) };
+      return done(read(new Int32Array(n), (o) => dv.getInt32(o, true), 4));
     case "<i8":
-      return { shape, data: read(new Float64Array(n), (o) => Number(dv.getBigInt64(o, true)), 8) };
+      return done(read(new Float64Array(n), (o) => Number(dv.getBigInt64(o, true)), 8));
     case "|u1":
     case "|b1":
-      return { shape, data: body.subarray(0, n) };
+      return done(body.subarray(0, n));
     default:
       throw new Error(`unsupported .npy dtype ${descr}`);
   }

@@ -1,0 +1,226 @@
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { beforeAll, describe, expect, it } from "vitest";
+import { Computing, getArray, getJSON } from "../../api";
+import { writeNpy } from "../npy";
+import { csrNpz } from "../npz";
+import { state } from "../state";
+import { DATA, setupE2eRun } from "../testing/e2eRun";
+import type { NodeDir } from "../testing/nodeDir";
+import { settled } from "../testing/settled";
+
+type Units = {
+  stage: string;
+  units: { id: number; centroid: unknown[]; size_px: number; peak: number | null; polygons: number[][][] }[];
+};
+
+/** The e2e run, changed by `edit` (given the copy's folder). */
+const variant = (edit: (run: string) => void = () => undefined): string => {
+  const run = join(mkdtempSync(join(tmpdir(), "view-")), "t");
+  cpSync(join(DATA, "processed/t"), run, { recursive: true });
+  edit(run);
+  return run;
+};
+/** The folder a `setupE2eRun` picked, to change files after the run is open. */
+const topOf = async (name: string): Promise<string> => ((await state.folders.resolve(name)) as NodeDir).path;
+const notFound = (path: string, message: string) =>
+  expect(getJSON(path)).rejects.toMatchObject({ status: 404, message });
+
+describe("view routes on the e2e run", () => {
+  let rid = "";
+  beforeAll(async () => {
+    rid = (await setupE2eRun()).rid;
+  });
+
+  it("answers the four images as (H, W) float32, the noise one only for browser runs", async () => {
+    for (const name of ["max_proj", "background", "rank"]) {
+      const a = await getArray(`/runs/${rid}/image/${name}`);
+      expect([a.shape, a.dtype]).toEqual([[64, 64], "float32"]);
+    }
+    await notFound(`/runs/${rid}/image/noise`, "noise is not available for this run: factors/sn.npy");
+    await notFound(`/runs/${rid}/image/bogus`, "unknown image 'bogus' (one of max_proj, background, rank, noise)");
+  });
+
+  it("answers the motion as (T, 3) and has no residual until it is computed", async () => {
+    expect((await getArray(`/runs/${rid}/motion`)).shape).toEqual([300, 3]);
+    await notFound(`/runs/${rid}/motion/residual`, "the motion residual is not available for this run");
+    await (await state.cache(rid)).saveNpy("residual.npy", [2, 3], Float32Array.of(0, 1, 2, 3, 4, 5));
+    const a = await getArray(`/runs/${rid}/motion/residual`);
+    expect([a.shape, Array.from(a.data)]).toEqual([
+      [2, 3],
+      [0, 1, 2, 3, 4, 5],
+    ]);
+  });
+
+  it("answers seeds and units with one entry per footprint", async () => {
+    const seeds = await getJSON<Record<string, number[][]>>(`/runs/${rid}/seeds`);
+    expect(Object.keys(seeds)).toEqual(["init", "pnr", "merged"]);
+    expect(seeds.init.length).toBe(66);
+    expect(seeds.merged[0]).toHaveLength(2);
+    const fin = await getJSON<Units>(`/runs/${rid}/units`);
+    expect(fin.units.map((u) => u.id)).toEqual(Array.from({ length: 15 }, (_, k) => k));
+    expect(fin.units.every((u) => typeof u.peak === "number")).toBe(true);
+    const init = await getJSON<Units>(`/runs/${rid}/units?stage=init`);
+    expect([init.stage, init.units.length, init.units[0].peak]).toEqual(["init", 17, null]);
+  });
+
+  it("checks the stage, the source and the frame number like main", async () => {
+    await expect(getJSON(`/runs/${rid}/units?stage=x`)).rejects.toMatchObject({
+      status: 400,
+      message: "stage must be final or init, got 'x'",
+    });
+    const bad = (path: string, status: number, message: string) =>
+      expect(getJSON(`/runs/${rid}${path}`)).rejects.toMatchObject({ status, message });
+    await bad("/frame/0?source=gray", 400, "unknown source 'gray' (one of raw, pre, recon)");
+    await bad("/frame/300?source=raw", 400, "frame 300 out of range 0..299");
+    await bad("/frame/-1?source=raw", 400, "frame -1 out of range 0..299");
+    await bad("/frame/abc?source=raw", 422, "t must be an integer");
+    await bad("/frame/1.5?source=raw", 422, "t must be an integer");
+    await bad("/frame/0?source=pre", 404, "pre frames is not available for this run");
+    await bad("/frame/0", 404, "recon frames is not available for this run"); // the default source
+  });
+
+  it("computes the contrast once, then answers frames at once", async () => {
+    await expect(getArray(`/runs/${rid}/frame/10?source=raw`)).rejects.toBeInstanceOf(Computing);
+    const a = await settled(() => getArray(`/runs/${rid}/frame/10?source=raw`));
+    expect([a.shape, a.dtype]).toEqual([[64, 64], "uint8"]);
+    const doc = await (await state.cache(rid)).loadJSON<Record<string, number[]>>("contrast.json", {});
+    expect(doc.raw[1]).toBeGreaterThan(doc.raw[0]);
+    const b = await getArray(`/runs/${rid}/frame/11?source=raw`); // no Computing: the contrast is cached
+    expect(Array.from(b.data)).not.toEqual(Array.from(a.data));
+  });
+
+  it("answers an unknown run with 404", async () => {
+    for (const path of ["image/rank", "motion", "seeds", "units", "frame/0?source=raw"])
+      await expect(getJSON(`/runs/000000000000/${path}`)).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe("a run folder without its optional files", () => {
+  let rid = "";
+  let name = "";
+  beforeAll(async () => {
+    const run = variant((d) => {
+      for (const dir of ["seeds", "init", "tiles", "motion"]) rmSync(join(d, dir), { recursive: true });
+      for (const f of ["factors/max_proj.npy", "cnmf/b.npy"]) rmSync(join(d, f));
+    });
+    ({ rid, name } = await setupE2eRun(run));
+    // setupE2eRun points raw_dir into the picked folder: a Python run holds a disk path
+    const pj = join(await topOf(name), "processed/t/params.json");
+    writeFileSync(pj, JSON.stringify({ ...JSON.parse(readFileSync(pj, "utf8")), raw_dir: "/data/raw" }));
+  });
+
+  it("answers 404 'not available for this run', never 500", async () => {
+    const r = `/runs/${rid}`;
+    await notFound(`${r}/seeds`, "the seeds is not available for this run");
+    await notFound(`${r}/units?stage=init`, "the init footprints is not available for this run");
+    await notFound(`${r}/motion`, "the motion is not available for this run: motion/arrays.npz");
+    await notFound(`${r}/image/max_proj`, "max_proj is not available for this run: factors/max_proj.npy");
+    await notFound(`${r}/image/background`, "background is not available for this run: cnmf/b.npy");
+    await notFound(`${r}/frame/0?source=pre`, "pre frames is not available for this run");
+    await notFound(`${r}/frame/0?source=raw`, "raw videos not found in /data/raw");
+  });
+
+  it("still answers what the folder holds", async () => {
+    const r = `/runs/${rid}`;
+    expect((await getArray(`${r}/image/rank`)).shape).toEqual([64, 64]);
+    expect((await getJSON<Units>(`${r}/units`)).units).toHaveLength(15);
+  });
+});
+
+describe("other broken run folders", () => {
+  it("has no raw frames when the picked raw folder holds no videos", async () => {
+    const { rid, name } = await setupE2eRun();
+    rmSync(join(await topOf(name), "raw"), { recursive: true });
+    await notFound(`/runs/${rid}/frame/0?source=raw`, `raw videos not found in ${name}/raw`);
+  });
+
+  it("refuses raw frames of another size than the run's", async () => {
+    const { rid } = await setupE2eRun(
+      variant((d) => {
+        const f = join(d, "factors/meta.json");
+        writeFileSync(f, JSON.stringify({ ...JSON.parse(readFileSync(f, "utf8")), H: 32 }));
+      }),
+    );
+    await expect(getJSON(`/runs/${rid}/frame/0?source=raw`)).rejects.toMatchObject({
+      status: 400,
+      message: "the raw videos' frames are 64x64, the run's are 32x64",
+    });
+  });
+
+  it("answers 500 with the file name for an image that is not H * W", async () => {
+    const { rid } = await setupE2eRun(
+      variant((d) => writeFileSync(join(d, "factors/max_proj.npy"), writeNpy([2, 2], new Float32Array(4)))),
+    );
+    await expect(getJSON(`/runs/${rid}/image/max_proj`)).rejects.toMatchObject({
+      status: 500,
+      message: "factors/max_proj.npy holds 4 values, not H * W = 4096",
+    });
+  });
+
+  it("has no unit peaks without a peak for every unit", async () => {
+    for (const csv of ["unit_id,size_px\n0,5\n", "unit_id,peak\n0,1.5\n"]) {
+      const { rid } = await setupE2eRun(variant((d) => writeFileSync(join(d, "cnmf/units.csv"), csv)));
+      await notFound(
+        `/runs/${rid}/units`,
+        "the unit peaks is not available for this run: cnmf/units.csv has no peak for every unit",
+      );
+    }
+    const { rid } = await setupE2eRun(variant((d) => rmSync(join(d, "cnmf/units.csv"))));
+    await notFound(`/runs/${rid}/units`, "the unit peaks is not available for this run: cnmf/units.csv");
+  });
+});
+
+describe("a run without units", () => {
+  let rid = "";
+  beforeAll(async () => {
+    const empty = new Uint8Array(
+      await (
+        await csrNpz({
+          shape: [0, 64 * 64],
+          data: new Float32Array(0),
+          indices: new Int32Array(0),
+          indptr: Int32Array.of(0),
+        })
+      ).arrayBuffer(),
+    );
+    rid = (
+      await setupE2eRun(
+        variant((d) => {
+          writeFileSync(join(d, "cnmf/A.npz"), empty);
+          writeFileSync(join(d, "init/A.npz"), empty);
+          writeFileSync(join(d, "cnmf/units.csv"), "unit_id,centroid_h,centroid_w,size_px,peak\n");
+        }),
+      )
+    ).rid;
+  });
+
+  it("answers an empty unit list for both stages", async () => {
+    expect(await getJSON(`/runs/${rid}/units`)).toEqual({ stage: "final", units: [] });
+    expect(await getJSON(`/runs/${rid}/units?stage=init`)).toEqual({ stage: "init", units: [] });
+  });
+});
+
+describe("a unit without pixels", () => {
+  it("has no centroid and no outline, and does not stop the others", async () => {
+    const a = await csrNpz({
+      shape: [2, 64 * 64],
+      data: Float32Array.of(1),
+      indices: Int32Array.of(65),
+      indptr: Int32Array.of(0, 0, 1),
+    });
+    const bytes = new Uint8Array(await a.arrayBuffer());
+    const { rid } = await setupE2eRun(
+      variant((d) => {
+        writeFileSync(join(d, "cnmf/A.npz"), bytes);
+        writeFileSync(join(d, "cnmf/units.csv"), "unit_id,peak\n0,0\n1,2.5\n");
+      }),
+    );
+    const { units } = await getJSON<Units>(`/runs/${rid}/units`);
+    expect(units).toEqual([
+      { id: 0, centroid: [null, null], size_px: 0, peak: 0, polygons: [] },
+      { id: 1, centroid: [1, 1], size_px: 1, peak: 2.5, polygons: [[[1, 1]]] },
+    ]);
+  });
+});
