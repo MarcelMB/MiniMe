@@ -52,8 +52,10 @@ impl TileFactors {
         let mut at = 32;
         let mut f32s = |n: usize| -> Vec<f32> {
             let v = b[at..at + 4 * n]
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
                 .collect();
             at += 4 * n;
             v
@@ -66,8 +68,10 @@ impl TileFactors {
             f32s(lens[6]),
         );
         let energy = b[at..at + 8 * lens[7]]
-            .chunks_exact(8)
-            .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| f64::from_le_bytes(*c))
             .collect();
         Ok(Self {
             w,
