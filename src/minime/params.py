@@ -36,6 +36,10 @@ class Params:
     # on real data (WL25) a fixed template on tophat frames went stale (bench/README.md)
     motion_before_tophat: bool = True
     motion_bandpass: tuple[float, float] = (1.0, 6.0)
+    # pixels the motion warp reads from inside the frame in fewer than this fraction of the
+    # frames (zero fill otherwise) are set to 0 before pass 2: their on/off steps would
+    # otherwise become band-shaped units along the border. 0 = off
+    border_coverage: float = 0.0
     # tiling + compression
     tile: int = 64
     svd_k0: int = 40

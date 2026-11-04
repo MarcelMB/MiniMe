@@ -266,3 +266,25 @@ def test_a_failed_run_removes_the_tile_store(tiny_session, tmp_path, monkeypatch
     with pytest.raises(RuntimeError, match="pass 2"):
         pipeline.run(tiny_session["raw_dir"], p, run_name="f", out_root=tmp_path)
     assert (tmp_path / "f" / "motion").is_dir() and not (tmp_path / "f" / "tiles").exists()
+
+
+def test_border_mask_zeroes_rarely_filled_pixels():
+    """Frames shifted by dx = -3 most of the time leave columns 0-2 zero-filled: masked."""
+    from minime import pass1
+
+    shifts = np.zeros((10, 2), np.float32)
+    shifts[1:, 1] = -3
+    p1 = pass1.Pass1Result(
+        shifts=shifts,
+        quality=np.ones(10, np.float32),
+        max_proj=np.full((6, 8), 9, np.uint8),
+        block_max=np.full((2, 6, 8), 9, np.uint8),
+        block_edges=np.array([0, 5, 10]),
+        frames=10,
+        seconds={},
+    )
+    assert pipeline.border_mask(p1, 6, 8, 0.0) is None
+    valid = pipeline.border_mask(p1, 6, 8, 0.5)
+    assert valid is not None and not valid[:, :3].any() and valid[:, 3:].all()
+    assert (p1.max_proj[:, :3] == 0).all() and (p1.block_max[:, :, :3] == 0).all()
+    assert (p1.max_proj[:, 3:] == 9).all()

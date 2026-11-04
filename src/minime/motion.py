@@ -92,6 +92,27 @@ def apply_shifts(frames: np.ndarray, shifts: np.ndarray) -> np.ndarray:
     return out
 
 
+def coverage(shifts: np.ndarray, h: int, w: int) -> np.ndarray:
+    """(h, w) float32: fraction of frames whose ``apply_shifts`` reads the pixel from inside
+    the frame (source position ``(y + dy, x + dx)`` within ``[0, h - 1] x [0, w - 1]``); the
+    rest of the frames hold the warp's zero fill there."""
+    s = np.asarray(shifts, np.float64).reshape(-1, 2)
+    if not len(s):
+        return np.ones((h, w), np.float32)
+    y0 = np.clip(np.ceil(-s[:, 0]), 0, h).astype(np.intp)
+    y1 = np.clip(np.floor(h - 1 - s[:, 0]) + 1, 0, h).astype(np.intp)  # exclusive
+    x0 = np.clip(np.ceil(-s[:, 1]), 0, w).astype(np.intp)
+    x1 = np.clip(np.floor(w - 1 - s[:, 1]) + 1, 0, w).astype(np.intp)
+    keep = (y1 > y0) & (x1 > x0)
+    y0, y1, x0, x1 = y0[keep], y1[keep], x0[keep], x1[keep]
+    d = np.zeros((h + 1, w + 1), np.int64)  # 2-D difference array of the valid rectangles
+    np.add.at(d, (y0, x0), 1)
+    np.add.at(d, (y0, x1), -1)
+    np.add.at(d, (y1, x0), -1)
+    np.add.at(d, (y1, x1), 1)
+    return (d.cumsum(0).cumsum(1)[:h, :w] / len(s)).astype(np.float32)
+
+
 def _mean_template(pre_frames: np.ndarray, down: int) -> Template:
     shape = (int(pre_frames.shape[1]), int(pre_frames.shape[2]))
     img = _prep(pre_frames, down).mean(axis=0)

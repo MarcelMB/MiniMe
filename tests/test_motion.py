@@ -155,3 +155,14 @@ def test_template_image_shape_for_odd_sizes():
 def test_params_refuse_motion_down_other_than_1_or_2(down):
     with pytest.raises(ValueError, match="motion_down"):
         Params(motion_down=down)
+
+
+def test_coverage_matches_a_warp_of_ones():
+    """``coverage``: the fraction of frames ``apply_shifts`` fills a pixel from inside the frame."""
+    rng = np.random.default_rng(1)
+    h, w, n = 37, 53, 200
+    sh = rng.uniform(-9, 9, (n, 2)).astype(np.float32)
+    sh[:10] = np.round(sh[:10])  # whole-pixel shifts: the far tap has weight 0
+    inside = (motion.apply_shifts(np.ones((n, h, w), np.float32), sh) > 1 - 1e-6).mean(0)
+    assert np.allclose(motion.coverage(sh, h, w), inside, atol=1e-6)
+    assert motion.coverage(np.zeros((0, 2)), h, w).min() == 1

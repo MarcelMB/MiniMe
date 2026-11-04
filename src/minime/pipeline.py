@@ -354,6 +354,20 @@ def _write_params(
 # ---------------------------------------------------------------------------
 
 
+def border_mask(p1: pass1.Pass1Result, h: int, w: int, min_coverage: float) -> np.ndarray | None:
+    """Pixels the warp fills from inside the frame in at least ``min_coverage`` of the frames
+    (None when off or when every pixel passes); the others are zeroed in pass 1's max
+    projection and block maxima here, and in the tiles by pass 2."""
+    if min_coverage <= 0:
+        return None
+    valid = motion.coverage(p1.shifts, h, w) >= min_coverage
+    if valid.all():
+        return None
+    p1.max_proj[~valid] = 0
+    p1.block_max[:, ~valid] = 0
+    return valid
+
+
 def run(
     raw_dir: Path,
     params: Params,
@@ -402,8 +416,9 @@ def run(
             )
         with timer("sidecar_save"):
             _save_sidecar(out, p1, template_img, params, raw_hash, workers)
+        valid = border_mask(p1, info.height, info.width, params.border_coverage)
         with timer("pass2"):
-            tiles = pass2.run_pass2(store, grid, params, workers)
+            tiles = pass2.run_pass2(store, grid, params, workers, valid)
         fac = pass2.build_factors(info, grid, p1, tiles, params)
         with timer("factors_save"):
             fac.save(out / "factors")

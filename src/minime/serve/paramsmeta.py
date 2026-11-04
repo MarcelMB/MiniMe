@@ -18,6 +18,7 @@ GROUPS: dict[str, list[str]] = {
         "template_frames",
         "motion_before_tophat",
         "motion_bandpass",
+        "border_coverage",
     ],
     "Tiling + compression": [
         "tile",
@@ -60,6 +61,8 @@ HELP: dict[str, str] = {
     "template_frames": "Frames averaged into the motion template.",
     "motion_before_tophat": "Estimate motion before the tophat, on band-passed frames.",
     "motion_bandpass": "Difference-of-Gaussians sigmas (px) of the band-pass for motion.",
+    "border_coverage": "Pixels filled from inside the frame in fewer than this fraction of the "
+    "motion-corrected frames are set to 0 (0 = off).",
     "tile": "Tile side in px for the low-rank compression.",
     "svd_k0": "Starting rank of each tile's randomized SVD.",
     "svd_power_iter": "Power iterations of the randomized SVD.",

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+
 from minime.compress import compress_tile
 from minime.factors import Factors, TileFactors
 from minime.io import RawInfo
@@ -12,14 +14,30 @@ from minime.pass1 import Pass1Result, _split, run_workers
 from minime.tiles import Tile, TileStore
 
 
+def _read_masked(
+    store: TileStore, grid: list[Tile], i: int, valid: np.ndarray | None
+) -> np.ndarray:
+    """Tile ``i`` with the pixels outside ``valid`` (H, W bool) set to 0 in every frame."""
+    frames = store.read_tile(i)
+    if valid is not None:
+        t = grid[i]
+        frames[:, ~valid[t.y0 : t.y1, t.x0 : t.x1]] = 0
+    return frames
+
+
 def pass2_worker(
-    store_root: str, grid: list[Tile], n_parts: int, indices: range, params: Params
+    store_root: str,
+    grid: list[Tile],
+    n_parts: int,
+    indices: range,
+    params: Params,
+    valid: np.ndarray | None = None,
 ) -> list[TileFactors]:
     """Compress the tiles ``indices`` (seed = tile index)."""
     store = TileStore(Path(store_root), grid, n_parts)
     return [
         compress_tile(
-            store.read_tile(i),
+            _read_masked(store, grid, i, valid),
             k0=params.svd_k0,
             n_iter=params.svd_power_iter,
             rho_min=params.rank_rho_min,
@@ -33,11 +51,17 @@ def pass2_worker(
 
 
 def run_pass2(
-    store: TileStore, grid: list[Tile], params: Params, workers: int
+    store: TileStore,
+    grid: list[Tile],
+    params: Params,
+    workers: int,
+    valid: np.ndarray | None = None,
 ) -> list[TileFactors]:
-    """Compress every tile with ``workers`` single-threaded processes; grid order."""
+    """Compress every tile with ``workers`` single-threaded processes; grid order.
+
+    ``valid`` (H, W bool): pixels kept; the others are zeroed before compression."""
     ranges = _split(len(grid), workers)
-    jobs = [(str(store.root), grid, store.n_parts, r, params) for r in ranges]
+    jobs = [(str(store.root), grid, store.n_parts, r, params, valid) for r in ranges]
     res = run_workers(pass2_worker, jobs)
     return [tf for chunk in res for tf in chunk]
 
