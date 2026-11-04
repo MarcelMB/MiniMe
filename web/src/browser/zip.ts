@@ -87,14 +87,19 @@ async function crc32(b: Blob): Promise<number> {
   return (c ^ 0xffffffff) >>> 0;
 }
 
-export async function zipBlob(entries: { name: string; data: Blob }[]): Promise<Blob> {
+/** `forceZip64` writes the zip64 records for every entry and the end of the archive whatever the
+ * sizes (what a 4 GiB archive gets), so the layout can be tested on small data. */
+export async function zipBlob(
+  entries: { name: string; data: Blob }[],
+  opts: { forceZip64?: boolean } = {},
+): Promise<Blob> {
   const parts: BlobPart[] = [];
   const central: Uint8Array[] = [];
   let offset = 0;
   for (const { name, data } of entries) {
     const nameBytes = new TextEncoder().encode(name);
     const crc = await crc32(data);
-    const big = data.size >= 0xffffffff || offset >= 0xffffffff;
+    const big = !!opts.forceZip64 || data.size >= 0xffffffff || offset >= 0xffffffff;
     // local header: sizes in a zip64 extra field when big
     const lx = big ? 20 : 0;
     const lh = new DataView(new ArrayBuffer(30 + nameBytes.length + lx));
@@ -139,7 +144,7 @@ export async function zipBlob(entries: { name: string; data: Blob }[]): Promise<
     offset += lh.byteLength + data.size;
   }
   const cdSize = central.reduce((s, c) => s + c.length, 0);
-  const z64 = offset >= 0xffffffff || entries.length >= 0xffff;
+  const z64 = !!opts.forceZip64 || offset >= 0xffffffff || entries.length >= 0xffff;
   const tail: ArrayBuffer[] = [];
   if (z64) {
     const r = new DataView(new ArrayBuffer(56));

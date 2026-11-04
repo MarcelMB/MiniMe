@@ -45,6 +45,25 @@ describe("npz", () => {
     expect(await readCsr(new Blob([readFileSync(p)]))).toEqual(a);
   });
 
+  it("writes zip64 records that readZip and Python's zipfile read", async () => {
+    const z = await zipBlob(
+      [
+        { name: "a.txt", data: new Blob(["hello"]) },
+        { name: "d/b.bin", data: new Blob([new Uint8Array([1, 2, 3])]) },
+      ],
+      { forceZip64: true },
+    );
+    const m = await readZip(z);
+    expect(await m.get("a.txt")!.text()).toBe("hello");
+    expect(new Uint8Array(await m.get("d/b.bin")!.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+    const p = join(mkdtempSync(join(tmpdir(), "zip64-")), "z.zip");
+    writeFileSync(p, new Uint8Array(await z.arrayBuffer()));
+    // sizes and offsets live in the zip64 extra fields: 60 = 30 + 5 + 20 (header) + 5 (data) for the first entry
+    const code = `import zipfile; z = zipfile.ZipFile(${JSON.stringify(p)}); print(z.testzip(), [(i.filename, i.file_size, i.header_offset) for i in z.infolist()])`;
+    const out = execFileSync(PY, ["-c", code]);
+    expect(out.toString().trim()).toBe("None [('a.txt', 5, 0), ('d/b.bin', 3, 60)]");
+  });
+
   it("round-trips a stored zip", async () => {
     const z = await zipBlob([
       { name: "a/b.txt", data: new Blob(["hello"]) },

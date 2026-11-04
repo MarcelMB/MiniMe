@@ -88,10 +88,10 @@ export class FileListDir implements Dir {
       ...[...this.files.keys()].map((name) => ({ name, kind: "file" as const })),
     ].sort((a, b) => a.name.localeCompare(b.name));
   }
-  async dir(name: string): Promise<Dir> {
+  async dir(name: string, opts: { create?: boolean } = {}): Promise<Dir> {
     const d = this.dirs.get(name);
-    if (!d) throw notFound(name);
-    return d;
+    if (d) return d;
+    throw opts.create ? readOnly() : notFound(name);
   }
   async file(name: string): Promise<File> {
     const f = this.files.get(name);
@@ -104,8 +104,8 @@ export class FileListDir implements Dir {
   async remove(_name: string, _opts?: { recursive?: boolean }): Promise<void> {
     throw readOnly();
   }
-  async permission(_mode: "read" | "readwrite", _ask: boolean): Promise<boolean> {
-    return true;
+  async permission(mode: "read" | "readwrite", _ask: boolean): Promise<boolean> {
+    return mode === "read";
   }
 }
 

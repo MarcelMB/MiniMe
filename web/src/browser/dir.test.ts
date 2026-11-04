@@ -27,4 +27,14 @@ describe("Dir", () => {
     expect(await (await (await d.dir("cnmf")).file("units.csv")).text()).toBe("u");
     await expect(d.write("x", "y")).rejects.toMatchObject({ status: 403 });
   });
+
+  it("answers writes to a read-only list with 403, not 404, and denies readwrite permission", async () => {
+    const file = new File(["{}"], "params.json");
+    Object.defineProperty(file, "webkitRelativePath", { value: "run/params.json" });
+    const d = FileListDir.fromFiles([file]);
+    await expect(walk(d, "new/sub", { create: true })).rejects.toMatchObject({ status: 403 });
+    await expect(d.dir("missing")).rejects.toMatchObject({ status: 404 });
+    expect(await d.permission("readwrite", true)).toBe(false);
+    expect(await d.permission("read", false)).toBe(true);
+  });
 });
