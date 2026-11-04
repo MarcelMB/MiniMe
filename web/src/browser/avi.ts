@@ -38,10 +38,12 @@ const defaultIndexer: Indexer = (files) => (typeof Worker === "undefined" ? whol
 const NAMING_RULE =
   "each video's file name must start with a number (0.avi, 1.avi, ... or 0_session.avi); the videos are read in the order of that number, so 2.avi comes before 10.avi, and .avi files whose name does not start with a number are ignored";
 
+type Listed = { files: File[]; skipped: string[] };
+
 /** `io.list_segments` and `io.skipped_videos`: the `.avi` files of `dir` whose name starts with a
  * number, in the order of that number, and the other `.avi` names (hidden `.` files left out).
  * Two files with the same number answer 400: their order would be a guess. */
-export async function listSegments(dir: Dir): Promise<{ files: File[]; skipped: string[] }> {
+export async function listSegments(dir: Dir): Promise<Listed> {
   const avis: File[] = [];
   for (const e of await dir.entries())
     if (e.kind === "file" && e.name.toLowerCase().endsWith(".avi") && !e.name.startsWith("."))
@@ -86,7 +88,12 @@ export class RawVideo {
   }
 
   static async open(dir: Dir, index: Indexer = defaultIndexer): Promise<RawVideo> {
-    const { files: ordered, skipped } = await listSegments(dir);
+    return RawVideo.indexed(dir, await listSegments(dir), index);
+  }
+
+  /** The videos `listSegments` found in `dir`, indexed. */
+  static async indexed(dir: Dir, listed: Listed, index: Indexer): Promise<RawVideo> {
+    const { files: ordered, skipped } = listed;
     if (!ordered.length) throw new HttpError(404, `no videos in ${dir.name}: ${NAMING_RULE}`);
     const idx = await index(ordered);
     const [H, W] = [idx[0].height, idx[0].width];
@@ -122,4 +129,40 @@ export class RawVideo {
   async clip(t0: number, n: number): Promise<Uint8Array[]> {
     return Promise.all(Array.from({ length: n }, (_, k) => this.frame(t0 + k)));
   }
+}
+
+/** The folders opened lately (a few: a long session's frame index takes tens of MB), per indexer,
+ * by `openRawVideo`'s key. Most recently used last. */
+const recent = new WeakMap<Indexer, Map<string, Promise<RawVideo>>>();
+const RECENT = 4;
+
+/** `RawVideo.open` once per state of a folder, as main caches `io.probe` per path: New run's
+ * preview, thumbnails and Start ask for the same videos many times, often at once, and indexing
+ * reads every file. The key is the folder's vpath `path` and the name, size and time of each of its
+ * videos (and the names it skips), which the listing gives without reading the files; requests
+ * with the same key share one indexing, a changed video indexes again, a failure is not kept.
+ * `listed` is the folder's `listSegments`, when the caller has it already. */
+export async function openRawVideo(
+  path: string,
+  dir: Dir,
+  o: { index?: Indexer; listed?: Listed } = {},
+): Promise<RawVideo> {
+  const listed = o.listed ?? (await listSegments(dir));
+  const index = o.index ?? defaultIndexer;
+  const key = JSON.stringify([path, listed.files.map((f) => [f.name, f.size, f.lastModified]), listed.skipped]);
+  const cache = recent.get(index) ?? new Map<string, Promise<RawVideo>>();
+  recent.set(index, cache);
+  let v = cache.get(key);
+  if (v)
+    cache.delete(key); // set again below, as the most recent
+  else {
+    const made = RawVideo.indexed(dir, listed, index);
+    made.catch(() => {
+      if (cache.get(key) === made) cache.delete(key);
+    });
+    v = made;
+  }
+  cache.set(key, v);
+  for (const old of cache.keys()) if (cache.size > RECENT) cache.delete(old);
+  return v;
 }
