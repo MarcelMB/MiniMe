@@ -1,6 +1,9 @@
 //! Throwaway profile of one pass-1 frame, stage by stage, on real frames:
 //!
-//!     cargo run --release --example profile_frame -- RAW_DIR [TEMPLATE.npy] [N_FRAMES]
+//!     cargo run --release --example profile_frame -- RAW_DIR [INPUTS_DIR] [N_FRAMES]
+//!
+//! `INPUTS_DIR` holds `params.json` and `template.npy` (`minime-core motion`'s output plus the
+//! parameters): with it the estimate, the quality and a whole `Pass1::push` are timed too.
 //!
 //! Every stage is run on the same `N_FRAMES` frames (default 40) from the first AVI; the
 //! per-frame mean of each stage is printed in ms. Not production code.
@@ -9,6 +12,7 @@ use minime_core::avi::{self, FileReader, ReadAt};
 use minime_core::filters::{area_down2_f32, area_down2_u8, gauss_f32, gauss_u8, resize_up2_f32};
 use minime_core::motion::{registration_from_denoised, Motion, MotionParams};
 use minime_core::npy;
+use minime_core::pass1::{Pass1, Pass1Params};
 use minime_core::preprocess::{median_blur, shift, tophat};
 use std::time::Instant;
 
@@ -83,11 +87,31 @@ fn main() {
     time("shift_f32 (reg.shifted)", n, |i| reg[i].shifted(h, w, dy, dx));
     time("area_down2_f32", n, |_| area_down2_f32(&vec![1.0; h * w], h, w));
 
-    if let Some(t) = args.get(2).filter(|t| t.ends_with(".npy")) {
-        let img = npy::read_f32(&std::fs::read(t).unwrap()).unwrap().data;
-        let m = Motion::from_template_image(&p, img).unwrap();
+    if let Some(dir) = args.get(2) {
+        let dir = std::path::Path::new(dir);
+        let p1p: Pass1Params =
+            serde_json::from_slice(&std::fs::read(dir.join("params.json")).unwrap()).unwrap();
+        let tmpl = npy::read_f32(&std::fs::read(dir.join("template.npy")).unwrap())
+            .unwrap()
+            .data;
+        let m = Motion::from_template_image(&p, tmpl.clone()).unwrap();
         time("motion.estimate", n, |i| m.estimate(&reg[i]));
         let warped: Vec<_> = reg.iter().map(|r| r.shifted(h, w, dy, dx)).collect();
         time("motion.quality", n, |i| m.quality(&warped[i]));
+        let mut p1 = Pass1::new(&p1p, Some(Motion::from_template_image(&p, tmpl).unwrap()));
+        time("Pass1::push (given shift)", n, |i| {
+            let r = p1.push(&fr[i], Some([dy, dx])).unwrap();
+            if p1.buffered() >= 100 {
+                p1.take_tiles();
+            }
+            r
+        });
+        time("Pass1::push + estimate", n, |i| {
+            let r = p1.push(&fr[i], None).unwrap();
+            if p1.buffered() >= 100 {
+                p1.take_tiles();
+            }
+            r
+        });
     }
 }

@@ -8,6 +8,7 @@
 //! otherwise 600 x 600 noise.
 
 use minime_core::avi::{self, FileReader, ReadAt};
+use minime_core::filters::*;
 use minime_core::preprocess::*;
 use std::time::Instant;
 
@@ -50,7 +51,7 @@ fn median(mut v: Vec<f64>) -> f64 {
 }
 
 /// Median ms per call of `old` and of `new`, alternating rounds of one pass over the frames.
-fn ab<A, B>(name: &str, fr: &[Vec<u8>], mut old: impl FnMut(&[u8]) -> A, mut new: impl FnMut(&[u8]) -> B) {
+fn ab<T, A, B>(name: &str, fr: &[Vec<T>], mut old: impl FnMut(&[T]) -> A, mut new: impl FnMut(&[T]) -> B) {
     let (mut to, mut tn) = (Vec::new(), Vec::new());
     for round in 0..=ROUNDS {
         let t = Instant::now();
@@ -81,23 +82,62 @@ fn main() {
         fr.len(),
         if raw.is_some() { "real" } else { "noise" }
     );
+    let (dy, dx) = (0.37f32, -1.62f32);
+    let to_f32 = |f: &[u8]| -> Vec<f32> { f.iter().map(|&v| f32::from(v)).collect() };
+    let den: Vec<Vec<u8>> = fr.iter().map(|f| median_blur(f, h, w, 7)).collect();
+    let half: Vec<Vec<f32>> = fr.iter().map(|f| area_down2_f32(&to_f32(f), h, w)).collect();
+    let g: Vec<Vec<f32>> = half.iter().map(|f| gauss_f32(f, h / 2, w / 2, 3.0)).collect();
+    let reg: Vec<Vec<f32>> = den
+        .iter()
+        .zip(&g)
+        .map(|(d, g)| {
+            gauss_u8(d, h, w, 1.0)
+                .iter()
+                .zip(resize_up2_f32(g, h / 2, w / 2))
+                .map(|(&n, b)| f32::from(n) - b)
+                .collect()
+        })
+        .collect();
     ab(
         "median 7",
         &fr,
         |f| median_blur_huang(f, h, w, 7),
         |f| median_blur(f, h, w, 7),
     );
-    let den = median_blur(&fr[0], h, w, 7);
-    ab(
-        "shift",
-        std::slice::from_ref(&den),
-        |f| shift(f, h, w, 0.3, -1.7),
-        |f| shift(f, h, w, 0.3, -1.7),
-    );
     ab(
         "tophat 15",
-        std::slice::from_ref(&den),
+        &den,
         |f| tophat_scalar(f, h, w, 15),
         |f| tophat(f, h, w, 15),
+    );
+    ab(
+        "gauss_u8 s=1",
+        &den,
+        |f| gauss_u8_scalar(f, h, w, 1.0),
+        |f| gauss_u8(f, h, w, 1.0),
+    );
+    ab(
+        "gauss_f32 300^2 s=3",
+        &half,
+        |f| gauss_f32_scalar(f, h / 2, w / 2, 3.0),
+        |f| gauss_f32(f, h / 2, w / 2, 3.0),
+    );
+    ab(
+        "resize_up2_f32",
+        &g,
+        |f| resize_up2_f32_scalar(f, h / 2, w / 2),
+        |f| resize_up2_f32(f, h / 2, w / 2),
+    );
+    ab(
+        "shift u8",
+        &den,
+        |f| shift_scalar(f, h, w, dy, dx),
+        |f| shift(f, h, w, dy, dx),
+    );
+    ab(
+        "shift f32",
+        &reg,
+        |f| shift_f32_scalar(f, h, w, dy, dx),
+        |f| shift_f32(f, h, w, dy, dx),
     );
 }
