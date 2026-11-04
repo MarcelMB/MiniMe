@@ -345,6 +345,45 @@ python experiments/streaming/check_pass2.py <pass2 ref> <ref>/rust_browser
 python experiments/streaming/check_pass1.py <pass1 ref> <ref>/rust_browser
 ```
 
+## Pass 2 and CNMF speed (2026-11-04, branch `speed/gemm`)
+Where pass 2 spent its 27.7 s in Chrome (100 tiles of 3000 frames, 1 thread, M1 Max;
+`rust/minime-core/tools/wasm_pass2/`, `examples/bench_pass2.rs`, both `--features
+profile,reference`): GEMM 11.4 s (41 %: the two products `Y Z` and `Y^T Q`, twice each),
+noise 11.4 s (41 %: 4096 FFTs of 3000 points per tile 4.6 s, a strided column gather 2.4 s, a
+libm `ln`/`hypot` per bin 4.3 s), QR 3.3 s (12 %), small SVD 1.1 s, float32 copies of the
+tile 0.6 s, mean/energy 0.5 s. `matrixmultiply` 0.3.11 *has* a wasm simd128 kernel (8 x 8)
+and runs at 38 GFLOP/s of the 51 an M1 core has without fused multiply-add; a hand-written
+12 x 4 / 8 x 5 kernel with packing straight from the uint8 tile was within +-7 % of it (and
+bit-identical), so it was dropped. With `+relaxed-simd` (fused `f32x4.relaxed_madd`, Chrome 114+,
+Firefox 146+, Safari unconfirmed) the same GEMMs run 1.26x faster; not enabled.
+
+What changed (`compress.rs`, `bfft.rs`, `fastmath.rs`): mean/energy from integer column sums
+(exact, same bits); the noise of four pixels per vector in a Stockham FFT (`bfft.rs`; any `T`
+whose half is 5-smooth, `realfft` otherwise) with the logarithms of a bin as one vectorised
+Cephes `logf`, the 16-pixel groups read once per frame row; the QR's trailing updates for all
+columns at once, eight columns in registers, in the order of the column-by-column code (bit
+for bit the same Q); the small SVD's products with the eigenvectors the same way (bit for
+bit). `rustfft`'s `wasm_simd` feature is on (1.2x on its own).
+
+| 100 tiles, 3000 frames, 1 thread | before | after | |
+|---|---|---|---|
+| wasm in Chrome, in-process A/B | 27.7 s | 18.3 s | 1.5x |
+| native, in-process A/B | 18.4 s | 11.8 s (`minime-core pass2`) | 1.6x |
+
+Checks (`check_pass2.py`, `check_seeds.py`, `check_init.py`, `check_cnmf.py` on the browser
+run with numpy's draws replayed): same rank and last rank in 100 of 100 tiles, mean and
+energy exact, `W`, `V`, `s` bit-identical to the previous native run, `sigma` <= 1.27e-6
+relative (was 1.1e-6 native / 1.2e-6 Chrome), reconstruction <= 5.5e-5; seeds, masks, merge
+pairs, units identical, every float within the old tolerances (e.g. `B` 3.2e-6, footprints
+2.2e-5, traces 1.8e-5).
+
+CNMF in Chrome was 8x slower than native because `f64::mul_add` on wasm32 is a software
+`fma` (15.6 ns, against 0.9 ns for a multiply and an add): the Gram matrix `Cc Cc^T` alone
+is 54 M of them per iteration, 0.84 s of the 1.1 s of a spatial update. `linalg::madd64` is
+fused natively (native outputs bit-identical, 53 of 53 `.npy` files) and a multiply and an
+add on wasm32; the Gram runs four chains side by side. Spatial update 1.09 / 1.06 s ->
+0.17 / 0.16 s, CNMF stage 2.63 s -> 0.85 s; `f32::mul_add` (2 ns on wasm) stays.
+
 ## 8 h scale run (2026-11-03): motion ok, stream pass fails at the end
 First 8 h (576 files, 576 000 frames) of the real V4 24 h recording in headless Chrome, one
 worker, M1 Max; footprints (503), mean and noise from the 3 h MiniMe run `cafast_3h_fix`.
