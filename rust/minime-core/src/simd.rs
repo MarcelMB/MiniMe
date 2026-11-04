@@ -6,6 +6,15 @@
 
 #![allow(unused_unsafe)]
 
+/// Whether the lanes are real vector registers. Without them (a wasm build without `simd128`,
+/// or a target this module has no intrinsics for) the sorting-network median is slower than the
+/// scalar one, so `preprocess::median_blur` keeps Huang's filter there.
+pub const NATIVE_LANES: bool = cfg!(any(
+    all(target_arch = "wasm32", target_feature = "simd128"),
+    target_arch = "aarch64",
+    target_arch = "x86_64"
+));
+
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 mod imp {
     use core::arch::wasm32 as w;

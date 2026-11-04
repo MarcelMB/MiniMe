@@ -74,7 +74,7 @@ fn job(kernel: &str, new: bool, frame: &[u8], h: usize, w: usize) -> Result<Job,
     let (dy, dx) = (0.37f32, -1.62f32);
     Ok(match (kernel, new) {
         ("median", false) => Box::new(move || median_blur_huang(&f, h, w, 7)),
-        ("median", true) => Box::new(move || median_blur(&f, h, w, 7)),
+        ("median", true) => Box::new(move || crate::median::median7(&f, h, w)),
         ("tophat", false) => Box::new(move || tophat_scalar(&f, h, w, 15)),
         ("tophat", true) => Box::new(move || tophat(&f, h, w, 15)),
         ("gauss_u8", false) => Box::new(move || gauss_u8_scalar(&f, h, w, 1.0)),
