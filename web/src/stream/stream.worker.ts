@@ -1,7 +1,15 @@
 /// <reference lib="webworker" />
 
 import { HandleDir, walk } from "../browser/dir";
-import { foldMaxProj, keepForSession, type WindowParts, windowDir, writeRun, writeWindow } from "../browser/writer";
+import {
+  foldMaxProj,
+  keepForSession,
+  ProgressLog,
+  type WindowParts,
+  windowDir,
+  writeRun,
+  writeWindow,
+} from "../browser/writer";
 import { readNpy } from "./npy";
 import { orderAvis } from "./order";
 import init, {
@@ -37,12 +45,13 @@ let stageLabel = "";
 let current: Stage | null = null;
 let currentBegan = 0;
 const stageSeconds = new Map<string, number>();
-/** Every stage event as a `progress.jsonl` line (one JSON object, as `minime serve` reads them). */
-const progressLines: string[] = [];
+/** Every stage event as a `progress.jsonl` line (one JSON object, as `minime serve` reads them),
+ * written to the run folder as the run goes (`run` gives it the folder). */
+let progressLog = new ProgressLog(null);
 const now = () => Date.now() / 1e3;
 const stageEvent = (e: Extract<FromWorker, { type: "stage" }>) => {
   const { type: _, ...event } = e;
-  progressLines.push(JSON.stringify(event));
+  progressLog.add(event);
   post(e);
 };
 const start = (stage: Stage, frames: number, units: number, height: number, width: number) => {
@@ -71,6 +80,7 @@ const decode = (b: Uint8Array) => JSON.parse(new TextDecoder().decode(b)) as Rec
 
 async function run({ avis, inputs, out: dest, params, rawDir, fps, keepStore }: ToWorker): Promise<void> {
   const tl = performance.now();
+  progressLog = new ProgressLog(dest ? new HandleDir(dest) : null);
   const log = (what: string) =>
     post({ type: "log", message: `${what} at ${((performance.now() - tl) / 1e3).toFixed(1)} s` });
   const wasm = await init();
@@ -488,6 +498,7 @@ async function saveRun(
     throw new Error("a run folder needs the streaming pass: the session has no stream object");
   const pass1 = session.pass1 as Record<string, unknown>;
   const to = new HandleDir(dir);
+  await progressLog.close(); // writeRun writes it once more, then report.json last
   await writeRun(to, {
     session,
     params: { ...DEFAULTS, ...opts.params, raw_dir: opts.rawDir, fps: opts.fps ?? undefined },
@@ -507,7 +518,7 @@ async function saveRun(
     stitch: d.stitch,
     stream: d.stream,
     traces,
-    progress: progressLines,
+    progress: progressLog.lines,
   });
   const root = await navigator.storage.getDirectory();
   await root.removeEntry(TRACE_DIR, { recursive: true }).catch(() => undefined);
@@ -849,9 +860,10 @@ function runCnmf(
 }
 
 self.onmessage = (e: MessageEvent<ToWorker>) => {
-  run(e.data).catch((err: unknown) => {
+  run(e.data).catch(async (err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     end(message, true);
+    await progressLog.close(); // the failed stage reaches the run folder before the worker is stopped
     post({ type: "error", message });
   });
 };

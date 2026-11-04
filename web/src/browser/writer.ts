@@ -192,6 +192,39 @@ export function unitsCsv(a: Csr, H: number, W: number, peak: Float32Array): stri
   return `${lines.join("\n")}\n`;
 }
 
+/** `progress.jsonl` of a run folder while the run goes: each stage event is a line, and the file is
+ * written whole again after it (a few hundred KB at most, at 24 h), one write at a time; events that
+ * come while a write goes are written by the next one. A run that stops halfway (tab closed,
+ * cancelled, failed) so keeps the stages it went through, which the job page shows after a reload.
+ * Without a run folder (`out` null) the lines are only kept. `close` waits for the write that is
+ * going and stops writing: `writeRun` writes the file once more, before `report.json`, which stays
+ * the run folder's last write. */
+export class ProgressLog {
+  readonly lines: string[] = [];
+  private writing: Promise<void> = Promise.resolve();
+  private queued = false;
+  private closed = false;
+  constructor(private out: Dir | null) {}
+
+  add(event: Record<string, unknown>): void {
+    this.lines.push(JSON.stringify(event));
+    const out = this.out;
+    if (!out || this.closed || this.queued) return;
+    this.queued = true;
+    this.writing = this.writing
+      .then(() => {
+        this.queued = false;
+        return out.write("progress.jsonl", `${this.lines.join("\n")}\n`);
+      })
+      .catch(() => undefined); // the file only shows the run's progress: a failed write does not stop it
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    await this.writing;
+  }
+}
+
 export type RunParts = {
   /** `session.json`'s object (window length and each stage's parameters). */
   session: Record<string, unknown>;

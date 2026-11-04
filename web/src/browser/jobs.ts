@@ -384,17 +384,53 @@ export class JobManager {
     for (const l of this.listeners.get(id) ?? []) l(name, data);
   }
 
-  /** Replay the job's events so far, then stream new ones (main's `/jobs/<id>/events`: a
-   * status first, then the stages and log lines, then the status again when it changes). A job
-   * from before a reload has no history: its state is the one status event. */
+  /** Replay the job's events so far, then stream new ones (main's `/jobs/<id>/events`). A job this
+   * tab runs replays what it recorded: a status first, then the stages and log lines, then the
+   * status again when it changes. Any other job (from before a reload, or another tab's) replays
+   * as main does: the stage events of its run folder's `progress.jsonl`, then its status. */
   events(id: string, emit: Emit): () => void {
     const job = this.get(id);
+    let open = true;
+    const send: Emit = (n, d) => {
+      if (open) emit(n, d);
+    };
     const past = this.history.get(id);
-    if (past) for (const [n, d] of past) emit(n, d);
-    else emit("status", { ...job });
+    if (past) for (const [n, d] of past) send(n, d);
+    else
+      void this.progress(job).then((stages) => {
+        for (const e of stages) send("stage", e);
+        send("status", { ...this.get(id) });
+      });
     const set = this.listeners.get(id) ?? new Set<Emit>();
     this.listeners.set(id, set);
-    set.add(emit);
-    return () => void set.delete(emit);
+    set.add(send);
+    return () => {
+      open = false;
+      set.delete(send);
+    };
+  }
+
+  /** `JobManager.progress` of main: the stage events in `<out_dir>/progress.jsonl` from the job's
+   * start on (older lines are an earlier run's), by time. A line that does not parse is skipped (it
+   * is being written); a folder that cannot be read gives none. */
+  private async progress(job: JobRecord): Promise<ProgressEvent[]> {
+    const started = job.started;
+    if (started === null) return [];
+    const text = await this.o.folders
+      .resolve(job.out_dir)
+      .then((d) => d.file("progress.jsonl"))
+      .then((f) => f.text())
+      .catch(() => "");
+    const out: ProgressEvent[] = [];
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const e = JSON.parse(line) as ProgressEvent;
+        if (e && typeof e === "object" && (e.t ?? 0) >= started - 1) out.push(e);
+      } catch {
+        // a line being written
+      }
+    }
+    return out.sort((a, b) => (a.t ?? 0) - (b.t ?? 0));
   }
 }
