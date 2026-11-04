@@ -10,7 +10,7 @@
 
 use crate::corr::{FactorCorr, TracesCorr};
 use crate::factors::Factors;
-use crate::linalg::NormalSolver;
+use crate::linalg::{Madd, NormalSolver};
 use crate::npy;
 use serde::Deserialize;
 
@@ -184,7 +184,7 @@ pub fn a_ty(f: &Factors, a: &Csr) -> Vec<f64> {
                 for (uk, &wk) in u.iter_mut().zip(&tf.w[l * r..(l + 1) * r]) {
                     *uk = v.mul_add(wk, *uk);
                 }
-                m = f64::from(v).mul_add(f64::from(tf.mean[l]), m);
+                m = f64::from(v).madd(f64::from(tf.mean[l]), m);
             }
             for (o, vrow) in low.iter_mut().zip(tf.v.chunks_exact(r.max(1))) {
                 let mut acc = 0f32;
@@ -325,7 +325,7 @@ pub fn group_mean_a(a: &Csr, labels: &[usize]) -> Csr {
                     acc[j] = 0.0;
                     cols.push(j);
                 }
-                acc[j] = v.mul_add(f64::from(x), acc[j]);
+                acc[j] = v.madd(f64::from(x), acc[j]);
             }
         }
         cols.sort_unstable();
@@ -357,7 +357,7 @@ pub fn group_mean_c(c: &[f32], t: usize, labels: &[usize]) -> Vec<f32> {
         acc.fill(0.0);
         for &k in &members {
             for (s, &x) in acc.iter_mut().zip(&c[k * t..(k + 1) * t]) {
-                *s = v.mul_add(f64::from(x), *s);
+                *s = v.madd(f64::from(x), *s);
             }
         }
         out.extend(acc.iter().map(|&x| x as f32));
