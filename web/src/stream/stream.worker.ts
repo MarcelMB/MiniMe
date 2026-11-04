@@ -11,6 +11,7 @@ import {
   writeRun,
   writeWindow,
 } from "../browser/writer";
+import type { ProgressUnit } from "../launch/params";
 import { readNpy } from "./npy";
 import { orderAvis } from "./order";
 import init, {
@@ -66,23 +67,64 @@ const stageEvent = (e: Extract<FromWorker, { type: "stage" }>) => {
 const start = (stage: Stage, frames: number, units: number, height: number, width: number) => {
   current = stage;
   currentBegan = performance.now();
+  local = null;
   post({ type: "start", stage, label: stageLabel, frames, units, height, width });
   stageEvent({ type: "stage", stage, event: "start", t: now(), note: stageLabel || undefined });
 };
-/** End the running stage; returns its seconds. */
+/** End the running stage; returns its seconds. A finished window's stage reports its last
+ * counters first, so the page's rate for the next windows counts all of this window. */
 const end = (note?: string, error = false): number => {
   if (!current) return 0;
   const seconds = (performance.now() - currentBegan) / 1e3;
+  if (!error && local) progress(local.frames, local.frames, seconds);
+  if (local) unitsDone.set(current, (unitsDone.get(current) ?? 0) + local.frames);
+  local = null;
   const total = (stageSeconds.get(current) ?? 0) + seconds;
   stageSeconds.set(current, total);
   stageEvent({ type: "stage", stage: current, event: error ? "error" : "end", t: now(), seconds: total, note });
   current = null;
   return seconds;
 };
+
+/** The window loop's windows (frames each) and the one running: a stage that runs once per
+ * window reports its progress over all of them. Empty outside the window loop. */
+let windowFrames: number[] = [];
+let windowIndex = 0;
+const PER_WINDOW: ReadonlySet<Stage> = new Set(["pass1", "pass2", "seeds", "init", "cnmf"]);
+/** What a stage counts: pass 1 and the session-wide passes frames, pass 2 tiles, and the stages
+ * of one step a step per window. */
+const unitOf = (stage: Stage): ProgressUnit =>
+  stage === "pass2" ? "tiles" : stage === "motion" || stage === "pass1" || stage === "stream" ? "frames" : "steps";
+/** Units of each stage in the windows before this one, and the running stage's own counters. */
+const unitsDone = new Map<Stage, number>();
+let local: { frames: number } | null = null;
+
+/** The running stage's counters in its window → over the whole run (`seconds`: the stage's
+ * time in this window; the earlier windows' is in `stageSeconds`). */
 const progress = (done: number, frames: number, seconds: number, stateMb = 0) => {
   const heap = heapMb();
   heapPeakMb = Math.max(heapPeakMb, heap);
-  if (current) post({ type: "progress", stage: current, done, frames, seconds, stateMb, heapMb: heap });
+  if (!current) return;
+  local = { frames };
+  let [runDone, runFrames, runSeconds] = [done, frames, seconds];
+  if (PER_WINDOW.has(current) && windowFrames.length) {
+    const before = unitsDone.get(current) ?? 0;
+    // a later window holds as many tiles (and steps) as this one, and its own frames
+    const later = windowFrames.slice(windowIndex + 1).reduce((n, f) => n + (current === "pass1" ? f : frames), 0);
+    runDone = before + done;
+    runFrames = before + frames + later;
+    runSeconds = (stageSeconds.get(current) ?? 0) + seconds;
+  }
+  post({
+    type: "progress",
+    stage: current,
+    done: runDone,
+    frames: runFrames,
+    seconds: runSeconds,
+    unit: unitOf(current),
+    stateMb,
+    heapMb: heap,
+  });
 };
 const encode = (v: unknown) => new TextEncoder().encode(JSON.stringify(v, null, 1));
 const decode = (b: Uint8Array) => JSON.parse(new TextDecoder().decode(b)) as Record<string, unknown>;
@@ -407,6 +449,10 @@ async function runWindows(
   const session = files.get("session.json") ?? encode(sessionFor(H, W, opts.params));
   const sessionObj = decode(session);
   const out = new Map<string, Uint8Array>([["session.json", session]]);
+  const length = Number(sessionObj.window_frames);
+  const flat = time_windows(T, length, Uint32Array.from(starts));
+  const n = flat.length / 2;
+  post({ type: "plan", frames: T, windows: n }); // the windows do not depend on the motion
   let total = 0;
   let shifts = files.get("shifts.npy");
   if (!shifts || !files.has("template.npy")) {
@@ -424,10 +470,8 @@ async function runWindows(
     for (const name of ["shifts.npy", "template.npy", "quality.npy"]) out.set(name, m.files.get(name)!);
     out.set("summary_motion.json", m.files.get("summary.json")!);
   }
-  const length = Number(sessionObj.window_frames);
-  const flat = time_windows(T, length, Uint32Array.from(starts));
-  const n = flat.length / 2;
   log(`${segs.length} files, ${T} frames: ${n} windows of about ${length} frames`);
+  windowFrames = Array.from({ length: n }, (_, i) => flat[2 * i + 1] - flat[2 * i]);
   const stitch = new StitchEngine(new Map([["session.json", session]]));
   const root = await scratchDir();
   const windows: Record<string, unknown>[] = [];
@@ -444,6 +488,7 @@ async function runWindows(
     const prefix = `omega_${String(t0).padStart(6, "0")}_`;
     for (const [name, bytes] of files) if (name.startsWith(prefix)) wf.set(`omega_${name.slice(prefix.length)}`, bytes);
     stageLabel = `window ${i + 1}/${n}`;
+    windowIndex = i;
     log(`window ${i + 1}/${n}: frames ${t0}-${t1}`);
     const w = await windowPass1(segs, wf, log, memory, {
       crc: false,
@@ -464,6 +509,7 @@ async function runWindows(
   }
   for (const sg of segs) sg.avi.free();
   stageLabel = "";
+  windowFrames = [];
   const st = runStitchEngine(stitch, log, memory);
   for (const [name, bytes] of st.files) out.set(name, bytes);
   total += st.seconds;

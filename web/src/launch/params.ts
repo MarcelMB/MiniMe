@@ -57,15 +57,15 @@ export type StageRow = {
   note?: string;
 };
 
-/** The running stage's counters (the browser app's worker sends them; `minime serve` does not):
- * `done` of `frames` (tiles in pass 2; 1 of 1 for a stage that is one step) in `seconds`. */
-export type StageProgress = { stage: string; done: number; frames: number; seconds: number };
+/** What a stage's progress counts: frames, pass 2's tiles, or steps (one per window). */
+export type ProgressUnit = "frames" | "tiles" | "steps";
 
-/** Rate and seconds left from the units done since the stage (or window) began. */
-export function rate(done: number, total: number, seconds: number): { perSecond: number; eta: number } {
-  const perSecond = seconds > 0 ? done / seconds : 0;
-  return { perSecond, eta: perSecond > 0 ? (total - done) / perSecond : Number.POSITIVE_INFINITY };
-}
+/** A stage's counters over the whole run (the browser app's worker sends them; `minime serve`
+ * does not): `done` of `frames` units in `seconds` of the stage's own time (all windows). */
+export type StageProgress = { stage: string; done: number; frames: number; seconds: number; unit: ProgressUnit };
+
+/** The run's frames and windows (the browser app's worker sends it once the windows are known). */
+export type RunPlan = { frames: number; windows: number };
 
 export function stageRows(events: ProgressEvent[]): StageRow[] {
   const rows = new Map<string, StageRow>();

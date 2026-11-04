@@ -1,4 +1,4 @@
-import { isFinal, type ProgressEvent, type StageProgress } from "../launch/params";
+import { isFinal, type ProgressEvent, type RunPlan, type StageProgress } from "../launch/params";
 import type { FromWorker, ToWorker } from "../stream/protocol";
 import { DEFAULTS, unusedParams, WINDOW_FRAMES } from "../stream/session";
 import type { Job } from "../types";
@@ -142,7 +142,8 @@ export class JobManager {
   private holding = false;
   private history = new Map<string, [string, unknown][]>();
   private listeners = new Map<string, Set<Emit>>();
-  private latest = new Map<string, StageProgress>();
+  /** Per job, each stage's latest counters (the page's rates for the run's time left). */
+  private latest = new Map<string, Map<string, StageProgress>>();
   private worker: Worker | null = null;
   private wake: WakeLockSentinel | null = null;
   private asking = false;
@@ -463,8 +464,11 @@ export class JobManager {
       const { type: _, ...event } = m; // `progress.jsonl`'s dict, as main's events carry it
       this.record(job.id, "stage", event satisfies ProgressEvent);
     } else if (m.type === "progress") {
-      const { stage, done, frames, seconds } = m;
-      this.live(job.id, { stage, done, frames, seconds } satisfies StageProgress);
+      const { stage, done, frames, seconds, unit } = m;
+      this.live(job.id, { stage, done, frames, seconds, unit } satisfies StageProgress);
+    } else if (m.type === "plan") {
+      const { type: _, ...plan } = m;
+      this.record(job.id, "plan", plan satisfies RunPlan);
     } else if (m.type === "log") this.record(job.id, "log", m.message);
     else if (m.type === "done" || m.type === "error") {
       job.status = m.type === "done" ? "done" : "failed";
@@ -512,10 +516,13 @@ export class JobManager {
     for (const l of this.listeners.get(id) ?? []) l(name, data);
   }
 
-  /** The running stage's counters: sent to the open job pages and kept only as the latest one
-   * (a page opened later gets it after the replay), not in the history or `progress.jsonl`. */
+  /** The running stage's counters: sent to the open job pages and kept only as each stage's latest
+   * (a page opened later gets them after the replay), not in the history or `progress.jsonl`. */
   private live(id: string, p: StageProgress): void {
-    this.latest.set(id, p);
+    const stages = this.latest.get(id) ?? new Map<string, StageProgress>();
+    this.latest.set(id, stages);
+    stages.delete(p.stage); // the running stage last: it is the page's live one
+    stages.set(p.stage, p);
     for (const l of this.listeners.get(id) ?? []) l("progress", p);
   }
 
@@ -532,8 +539,7 @@ export class JobManager {
     const past = this.history.get(id);
     if (past) {
       for (const [n, d] of past) send(n, d);
-      const p = this.latest.get(id);
-      if (p && !isFinal(job.status)) send("progress", p);
+      if (!isFinal(job.status)) for (const p of this.latest.get(id)?.values() ?? []) send("progress", p);
     } else
       void this.progress(job).then((stages) => {
         for (const e of stages) send("stage", e);
