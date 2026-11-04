@@ -100,11 +100,11 @@ mod imp {
         w::i32x4_shuffle::<2, 6, 3, 7>(a, b)
     }
 
-    /// # Safety
-    /// `p` must point to 16 readable bytes.
+    /// The sixteen bytes as floats.
     #[inline(always)]
-    pub unsafe fn widen16(p: *const u8) -> [F4; 4] {
-        let v = unsafe { (p as *const w::v128).read_unaligned() };
+    pub fn widen16(b: &[u8; 16]) -> [F4; 4] {
+        // SAFETY: `b` is 16 readable bytes.
+        let v = unsafe { (b.as_ptr() as *const w::v128).read_unaligned() };
         let (l, h) = (w::u16x8_extend_low_u8x16(v), w::u16x8_extend_high_u8x16(v));
         [
             w::f32x4_convert_u32x4(w::u32x4_extend_low_u16x8(l)),
@@ -218,12 +218,12 @@ mod imp {
         unsafe { a::vzip2q_f32(x, y) }
     }
 
-    /// # Safety
-    /// `p` must point to 16 readable bytes.
+    /// The sixteen bytes as floats.
     #[inline(always)]
-    pub unsafe fn widen16(p: *const u8) -> [F4; 4] {
+    pub fn widen16(b: &[u8; 16]) -> [F4; 4] {
+        // SAFETY: `b` is 16 readable bytes.
         unsafe {
-            let v = a::vld1q_u8(p);
+            let v = a::vld1q_u8(b.as_ptr());
             let (l, h) = (a::vmovl_u8(a::vget_low_u8(v)), a::vmovl_high_u8(v));
             [
                 a::vcvtq_f32_u32(a::vmovl_u16(a::vget_low_u16(l))),
@@ -336,11 +336,10 @@ mod imp {
         [a[2], b[2], a[3], b[3]]
     }
 
-    /// # Safety
-    /// `p` must point to 16 readable bytes.
+    /// The sixteen bytes as floats.
     #[inline(always)]
-    pub unsafe fn widen16(p: *const u8) -> [F4; 4] {
-        std::array::from_fn(|i| std::array::from_fn(|j| f32::from(unsafe { *p.add(4 * i + j) })))
+    pub fn widen16(b: &[u8; 16]) -> [F4; 4] {
+        std::array::from_fn(|i| std::array::from_fn(|j| f32::from(b[4 * i + j])))
     }
 
     /// Sixteen floats rounded half to even and clamped to `0..=255` (NaN is 0), as bytes.
@@ -371,17 +370,6 @@ impl D4 {
         D4(d_splat(f64::from(x)), d_splat(f64::from(x)))
     }
 
-    /// The `f64` product (exact for two `f32`s).
-    #[inline(always)]
-    pub fn mul(self, o: D4) -> D4 {
-        D4(d_mul(self.0, o.0), d_mul(self.1, o.1))
-    }
-
-    #[inline(always)]
-    pub fn add(self, o: D4) -> D4 {
-        D4(d_add(self.0, o.0), d_add(self.1, o.1))
-    }
-
     /// Each lane rounded to `f32` (kept as an `f64`).
     #[inline(always)]
     pub fn round32(self) -> D4 {
@@ -395,10 +383,30 @@ impl D4 {
     }
 }
 
+/// The `f64` product (exact for two `f32`s).
+impl std::ops::Mul for D4 {
+    type Output = D4;
+
+    #[inline(always)]
+    fn mul(self, o: D4) -> D4 {
+        D4(d_mul(self.0, o.0), d_mul(self.1, o.1))
+    }
+}
+
+/// The `f64` sum (one rounding, to 53 bits).
+impl std::ops::Add for D4 {
+    type Output = D4;
+
+    #[inline(always)]
+    fn add(self, o: D4) -> D4 {
+        D4(d_add(self.0, o.0), d_add(self.1, o.1))
+    }
+}
+
 /// `preprocess::fma` on four lanes.
 #[inline(always)]
 pub fn fma4(a: F4, b: F4, c: F4) -> F4 {
-    D4::from_f4(a).mul(D4::from_f4(b)).add(D4::from_f4(c)).to_f4()
+    (D4::from_f4(a) * D4::from_f4(b) + D4::from_f4(c)).to_f4()
 }
 
 /// `a[i..i + 4]` as a vector. The caller guarantees `i + 4 <= a.len()`.

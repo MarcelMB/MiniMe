@@ -7,9 +7,10 @@ is columns o..o+6 = `t3(o)` + `c(o+3)` + `t3(o+4)`, whose 25th smallest value is
 taken as min over i of max(L_i, U_(25 - i)) of the sorted lists L = t3(o) and U = merge(t3(o+4),
 c(o+3)). Each stage is a straight-line function over 16-lane `u8` vectors (one lane per output
 pixel); constants are folded, equal nodes shared and unused ones dropped. The 0-1 principle
-(exhaustive, for sorted inputs) and random 8-bit windows check every network before it is written.
+(exhaustive over all sorted 0-1 inputs) and random 8-bit windows check every network before it is
+written.
 
-    python3 tools/gen_median_net.py > src/median_net.rs
+    python3 tools/gen_median_net.py > src/median_net.rs && cargo fmt
 """
 import random
 import sys
@@ -140,21 +141,30 @@ def stage_select():
 
 
 def check(net, outs, ins, kind):
-    names = lambda lst: [f"{n}" for n in lst]
-    rnd = random.Random(1)
-    flat = [(net.nodes[i][1]) for g in ins for i in (g if isinstance(g, list) else [g])]
-    for _ in range(4000):
-        env, lists = {}, []
-        for g in ins:
-            vals = sorted(rnd.choice([rnd.randrange(256), rnd.randrange(4), rnd.randrange(256)]) for _ in g) if kind != "sort7" else [rnd.randrange(256) for _ in g]
-            lists.append(vals)
-            env.update({net.nodes[i][1]: v for i, v in zip(g, vals)})
+    """Exhaustive 0-1 inputs (sorted lists of 0s then 1s; all 7-bit patterns for `sort7`), then
+    random 8-bit values with many ties."""
+    import itertools
+
+    def run(lists):
+        env = {net.nodes[i][1]: v for g, vals in zip(ins, lists) for i, v in zip(g, vals)}
         got = net.evaluate(outs, env)
         allv = sorted(sum(lists, []))
-        if kind == "select":
-            assert got == [allv[24]], (got, allv[24])
-        else:
-            assert got == allv, (kind, got, allv)
+        want = [allv[24]] if kind == "select" else allv
+        assert got == want, (kind, lists, got, want)
+
+    if kind == "sort7":
+        for bits in itertools.product((0, 1), repeat=7):
+            run([list(bits)])
+    else:
+        for cuts in itertools.product(*[range(len(g) + 1) for g in ins]):
+            run([[0] * c + [1] * (len(g) - c) for g, c in zip(ins, cuts)])
+    rnd = random.Random(1)
+    for _ in range(4000):
+        lists = []
+        for g in ins:
+            vals = [rnd.choice([rnd.randrange(256), rnd.randrange(4)]) for _ in g]
+            lists.append(vals if kind == "sort7" else sorted(vals))
+        run(lists)
 
 
 def emit(name, doc, net, ins, outs, sig):

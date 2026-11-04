@@ -187,7 +187,7 @@ pub fn gauss_f32(src: &[f32], h: usize, w: usize, sigma: f64) -> Vec<f32> {
             let mut acc = [D4::splat(0.0); CHAINS];
             for (j, kj) in kd.iter().enumerate() {
                 for (c, a) in acc.iter_mut().enumerate().take(n) {
-                    *a = D4::from_f4(ld(&line, x + 4 * c + j)).mul(*kj).add(*a).round32();
+                    *a = (D4::from_f4(ld(&line, x + 4 * c + j)) * *kj + *a).round32();
                 }
             }
             for (c, a) in acc.iter().enumerate().take(n) {
@@ -223,7 +223,7 @@ pub fn gauss_f32(src: &[f32], h: usize, w: usize, sigma: f64) -> Vec<f32> {
             for (j, &(a, b)) in pairs.iter().enumerate() {
                 for (c, v) in acc.iter_mut().enumerate().take(n) {
                     let t = add(ld(&rows, a + x + 4 * c), ld(&rows, b + x + 4 * c));
-                    *v = D4::from_f4(t).mul(kd[r + j + 1]).add(*v).round32();
+                    *v = (D4::from_f4(t) * kd[r + j + 1] + *v).round32();
                 }
             }
             for (c, v) in acc.iter().enumerate().take(n) {
@@ -282,15 +282,13 @@ pub fn gauss_f32_scalar(src: &[f32], h: usize, w: usize, sigma: f64) -> Vec<f32>
 /// even `h`, `w`: rounded mean of each 2 x 2 block.
 pub fn area_down2_u8(src: &[u8], h: usize, w: usize) -> Vec<u8> {
     let (oh, ow) = (h / 2, w / 2);
-    let mut out = Vec::with_capacity(oh * ow);
-    for y in 0..oh {
-        let (r0, r1) = (&src[2 * y * w..], &src[(2 * y + 1) * w..]);
-        for x in 0..ow {
-            let s = u16::from(r0[2 * x])
-                + u16::from(r0[2 * x + 1])
-                + u16::from(r1[2 * x])
-                + u16::from(r1[2 * x + 1]);
-            out.push(((s + 2) >> 2) as u8);
+    let mut out = vec![0u8; oh * ow];
+    for (y, o) in out.chunks_exact_mut(ow.max(1)).enumerate().take(oh) {
+        let r0 = &src[2 * y * w..2 * y * w + 2 * ow];
+        let r1 = &src[(2 * y + 1) * w..(2 * y + 1) * w + 2 * ow];
+        for ((o, a), b) in o.iter_mut().zip(r0.as_chunks::<2>().0).zip(r1.as_chunks::<2>().0) {
+            let s = u16::from(a[0]) + u16::from(a[1]) + u16::from(b[0]) + u16::from(b[1]);
+            *o = ((s + 2) >> 2) as u8;
         }
     }
     out
@@ -299,11 +297,12 @@ pub fn area_down2_u8(src: &[u8], h: usize, w: usize) -> Vec<u8> {
 /// The same on float32: `((a + b) + (c + d)) * 0.25`.
 pub fn area_down2_f32(src: &[f32], h: usize, w: usize) -> Vec<f32> {
     let (oh, ow) = (h / 2, w / 2);
-    let mut out = Vec::with_capacity(oh * ow);
-    for y in 0..oh {
-        let (r0, r1) = (&src[2 * y * w..], &src[(2 * y + 1) * w..]);
-        for x in 0..ow {
-            out.push(((r0[2 * x] + r0[2 * x + 1]) + (r1[2 * x] + r1[2 * x + 1])) * 0.25);
+    let mut out = vec![0f32; oh * ow];
+    for (y, o) in out.chunks_exact_mut(ow.max(1)).enumerate().take(oh) {
+        let r0 = &src[2 * y * w..2 * y * w + 2 * ow];
+        let r1 = &src[(2 * y + 1) * w..(2 * y + 1) * w + 2 * ow];
+        for ((o, a), b) in o.iter_mut().zip(r0.as_chunks::<2>().0).zip(r1.as_chunks::<2>().0) {
+            *o = ((a[0] + a[1]) + (b[0] + b[1])) * 0.25;
         }
     }
     out
@@ -330,10 +329,10 @@ pub fn resize_up2_f32(src: &[f32], h: usize, w: usize) -> Vec<f32> {
     #[inline(always)]
     fn l2_lanes(a: D4, b: D4, c: D4, d: D4) -> F4 {
         let (w0, w1, w3) = (D4::splat(W0), D4::splat(W1), D4::splat(W3));
-        let t = a.mul(w0).round32();
-        let t = b.mul(w1).add(t).round32();
-        let t = c.mul(w1).add(t).round32();
-        d.mul(w3).add(t).to_f4()
+        let t = (a * w0).round32();
+        let t = (b * w1 + t).round32();
+        let t = (c * w1 + t).round32();
+        (d * w3 + t).to_f4()
     }
     let (oh, ow) = (2 * h, 2 * w);
     let vec_end = (w - 1) / 4 * 4;
@@ -526,6 +525,36 @@ mod tests {
         let f = noise_f32(300 * 300, 8);
         let (a, b) = (resize_up2_f32(&f, 300, 300), resize_up2_f32_scalar(&f, 300, 300));
         assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
+    }
+
+    #[test]
+    fn area_down2_matches_the_per_pixel_formula() {
+        for (h, w) in [(1, 1), (2, 2), (3, 5), (8, 6), (9, 17), (600, 600), (601, 599)] {
+            let f = noise(h * w, 4, 256);
+            let ff = noise_f32(h * w, 4);
+            let (oh, ow) = (h / 2, w / 2);
+            let mut want_u8 = Vec::new();
+            let mut want_f32 = Vec::new();
+            for y in 0..oh {
+                for x in 0..ow {
+                    let i = [
+                        2 * y * w + 2 * x,
+                        2 * y * w + 2 * x + 1,
+                        (2 * y + 1) * w + 2 * x,
+                        (2 * y + 1) * w + 2 * x + 1,
+                    ];
+                    let s: u16 = i.iter().map(|&k| u16::from(f[k])).sum();
+                    want_u8.push(((s + 2) >> 2) as u8);
+                    want_f32.push(((ff[i[0]] + ff[i[1]]) + (ff[i[2]] + ff[i[3]])) * 0.25);
+                }
+            }
+            assert_eq!(area_down2_u8(&f, h, w), want_u8, "{h}x{w}");
+            assert!(same_bits_f32(&area_down2_f32(&ff, h, w), &want_f32), "{h}x{w}");
+        }
+    }
+
+    fn same_bits_f32(a: &[f32], b: &[f32]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
     }
 
     #[test]

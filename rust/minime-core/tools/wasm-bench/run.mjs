@@ -32,6 +32,6 @@ await page.waitForFunction(() => window.ready);
 console.log(`Chrome ${browser.version()}, ${frames.length / 360000} frames`);
 const res = await page.evaluate((k) => window.run(k, 7, 30, 600, 600), kernels);
 for (const r of res)
-  console.log(`${r.kernel.padEnd(14)} old ${r.old.toFixed(3).padStart(8)} ms  new ${r.new.toFixed(3).padStart(8)} ms  ${(r.old / r.new).toFixed(2)}x  identical on ${r.identical_on_frames} frames`);
+  console.log(`${r.kernel.padEnd(14)} old ${r.old.toFixed(3).padStart(8)} ms  new ${r.new.toFixed(3).padStart(8)} ms  ${(r.old / r.new).toFixed(2)}x  identical on ${r.identical_on_frames} frames  hash ${r.hash}`);
 await browser.close();
 server.close();

@@ -46,15 +46,14 @@ impl Rows for U8Rows<'_> {
     fn row<'a>(&'a self, y: usize, buf: &'a mut Vec<f32>) -> &'a [f32] {
         let line = &self.src[y * self.w..(y + 1) * self.w];
         buf.resize(line.len(), 0.0);
-        let mut chunks = line.chunks_exact(16);
-        for (c, o) in (&mut chunks).zip(buf.chunks_exact_mut(16)) {
-            // SAFETY: `c` is 16 readable bytes.
-            for (q, v) in o.chunks_exact_mut(4).zip(unsafe { widen16(c.as_ptr()) }) {
-                st(q, 0, v);
+        let (blocks, rest) = line.as_chunks::<16>();
+        let (out, out_rest) = buf.as_chunks_mut::<16>();
+        for (b, o) in blocks.iter().zip(out) {
+            for (i, v) in widen16(b).into_iter().enumerate() {
+                st(o, 4 * i, v);
             }
         }
-        let done = line.len() - chunks.remainder().len();
-        for (o, &v) in buf[done..].iter_mut().zip(chunks.remainder()) {
+        for (o, &v) in out_rest.iter_mut().zip(rest) {
             *o = f32::from(v);
         }
         buf
@@ -101,6 +100,9 @@ fn columns(w: usize, dx: f32) -> Cols {
 /// a time to `put(y, row)`.
 fn warp<R: Rows>(src: &R, h: usize, dy: f32, dx: f32, mut put: impl FnMut(usize, &[f32])) {
     let w = src.width();
+    if w == 0 {
+        return;
+    }
     let cols = columns(w, dx);
     let (mut buf0, mut buf1) = (Vec::new(), Vec::new());
     let mut out = vec![0f32; w];
@@ -129,9 +131,9 @@ fn warp<R: Rows>(src: &R, h: usize, dy: f32, dx: f32, mut put: impl FnMut(usize,
                     let s = (x as i64 + cols.c) as usize;
                     let (a, b, c, d) = (ld(r0, s), ld(r0, s + 1), ld(r1, s), ld(r1, s + 1));
                     let axd = D4::from_f4(ld(&cols.ax, x));
-                    let top = D4::from_f4(sub(b, a)).mul(axd).add(D4::from_f4(a)).to_f4();
-                    let bot = D4::from_f4(sub(d, c)).mul(axd).add(D4::from_f4(c)).to_f4();
-                    let v = D4::from_f4(sub(bot, top)).mul(ayd).add(D4::from_f4(top)).to_f4();
+                    let top = (D4::from_f4(sub(b, a)) * axd + D4::from_f4(a)).to_f4();
+                    let bot = (D4::from_f4(sub(d, c)) * axd + D4::from_f4(c)).to_f4();
+                    let v = (D4::from_f4(sub(bot, top)) * ayd + D4::from_f4(top)).to_f4();
                     st(&mut out, x, v);
                 }
                 cols.xa..cols.xb
@@ -150,14 +152,12 @@ pub fn shift_u8(src: &[u8], h: usize, w: usize, dy: f32, dx: f32) -> Vec<u8> {
     assert_eq!(src.len(), h * w);
     let mut out = vec![0u8; h * w];
     warp(&U8Rows { src, w }, h, dy, dx, |y, row| {
-        let o = &mut out[y * w..(y + 1) * w];
-        let mut chunks = row.chunks_exact(16);
-        let mut done = 0;
-        for c in &mut chunks {
-            o[done..done + 16].copy_from_slice(&narrow16(std::array::from_fn(|i| ld(c, 4 * i))));
-            done += 16;
+        let (blocks, rest) = row.as_chunks::<16>();
+        let (o, o_rest) = out[y * w..(y + 1) * w].as_chunks_mut::<16>();
+        for (b, o) in blocks.iter().zip(o) {
+            *o = narrow16(std::array::from_fn(|i| ld(b, 4 * i)));
         }
-        for (o, &v) in o[done..].iter_mut().zip(chunks.remainder()) {
+        for (o, &v) in o_rest.iter_mut().zip(rest) {
             *o = v.round_ties_even().clamp(0.0, 255.0) as u8;
         }
     });
