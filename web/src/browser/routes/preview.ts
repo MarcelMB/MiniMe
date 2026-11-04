@@ -76,10 +76,18 @@ async function open(raw: unknown): Promise<{ v: RawVideo; t: number; params: str
   return { v, t: b.t, params: JSON.stringify(sessionFor(v.height, v.width, params).pass1) };
 }
 
-/** What the wasm core refuses (an odd frame size for the band-pass image, a parameter of the wrong
- * type) is the request's fault. */
-function refused(e: unknown): HttpError {
-  return e instanceof HttpError ? e : new HttpError(400, e instanceof Error ? e.message : String(e));
+/** Runs a wasm export for the request. What it returns as an error (a `JsError`, a plain `Error`:
+ * an odd frame size for the band-pass image, a parameter of the wrong type) is the request's
+ * fault, 400 with its message. A trap (`WebAssembly.RuntimeError`, which may leave the instance
+ * unusable), an allocation failure (`RangeError`) or a call that went wrong (`TypeError`) is not:
+ * it propagates and the router answers 500. */
+export function wasmCall<T>(run: () => T): T {
+  try {
+    return run();
+  } catch (e) {
+    if (e instanceof Error && Object.getPrototypeOf(e) === Error.prototype) throw new HttpError(400, e.message);
+    throw e;
+  }
 }
 
 /** `preview.clip_start` and `preview.read_clip`'s length: the first frame of an `n`-frame clip
@@ -103,12 +111,7 @@ router.add("POST", "/raw/preview", async (q) => {
   const { v, t, params } = await open(q.body);
   const frame = await v.frame(t);
   const m = await wasm();
-  let out: Uint8Array;
-  try {
-    out = m.preview_panels(frame, v.height, v.width, params);
-  } catch (e) {
-    throw refused(e);
-  }
+  const out = wasmCall(() => m.preview_panels(frame, v.height, v.width, params));
   return { array: { shape: [4, v.height, v.width], dtype: "uint8", data: out } };
 });
 
@@ -126,9 +129,5 @@ router.add("POST", "/raw/motion", async (q) => {
     throw new HttpError(400, `cannot read frame ${t0} of the videos: ${e instanceof Error ? e.message : e}`);
   }
   const m = await wasm();
-  try {
-    return { json: JSON.parse(m.motion_check(clip, n, v.height, v.width, t0, params)) };
-  } catch (e) {
-    throw refused(e);
-  }
+  return { json: JSON.parse(wasmCall(() => m.motion_check(clip, n, v.height, v.width, t0, params))) };
 });

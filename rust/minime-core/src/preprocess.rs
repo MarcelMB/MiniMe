@@ -3,7 +3,16 @@
 //! (OpenCV 5: float32 lerp, round half to even, zeros outside) and `cv2.morphologyEx`
 //! MORPH_TOPHAT with a square kernel (border pixels ignored by erode and dilate).
 
-/// Median filter with a `k x k` window (odd `k`), replicated border.
+/// `median_blur`'s precondition: `cv2.medianBlur` takes odd sizes only (`k <= 1` skips the
+/// filter). Whatever builds the parameters of a run or a preview checks it before the first frame.
+pub fn check_median_ksize(k: usize) -> Result<(), String> {
+    if k > 1 && k.is_multiple_of(2) {
+        return Err(format!("median_ksize must be odd, got {k}"));
+    }
+    Ok(())
+}
+
+/// Median filter with a `k x k` window (odd `k`, see `check_median_ksize`), replicated border.
 ///
 /// Huang's sliding histogram per row: the window moves one column at a time and the
 /// median is tracked with the count of values below it, so it moves only a few levels

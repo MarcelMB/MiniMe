@@ -4,7 +4,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { postArray, postJSON } from "../api";
 import { Folders } from "./folders";
 import { memoryKV } from "./kv";
-import { clipStart } from "./routes/preview";
+import { HttpError } from "./router";
+import { clipStart, wasmCall } from "./routes/preview";
 import { configure } from "./state";
 import { expectClose, loadContract } from "./testing/contract";
 import { DATA, setupE2eRun } from "./testing/e2eRun";
@@ -113,6 +114,25 @@ describe("the preview answers as main does when the request is wrong", () => {
     });
   });
 
+  it("rejects an even median window with 400: cv2.medianBlur takes odd sizes only", async () => {
+    for (const k of [4, 6, 8]) {
+      const want = { status: 400, message: `median_ksize must be odd, got ${k}` };
+      await expect(ask({ params: { median_ksize: k } })).rejects.toMatchObject(want);
+      await expect(postJSON("/raw/motion", { raw_dir: raw, t: 0, params: { median_ksize: k } })).rejects.toMatchObject(
+        want,
+      );
+    }
+    // a parameter of the wrong type is the wasm core's refusal, also the request's fault
+    await expect(ask({ params: { median_ksize: "seven" } })).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringMatching(/^params: invalid type/),
+    });
+    // 1 skips the median, odd sizes filter
+    for (const k of [1, 3, 5]) {
+      await expect(ask({ params: { median_ksize: k } })).resolves.toMatchObject({ shape: [4, 64, 64] });
+    }
+  });
+
   it("answers a folder without videos with 404, as /raw/info does, and one that is not known too", async () => {
     const top = mkdtempSync(`${tmpdir()}/preview-`);
     const folders = new Folders(memoryKV(), async () => null);
@@ -125,5 +145,35 @@ describe("the preview answers as main does when the request is wrong", () => {
     await expect(postJSON("/raw/motion", { raw_dir: "nowhere/raw", t: 0, params: {} })).rejects.toMatchObject({
       status: 404,
     });
+  });
+});
+
+describe("wasmCall", () => {
+  it("answers 400 with the message of an error the export returns (a JsError)", () => {
+    expect(() =>
+      wasmCall(() => {
+        throw new Error("params: missing field `median_ksize`");
+      }),
+    ).toThrow(expect.objectContaining({ status: 400, message: "params: missing field `median_ksize`" }));
+    expect(wasmCall(() => 7)).toBe(7);
+  });
+
+  it("lets a trap, an allocation failure and a call that went wrong through, for the router's 500", () => {
+    for (const e of [
+      new WebAssembly.RuntimeError("unreachable"),
+      new RangeError("out of memory"),
+      new TypeError("x"),
+    ]) {
+      let got: unknown;
+      try {
+        wasmCall(() => {
+          throw e;
+        });
+      } catch (x) {
+        got = x;
+      }
+      expect(got).toBe(e);
+      expect(got).not.toBeInstanceOf(HttpError);
+    }
   });
 });

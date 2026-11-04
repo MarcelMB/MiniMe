@@ -6,7 +6,7 @@
 //! it the sub-pixel shift, agrees to float32 rounding (the integer peak should match).
 
 use crate::filters::{area_down2_f32, area_down2_u8, gauss_f32, gauss_u8, resize_up2_f32};
-use crate::preprocess::{median_blur, shift_f32, tophat};
+use crate::preprocess::{check_median_ksize, median_blur, shift_f32, tophat};
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
@@ -287,6 +287,7 @@ pub struct TemplateBuilder {
 
 impl TemplateBuilder {
     pub fn new(p: &MotionParams, n: usize) -> Result<Self, String> {
+        check_median_ksize(p.median_ksize)?;
         if n == 0 {
             return Err("no frames for the motion template".into());
         }
@@ -375,6 +376,7 @@ impl Motion {
     /// A template from a stored prepared template image (`motion.template_image`, as in
     /// a sidecar), like `pipeline._template_from_sidecar`.
     pub fn from_template_image(p: &MotionParams, img: Vec<f32>) -> Result<Self, String> {
+        check_median_ksize(p.median_ksize)?;
         let corr = Correlator::new(p.h, p.w, p.motion_down)?;
         if img.len() != corr.ph * corr.pw {
             return Err(format!(
@@ -501,5 +503,43 @@ mod tests {
         let m = Motion::from_image(corr, tmpl, 20);
         let [dy, dx] = m.estimate(&Reg::F32(shift_f32(&img, h, w, 4.0, -6.0)));
         assert!((dy + 4.0).abs() < 0.5 && (dx - 6.0).abs() < 0.5, "{dy} {dx}");
+    }
+
+    fn params(median_ksize: usize) -> MotionParams {
+        MotionParams {
+            h: 64,
+            w: 64,
+            median_ksize,
+            tophat_wnd: 15,
+            motion_max_shift: 20,
+            motion_down: 2,
+            template_frames: 200,
+            motion_before_tophat: true,
+            motion_bandpass: [1.0, 6.0],
+        }
+    }
+
+    #[test]
+    fn the_template_and_the_stored_template_refuse_an_even_median_size() {
+        // `median_blur` (cv2.medianBlur) takes odd sizes only; a run must fail before it filters
+        for k in [4, 6, 8] {
+            let want = format!("median_ksize must be odd, got {k}");
+            assert_eq!(
+                TemplateBuilder::new(&params(k), 10).err().as_deref(),
+                Some(want.as_str())
+            );
+            let img = vec![0f32; 32 * 32];
+            assert_eq!(
+                Motion::from_template_image(&params(k), img).err().as_deref(),
+                Some(want.as_str())
+            );
+        }
+        for k in [0, 1, 3, 7] {
+            assert!(TemplateBuilder::new(&params(k), 10).is_ok(), "{k}");
+            assert!(
+                Motion::from_template_image(&params(k), vec![0f32; 32 * 32]).is_ok(),
+                "{k}"
+            );
+        }
     }
 }

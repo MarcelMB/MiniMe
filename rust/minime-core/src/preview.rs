@@ -3,7 +3,7 @@
 //! check on a short clip. The steps are the ones pass 1 runs (`preprocess`, `motion`).
 
 use crate::motion::{registration_from_denoised, MotionParams, Reg, TemplateBuilder};
-use crate::preprocess::{median_blur, tophat};
+use crate::preprocess::{check_median_ksize, median_blur, tophat};
 use serde::Serialize;
 
 /// `preview.PANELS`: the order of the four panels of `frame_panels`.
@@ -30,12 +30,13 @@ pub fn motion_params(json: &str, h: usize, w: usize) -> Result<MotionParams, Str
     serde_json::from_value(v).map_err(|e| format!("params: {e}"))
 }
 
-/// What `registration_from_denoised` would index out of bounds on: no pixels, or an odd size
-/// for the band-pass image (`motion::bandpass` halves the frame).
-fn check_size(p: &MotionParams) -> Result<(), String> {
+/// What the steps would index out of bounds on or filter into garbage: no pixels, an even median
+/// window, or an odd size for the band-pass image (`motion::bandpass` halves the frame).
+fn check_params(p: &MotionParams) -> Result<(), String> {
     if p.h == 0 || p.w == 0 {
         return Err(format!("{} x {} frames hold no pixels", p.h, p.w));
     }
+    check_median_ksize(p.median_ksize)?;
     if p.motion_before_tophat && !(p.h.is_multiple_of(2) && p.w.is_multiple_of(2)) {
         return Err(format!(
             "{} x {} frames: the band-pass registration image needs an even size",
@@ -47,7 +48,7 @@ fn check_size(p: &MotionParams) -> Result<(), String> {
 
 /// `preview.frame_panels` of one raw frame (`h * w` uint8): `(4, h, w)` uint8, in `PANELS` order.
 pub fn frame_panels(frame: &[u8], p: &MotionParams) -> Result<Vec<u8>, String> {
-    check_size(p)?;
+    check_params(p)?;
     let px = p.h * p.w;
     if frame.len() != px {
         return Err(format!(
@@ -75,7 +76,7 @@ pub fn frame_panels(frame: &[u8], p: &MotionParams) -> Result<Vec<u8>, String> {
 /// at frame `t0`: rigid shifts against a template built from the clip itself, and the median
 /// frame quality. As in Python, the quality is of the registration images before the shift.
 pub fn motion_check(clip: &[u8], n: usize, t0: usize, p: &MotionParams) -> Result<MotionCheck, String> {
-    check_size(p)?;
+    check_params(p)?;
     let px = p.h * p.w;
     if n == 0 {
         return Err("the clip has no frames".into());
@@ -289,5 +290,25 @@ mod tests {
         assert_eq!(p.tophat_wnd, 100);
         let frame: Vec<u8> = (0..64 * 64).map(|i| (i * 7 % 251) as u8).collect();
         assert_eq!(frame_panels(&frame, &p).unwrap().len(), 4 * 64 * 64);
+    }
+
+    #[test]
+    fn an_even_median_size_is_an_error_not_a_blur_of_nothing() {
+        // cv2.medianBlur takes odd sizes only; `median_blur` would panic (debug) or return garbage
+        let frame: Vec<u8> = (0..64 * 64).map(|i| (i * 7 % 251) as u8).collect();
+        let with = |k: usize| {
+            let json = DEFAULT.replace(r#""median_ksize": 7"#, &format!(r#""median_ksize": {k}"#));
+            motion_params(&json, 64, 64).unwrap()
+        };
+        for k in [4, 6, 8, 100] {
+            let want = format!("median_ksize must be odd, got {k}");
+            assert_eq!(frame_panels(&frame, &with(k)).unwrap_err(), want);
+            assert_eq!(motion_check(&frame, 1, 0, &with(k)).unwrap_err(), want);
+        }
+        // 0 and 1 skip the filter, odd sizes filter: as before
+        for k in [0, 1, 3, 5, 9] {
+            assert!(frame_panels(&frame, &with(k)).is_ok(), "{k}");
+            assert!(motion_check(&frame, 1, 0, &with(k)).is_ok(), "{k}");
+        }
     }
 }
