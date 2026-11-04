@@ -32,7 +32,7 @@ const STAGES: Record<string, string> = {
   cnmf: "CNMF",
   initA: "init footprints",
   initC: "init traces",
-  // the browser run's stages (#/stream)
+  // the browser run's stages (New run in the browser build)
   motion: "Motion · template + shifts",
   seeds: "Seeds · PNR + merge",
   init: "Init · footprints, traces, merge",

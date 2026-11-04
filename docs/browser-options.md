@@ -92,7 +92,8 @@ Batch baseline: 262 units, recall 0.53, precision 0.94, F1 0.68, trace corr 0.86
   size, so that overlapping pairs survive.
 - [ ] Align windows to seed windows, so windows the length of `seeds_wnd` work.
 - [x] Browser slice 1 (2026-11-02): raw AVI → preprocessing → traces + sums → footprint
-  update, Rust → wasm in a worker (`#/stream`), matches Python exactly; see `docs/browser-app.md`.
+  update, Rust → wasm in a worker (first driven by a temporary `#/stream` page, now by New
+  run), matches Python exactly; see `docs/browser-app.md`.
 - [ ] Browser: port discovery (full window pipeline), then threads, WebGPU, OPFS checkpoints
   (`docs/browser-app.md`, Next).
 - [ ] Check: does Pyodide's OpenCV `VideoCapture` read AVI at all (expected no).
