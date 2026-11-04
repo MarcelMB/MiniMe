@@ -1,0 +1,53 @@
+name: pages
+
+# Builds the in-browser app (wasm core + `vite --mode browser`) and publishes it to GitHub Pages.
+on:
+  push:
+    branches: [browser-app]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/minime-core
+      - run: cargo install wasm-pack --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run wasm
+        working-directory: web
+      - run: npm run build:browser
+        working-directory: web
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist-browser
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
