@@ -313,7 +313,6 @@ impl<'a> TileMatrix<'a> {
         let (t, p) = (self.t, self.p);
         let mut work = plan.work();
         let mut blk = vec![0u8; t * 16];
-        let mut frames = vec![0f32; t * 4];
         let mut out = Vec::with_capacity(p);
         for px0 in (0..p).step_by(16) {
             let n = 16.min(p - px0);
@@ -325,21 +324,9 @@ impl<'a> TileMatrix<'a> {
                 }
             }
             for g in (0..n).step_by(4) {
-                {
-                    let _s = prof::span("noise_gather");
-                    for (src, dst) in blk.chunks_exact(16).zip(frames.chunks_exact_mut(4)) {
-                        for l in 0..4 {
-                            dst[l] = f32::from(src[g + l]);
-                        }
-                    }
-                }
                 let _s = prof::span("noise_fft");
-                let sums = plan.sums(&frames, &mut work);
-                out.extend(
-                    sums.iter()
-                        .take(n - g)
-                        .map(|&s| f64::from((0.5 * (s / nb as f32)).exp())),
-                );
+                let sums = plan.sums_u8(&blk, 16, g, &mut work);
+                out.extend(sums.iter().take(n - g).map(|&s| (0.5 * (s / nb as f64)).exp()));
             }
         }
         out

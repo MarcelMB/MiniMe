@@ -1,6 +1,9 @@
 //! Branch-free float32 helpers that LLVM vectorises (wasm simd128, NEON): the natural
 //! logarithm of `compress`' noise estimate.
 
+// Cephes' constants as published, more digits than a float32 holds
+#![allow(clippy::excessive_precision)]
+
 /// `ln(x)` for normal positive `x`, Cephes' `logf` (reduction to `[sqrt(1/2), sqrt 2)`, a
 /// degree-8 polynomial; peak relative error 7.6e-8). Float32 in and out, so a loop over a
 /// slice compiles to vector code, which `f32::ln` (a libm call) never does.
