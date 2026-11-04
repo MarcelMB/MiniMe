@@ -44,15 +44,16 @@ describe("view routes on the e2e run", () => {
     await notFound(`/runs/${rid}/image/bogus`, "unknown image 'bogus' (one of max_proj, background, rank, noise)");
   });
 
-  it("answers the motion as (T, 3) and has no residual until it is computed", async () => {
+  it("answers the motion as (T, 3)", async () => {
     expect((await getArray(`/runs/${rid}/motion`)).shape).toEqual([300, 3]);
-    await notFound(`/runs/${rid}/motion/residual`, "the motion residual is not available for this run");
-    await (await state.cache(rid)).saveNpy("residual.npy", [2, 3], Float32Array.of(0, 1, 2, 3, 4, 5));
-    const a = await getArray(`/runs/${rid}/motion/residual`);
-    expect([a.shape, Array.from(a.data)]).toEqual([
-      [2, 3],
-      [0, 1, 2, 3, 4, 5],
-    ]);
+  });
+
+  it("computes a Python run's motion residual from its flat factors/block_max.npy, as main's", async () => {
+    await expect(getArray(`/runs/${rid}/motion/residual`)).rejects.toBeInstanceOf(Computing);
+    const a = await settled(() => getArray(`/runs/${rid}/motion/residual`));
+    expect([a.shape, a.dtype]).toEqual([[11, 3], "float32"]);
+    const want = readNpy(new Uint8Array(readFileSync(join(DATA, "contract-python/0007.npy"))));
+    for (let i = 0; i < 33; i++) expect(Math.abs(a.data[i] - want.data[i])).toBeLessThan(1e-4);
   });
 
   it("answers seeds and units with one entry per footprint", async () => {
@@ -114,7 +115,7 @@ describe("a run folder without its optional files", () => {
   beforeAll(async () => {
     const run = variant((d) => {
       for (const dir of ["seeds", "init", "tiles", "motion"]) rmSync(join(d, dir), { recursive: true });
-      for (const f of ["factors/max_proj.npy", "cnmf/b.npy"]) rmSync(join(d, f));
+      for (const f of ["factors/max_proj.npy", "factors/block_max.npy", "cnmf/b.npy"]) rmSync(join(d, f));
     });
     ({ rid, name } = await setupE2eRun(run));
     // setupE2eRun points raw_dir into the picked folder: a Python run holds a disk path
@@ -129,6 +130,7 @@ describe("a run folder without its optional files", () => {
     await notFound(`${r}/motion`, "the motion is not available for this run: motion/arrays.npz");
     await notFound(`${r}/image/max_proj`, "max_proj is not available for this run: factors/max_proj.npy");
     await notFound(`${r}/image/background`, "background is not available for this run: cnmf/b.npy");
+    await notFound(`${r}/motion/residual`, "the motion residual is not available for this run");
     await notFound(`${r}/frame/0?source=pre`, "pre frames is not available for this run");
     await notFound(`${r}/frame/0?source=raw`, "raw videos not found in /data/raw");
   });

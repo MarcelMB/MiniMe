@@ -185,6 +185,27 @@ During development run the back end and Vite's dev server side by side:
 Checks: `npm run typecheck`, `npm test` (unit tests), `npm run e2e` (smoke test in Chromium
 against a tiny synthetic run; run `npx playwright install chromium` once first; set `MINIME_PYTHON` if the venv is not `../.venv`). The e2e run has 300 frames, so it exercises the full-resolution trace path, not the overview bands.
 
+### Browser app (no install)
+
+The same app also runs with no Python at all: the pipeline (WebAssembly) and the viewer run in
+the tab, served as static files. Open the page, pick the folder with the raw AVIs, press Start
+run, then browse the run; nothing is uploaded. It has Runs, New run, the job page and the run
+pages Overview to Traces (no Tune).
+
+    cd web && npm install && npm run wasm && npm run build:browser    # writes web/dist-browser/
+
+`npm run wasm` needs Rust and `wasm-pack`. Host `web/dist-browser/` on any static server: no
+special headers, but `.wasm` must be served as `application/wasm`. `npm run dev:browser` serves
+it while developing.
+
+Where a run is written: `<raw parent>/processed/<name>` (as `minime serve` does) when the raw
+folder is inside a folder the app already knows; otherwise an output folder you pick (Chrome,
+Edge), or Browser storage (other browsers). Chrome and Edge read and write folders on disk;
+after a reload pick the folder again (Runs, Change folder). Firefox and Safari open folders
+read-only. A run in Browser storage has "Download run (.zip)"; unzipped it is a normal run
+folder that `minime serve` and `minime score` open. Before a run into Browser storage the free
+space is checked, and a run that cannot fit is refused with the numbers.
+
 ## Parameters
 
 `src/minime/params.py` holds every parameter with its default (Minian notebook values).

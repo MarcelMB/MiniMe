@@ -1,7 +1,8 @@
-// Hooks for Playwright (`e2e/browser.spec.ts`), which cannot drive the system folder dialog or
-// reach main's `api.ts` in the built page. They exist only in the browser build opened with
-// `?e2e`; nothing else in the app reads them.
+// Hooks for Playwright (`e2e/browser.spec.ts`, `look.spec.ts`, `stream.spec.ts`), which cannot
+// drive the system folder dialog or reach main's `api.ts` in the built page. They exist only in
+// the browser build opened with `?e2e`; nothing else in the app reads them.
 import { HandleDir } from "./dir";
+import { readOutput, runStream } from "./e2eStream";
 import { browserFetch } from "./fetch";
 import { state } from "./state";
 
@@ -10,6 +11,13 @@ declare global {
     /** Copy `files` into OPFS `e2e/<name>/raw/` and remember `e2e/<name>` as a picked folder;
      * returns its root name (a vpath starts with it). */
     __minimeAddFolder?: (name: string, files: File[]) => Promise<string>;
+    /** Like `__minimeAddFolder` with the files at their own relative paths (`[path, file]`) under
+     * `e2e/<name>/`: a run folder and its raw videos side by side. `raw` (a path under the folder)
+     * is remembered as its last run's raw folder, which New run starts from. */
+    __minimeAddTree?: (name: string, files: [string, File][], raw?: string) => Promise<string>;
+    /** The streaming pipeline in a new worker (`e2eStream.ts`), and a slice of one of its outputs. */
+    __minimeStream?: typeof runStream;
+    __minimeStreamRead?: typeof readOutput;
     /** `api.ts`'s `getJSON` and `postJSON` over the in-page router, and `getArray` for an array
      * answer (asked again while it is computing). */
     __minimeApi?: {
@@ -20,19 +28,28 @@ declare global {
   }
 }
 
-async function addFolder(name: string, files: File[]): Promise<string> {
+async function addTree(name: string, files: [string, File][], raw?: string): Promise<string> {
   const opfs = await navigator.storage.getDirectory();
   const e2e = await opfs.getDirectoryHandle("e2e", { create: true });
   await e2e.removeEntry(name, { recursive: true }).catch(() => undefined);
   const top = await e2e.getDirectoryHandle(name, { create: true });
-  const raw = await top.getDirectoryHandle("raw", { create: true });
-  for (const f of files) {
-    const w = await (await raw.getFileHandle(f.name, { create: true })).createWritable();
-    await w.write(f);
+  for (const [path, file] of files) {
+    const parts = path.split("/");
+    let dir = top;
+    for (const p of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(p, { create: true });
+    const w = await (await dir.getFileHandle(parts[parts.length - 1], { create: true })).createWritable();
+    await w.write(file);
     await w.close();
   }
-  return state.folders.add(new HandleDir(top), "picked");
+  const root = await state.folders.add(new HandleDir(top), "picked");
+  if (raw) await state.folders.touch(root, `${root}/${raw}`);
+  return root;
 }
+const addFolder = (name: string, files: File[]) =>
+  addTree(
+    name,
+    files.map((f) => [`raw/${f.name}`, f]),
+  );
 
 async function call(path: string, init?: RequestInit): Promise<unknown> {
   const r = await browserFetch(`/api${path}`, init);
@@ -60,5 +77,8 @@ const postJSON = (path: string, body: unknown) => call(path, { method: "POST", b
 
 if (import.meta.env.MODE === "browser" && new URLSearchParams(location.search).has("e2e")) {
   window.__minimeAddFolder = addFolder;
+  window.__minimeAddTree = addTree;
+  window.__minimeStream = runStream;
+  window.__minimeStreamRead = readOutput;
   window.__minimeApi = { getJSON, postJSON, getArray };
 }

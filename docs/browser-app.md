@@ -18,8 +18,10 @@ browser stage is checked against it. Background and results: `docs/browser-optio
   - native (`cargo run --release --bin minime-core`): the check harness, reads the same
     AVIs and `.npy`/`.npz` as Python;
   - wasm (`wasm-pack`, `--target web`) for a Web Worker.
-- Front end: a `#/stream` page in the existing `web/` app (React + uPlot) and one worker.
-  Input via `<input type=file multiple>`; frames read with `File.slice` from the AVI index.
+- Front end: the existing `web/` app (React + uPlot) built with `vite build --mode browser`,
+  an in-page back end (`web/src/browser/`, see "Browser back end" below) and one worker.
+  Frames are read with `File.slice` from the AVI index. (The temporary `#/stream` page that
+  first drove the worker is gone; New run does.)
 - CPU path first, single thread, float64 where Python is float64. Later: rayon threads
   (COOP/COEP via coi-serviceworker), WebGPU (WGSL) for GEMM/local corr/traces, OPFS for
   the window tile store and checkpoints.
@@ -40,6 +42,7 @@ browser stage is checked against it. Background and results: `docs/browser-optio
 | CNMF loop: spatial update (NNQP), size filter, background, traces, loop merge | `cnmf` | **done** | same supports, masks and merge groups per iteration (native: `YCt` exact; Chrome on its own factors: ≤ 2.2e-5 rel) |
 | stitch (`brightest_parent` trees of cross-window footprint cosines), window loop | `stream.stitch`, `t1_discovery.py --mode fresh` | **done** | same edges, parents, groups; footprints bit-exact on the same window units (native and Chrome); 2-window loop in Chrome = Python |
 | run from the AVIs alone: default parameters, own motion chained into the windows and the streaming pass, own rSVD draws, stage rows + `report.json`, downloads | `minime run` (`params.py` defaults, `report.json`) | **done** | same decisions as the folder-driven run with own motion (shifts ≤ 4.1e-6 px); own draws move 2 of 388 window units; 5-min synth F1 0.962 vs the batch run's 0.968 |
+| browser back end: main's UI answered in the page (`web/src/browser/`): router, run folders on disk or in OPFS, jobs, derived views, zip download | `routes_*.py`, `runs.py`, `derived.py`, `jobs.py` | **done** | `browserFetch` + router vs main's answers on the Python e2e run and on a browser run (contract tests, same keys, values within tolerance); Playwright: New run → job → every page, download and read-only reopen, every page's screenshot within 2% of main's |
 
 Slice 1 inputs (until discovery is ported): footprints, shifts, mean image and noise come
 from Python as a small export (`ref_dump.py`'s `inputs/`).
@@ -94,7 +97,7 @@ segment 0, then a shift per frame. Checked on frames 0–3000 of the 30-min GRIN
   fused SIMD order. As with the warp, "bit-exact" means against Python on Apple silicon.
 - The FFT is `rustfft`/`realfft` in float32; numpy's float32 pocketfft is not reproduced.
 - The template is built from two reads of its frames, so only one frame is held at a time.
-- Browser: `MotionEngine` in `wasm.rs`; the `#/stream` worker runs it when the inputs
+- Browser: `MotionEngine` in `wasm.rs`; the stream worker runs it when the inputs
   folder has no footprints (`ref_motion.py`'s `inputs/`: `params.json`,
   `check_frames.npy`). Native and wasm FFTs differ by ≤ 5e-6 px in the shifts.
 
@@ -526,8 +529,9 @@ the truth (q25 in brackets):
   it adds 0.003 to the median and 0.03 to the lower quartile.
 
 ## Run from the AVIs alone (2026-11-03): no Python involved
-`#/stream` now runs the whole pipeline from the raw AVIs: pick the files, press Run. The
-reference folder is optional and only overrides what it holds.
+The worker runs the whole pipeline from the raw AVIs: pick the files, press Run (first on a
+`#/stream` page, now New run; `e2e/stream.spec.ts` starts the same worker through the e2e hook).
+The reference folder is optional and only overrides what it holds.
 
 - Parameters: `web/src/stream/session.ts` builds `session.json` from MiniMe's defaults in
   `ref_stitch.py --session-inputs --stream`'s layout (3000-frame windows, `cos_thres` 0.7,
@@ -539,9 +543,10 @@ reference folder is optional and only overrides what it holds.
   float64 shifts go to the windows (`window_inputs`) and the streaming pass in memory, cast to
   float32 as the Python sidecar is (`npy::read_f32`). Pass 2 draws its own Gaussians
   (`Gaussian`, seed = tile index) unless `omega_*.npy` files are given.
-- Page: `minime serve`'s job-page layout (status + elapsed, one `StageRows` row per stage
-  with the running stage's frames, fps and wasm heap live, a per-window stage adds up over
-  the windows; log; results). The worker posts `progress.jsonl`-shaped stage events and
+- Page (the removed `#/stream` page; New run's job page shows the same rows):
+  `minime serve`'s job-page layout (status + elapsed, one `StageRows` row per stage with the
+  running stage's frames, fps and wasm heap live, a per-window stage adds up over the
+  windows; log; results). The worker posts `progress.jsonl`-shaped stage events and
   writes `report.json` with MiniMe's field names where they exist (`stages`, `counts`,
   `motion.max_abs_shift_px` / `quality_median`, `pass1_cpu_seconds`, `wall_total`,
   `workers`) plus `windows` (per-window seconds and counts) and `wasm_heap_peak_mb`.
@@ -576,10 +581,64 @@ STREAM_RAW=<raw dir> STREAM_OUT=<out> npm --prefix web run e2e:stream          #
 STREAM_FILES=6 STREAM_RAW=<raw dir> STREAM_INPUTS=<ref>/session STREAM_OUT=<ref>/rust_browser_full npm --prefix web run e2e:stream
 python experiments/streaming/check_stitch.py <ref> <ref>/rust_browser_full --own-windows
 python experiments/streaming/check_chain.py <ref> <ref>/rust_browser_full <raw dir>
-python experiments/streaming/browser_run_dir.py <out> --raw <raw dir> && minime score <out>/run --raw <raw dir>
+minime score <out>/run --raw <raw dir>      # <out>/run is the run folder the page wrote
 ```
-Do not edit `web/src` while an e2e run is going: Vite's hot reload re-renders the page and
-the run's messages are lost.
+`e2e:stream` builds and serves its own copy of the browser build (port 8796), so edits to
+`web/src` after it started do not reach a running one; do not edit while it builds.
+
+## Browser back end (2026-11-03): main's UI, answered in the page
+
+`browser-app` is main's app with the same pages (Runs, New run, the job page, Overview to
+Traces; no Tune) but every `/api/...` request is answered in the tab: `browserFetch` and a
+router (`web/src/browser/`) over the run folder, the wasm worker for New run. Hosted as static
+files (`npm run build:browser` → `web/dist-browser/`, `.wasm` as `application/wasm`).
+
+- **Where a run goes**: `<raw parent>/processed/<name>` when the raw folder is inside a known
+  folder (a picked folder or Browser storage), as `minime serve` does; else a picked output
+  folder `<picked>/<name>` (Chrome, Edge: the dialog opens at Start); else Browser storage
+  (OPFS `runs/<name>`, other browsers). The run folder is MiniMe's layout (`params.json`,
+  `report.json`, `cnmf/`, `factors/`, ...), so `minime serve` and `minime score` open it; the
+  window factors and the tile store are not Python's formats, so main shows no recon or kept
+  preprocessed frames, noise image or motion residual of a browser run.
+- **Folders**: picked folders are remembered (handles in IndexedDB). After a reload Chrome needs
+  permission again: requests into the folder answer 403 "Reconnect the folder ...", shown as
+  Home's error note; Change folder, then pick it again, and it is the same folder as before.
+  A downloaded, unzipped run opens read-only from Change folder in every browser.
+- **Browser storage**: a run there has "Download run (.zip)" (a stored zip64 of the run
+  folder, streamed from OPFS). Before a run into it the quota is checked
+  (`navigator.storage.estimate()` against twice the traces, the window factors and, with Keep
+  store, the tile store) and a run that does not fit is refused with the numbers; the browser
+  is asked once to keep the storage (`persist()`).
+- **A Python run in the browser**: opens with every page. Its `raw_dir` is an absolute disk
+  path the page cannot open, so there are no raw frames and no frame rate from the raw folder;
+  recon frames and the noise image are not available (404 "not available for this run"); the
+  preprocessed frames and the residual come from Python's flat tile store and
+  `factors/block_max.npy`.
+- **Same look**: `e2e/look.spec.ts` shows the Python e2e run in `minime serve` and in the
+  browser build and compares every page's screenshot (`maxDiffPixelRatio` 0.02). Identical
+  by construction: pages, components and CSS are main's. Left out of both screenshots because
+  they differ by design: absolute against virtual path texts (set to the same text), recent
+  folders (the browser adds Browser storage), the Tune tab and auto-tune switch, the
+  reconstruction frame and the noise image of a Python run. The look run's copy of the run has
+  its `raw_dir` set to the browser's copy of the raw folder (as in the contract tests), so both
+  show raw frames. At zero tolerance the pages measured pixel-identical (Home was off by 23
+  pixels in one run), so the 2% is slack.
+
+Run it (in `web/`; Python tools as `MINIME_PYTHON=<venv>/bin/python PYTHONPATH=../src`):
+```bash
+npm run wasm                  # after Rust changes (needs Rust and wasm-pack)
+npm run dev:browser           # the browser build with hot reload
+npm run fixtures              # the Python e2e run, main's answers on it, the params snapshot
+npm run test                  # vitest: jsdom, then browser mode (the router and contract tests)
+npm run build && npm run e2e  # main's smoke test against minime serve (port 8799)
+npm run e2e:browser           # New run -> job -> every page, zip, folders (builds, port 8797)
+npx playwright test -c playwright.look.config.ts   # same look as main (ports 8799 and 8797)
+# the browser run folder the contract tests read, and main's answers on it
+STREAM_KEEP_STORE=1 STREAM_RAW=e2e/.data/raw STREAM_OUT=e2e/.data/browser-run npm run e2e:stream
+python scripts/contract_dump.py e2e/.data/browser-run/run e2e/.data/contract-browser
+```
+The look check and `npm run e2e` need main's build (`npm run build`) and start `minime serve`
+themselves; run only one Playwright config at a time (they share ports and `dist-browser/`).
 
 ## Next
 0. Rerun the 8 h and 24 h streaming pass with the traces in OPFS (8 h scale run above);
@@ -599,6 +658,6 @@ the run's messages are lost.
    frames). Keep the template build as its own short stage.
 2. Speed: preprocessing in a worker pool (frames are independent), faster median
    (Perreault O(1) or a sorting-network median), then rayon + COOP/COEP.
-3. Save outputs to a folder (`showDirectoryPicker` on Chromium, OPFS elsewhere) and
-   checkpoint the per-segment sums so a run can resume.
+3. ~~Save outputs to a folder~~ (done: picked folder or Browser storage, "Browser back end"
+   above). Still open: checkpoint the per-segment sums so a run can resume.
 4. WebGPU for traces and sums once the CPU path is complete.

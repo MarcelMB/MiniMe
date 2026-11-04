@@ -8,6 +8,8 @@ const data = resolve(here, "e2e/.data");
 
 export default defineConfig({
   testDir: "e2e",
+  // main's smoke test only: the other specs have their own configs (the browser build, the look check, streaming)
+  testMatch: "smoke.spec.ts",
   timeout: 120_000,
   use: { baseURL: "http://127.0.0.1:8799" },
   webServer: {
