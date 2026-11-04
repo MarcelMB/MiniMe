@@ -3,6 +3,7 @@
 //! (rank, k, and the lengths of `w`, `v`, `s`, `mean`, `sigma`, `energy`) and the arrays.
 
 use crate::compress::TileFactors;
+use crate::init::Csr;
 
 fn put32(out: &mut Vec<u8>, a: &[f32]) {
     for v in a {
@@ -86,6 +87,70 @@ impl TileFactors {
     }
 }
 
+/// A window's final units for the stitch (`Csr` footprints, float32 values, and each unit's
+/// brightness): little-endian u64 `k`, `p`, `nnz`, then `indptr` (k + 1) and `indices` (nnz) as
+/// u64, `data` (nnz) as f32 and `bright` (k) as f64.
+pub fn window_to_bytes(a: &Csr, bright: &[f64]) -> Vec<u8> {
+    let nnz = a.data.len();
+    let mut out = Vec::with_capacity(24 + 8 * (a.indptr.len() + nnz) + 4 * nnz + 8 * bright.len());
+    for v in [a.k, a.p, nnz] {
+        out.extend_from_slice(&(v as u64).to_le_bytes());
+    }
+    for &v in a.indptr.iter().chain(&a.indices) {
+        out.extend_from_slice(&(v as u64).to_le_bytes());
+    }
+    put32(&mut out, &a.data);
+    for v in bright {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out
+}
+
+pub fn window_from_bytes(b: &[u8]) -> Result<(Csr, Vec<f64>), String> {
+    let u = |i: usize| -> Result<usize, String> {
+        let s = b.get(8 * i..8 * i + 8).ok_or("window: short header")?;
+        Ok(u64::from_le_bytes(s.try_into().unwrap()) as usize)
+    };
+    let (k, p, nnz) = (u(0)?, u(1)?, u(2)?);
+    let total = 24 + 8 * (k + 1 + nnz) + 4 * nnz + 8 * k;
+    if b.len() != total {
+        return Err(format!("window: {} bytes, expected {total}", b.len()));
+    }
+    let ints = |from: usize, n: usize| -> Vec<usize> {
+        b[from..from + 8 * n]
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| u64::from_le_bytes(*c) as usize)
+            .collect()
+    };
+    let indptr = ints(24, k + 1);
+    let indices = ints(24 + 8 * (k + 1), nnz);
+    let at = 24 + 8 * (k + 1 + nnz);
+    let data = b[at..at + 4 * nnz]
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
+        .collect();
+    let bright = b[at + 4 * nnz..]
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|c| f64::from_le_bytes(*c))
+        .collect();
+    Ok((
+        Csr {
+            k,
+            p,
+            indptr,
+            indices,
+            data,
+        },
+        bright,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +178,28 @@ mod tests {
         assert_eq!(bits64(&back.energy), bits64(&tf.energy));
         assert_eq!((back.rank, back.k), (2, 40));
         assert!(TileFactors::from_bytes(&tf.to_bytes()[1..]).is_err());
+    }
+
+    #[test]
+    fn a_window_round_trips_bit_for_bit() {
+        let a = Csr {
+            k: 2,
+            p: 10,
+            indptr: vec![0, 2, 5],
+            indices: vec![1, 3, 0, 7, 9],
+            data: vec![0.5, -0.0, 1.0, f32::MIN_POSITIVE, 3.25],
+        };
+        let bright = vec![2.5, 1e-300];
+        let (b, br) = window_from_bytes(&window_to_bytes(&a, &bright)).unwrap();
+        assert_eq!((b.k, b.p, &b.indptr, &b.indices), (2, 10, &a.indptr, &a.indices));
+        assert_eq!(
+            b.data.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            a.data.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            br.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            bright.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+        assert!(window_from_bytes(&window_to_bytes(&a, &bright)[..30]).is_err());
     }
 }

@@ -19,7 +19,9 @@
 use crate::motion::{registration_image, Correlator, Motion, MotionParams};
 use crate::npy;
 use crate::stream::{lane_ranges, FoldLane, LaneRange, Support, TraceModel};
-use crate::wasm::{map_bytes, unpad, Engine, MotionEngine, Pass1Engine, Pass2Engine};
+use crate::wasm::{
+    map_bytes, unpad, CnmfEngine, Engine, MotionEngine, Pass1Engine, Pass2Engine, StitchEngine,
+};
 use crate::{compress::TileFactors, Inputs};
 use js_sys::Map;
 use wasm_bindgen::prelude::*;
@@ -376,5 +378,58 @@ impl Engine {
             pairs: [v[4], v[5]],
         };
         self.pass.put_lane(r, done, seg).map_err(|e| JsError::new(&e))
+    }
+}
+
+#[wasm_bindgen]
+impl Pass1Engine {
+    /// The maxima of a pass 1 that ran elsewhere on the whole window (`chunk_max_proj`,
+    /// `chunk_block_max` of the window's engine): what the seed stage reads of pass 1, for a worker
+    /// that runs a window's seeds, init and CNMF.
+    pub fn set_maxima(&mut self, max_proj: &[u8], block_max: &[u8]) -> Result<(), JsError> {
+        if max_proj.len() != self.pass.max_proj.len() || block_max.len() != self.pass.block_max.len() {
+            return Err(JsError::new("the maxima do not fit this window"));
+        }
+        self.pass.max_proj.copy_from_slice(max_proj);
+        self.pass.block_max.copy_from_slice(block_max);
+        self.pass.t = self.p.t1 - self.p.t0;
+        Ok(())
+    }
+}
+
+#[wasm_bindgen]
+impl Pass2Engine {
+    /// Tile `k`'s factors as bytes (for `set_tile` of another engine).
+    pub fn tile_bytes(&self, k: usize) -> Result<Vec<u8>, JsError> {
+        Ok(self
+            .done
+            .get(k)
+            .ok_or_else(|| JsError::new("no such tile yet"))?
+            .to_bytes())
+    }
+}
+
+#[wasm_bindgen]
+impl CnmfEngine {
+    /// The loop's final units as the stitch takes them (`StitchEngine.add_window`), as bytes.
+    pub fn window_bytes(&self) -> Result<Vec<u8>, JsError> {
+        let (a, bright) = self.window()?;
+        Ok(crate::poolio::window_to_bytes(&a, &bright))
+    }
+}
+
+#[wasm_bindgen]
+impl StitchEngine {
+    /// A window's final units from `CnmfEngine.window_bytes` (its loop ran on another instance);
+    /// the same as `add_cnmf` on that engine. Returns the window's unit count.
+    pub fn add_window(&mut self, bytes: &[u8], t0: usize, t1: usize) -> Result<usize, JsError> {
+        let (a, bright) = crate::poolio::window_from_bytes(bytes).map_err(|e| JsError::new(&e))?;
+        let k = a.k;
+        self.windows.push(crate::stitch::Window {
+            t: [t0, t1],
+            a,
+            bright,
+        });
+        Ok(k)
     }
 }

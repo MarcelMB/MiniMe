@@ -32,6 +32,7 @@ import init, {
   window_inputs,
 } from "./pkg/minime_core.js";
 import { Pool, workerCount } from "./pool";
+import type { W1Result } from "./poolProtocol";
 import {
   pass1Pooled,
   pass2Pooled,
@@ -60,9 +61,14 @@ const DRAIN = 4096; // frames of traces held in wasm before they go to C.npy in 
 let wasmMemory: WebAssembly.Memory | null = null;
 /** The run's frame workers (`pool.ts`) when it has more than one worker. */
 let pool: Pool | undefined;
+/** With a pool, a worker of its own for each window's seeds, init and CNMF (`windowUnits`), so they go
+ * on beside the later windows' pass 1 and pass 2; the windows queue for it in order. */
+let windowPool: Pool | undefined;
+let windowChain: Promise<unknown> = Promise.resolve();
 /** The tile store of the window just through pass 1 when the pool ran it (slabs, `slabs.ts`). */
 let slabStore: Store | undefined;
-const heapMb = () => (wasmMemory?.buffer.byteLength ?? 0) / 2 ** 20 + (pool?.heapMb() ?? 0);
+const heapMb = () =>
+  (wasmMemory?.buffer.byteLength ?? 0) / 2 ** 20 + (pool?.heapMb() ?? 0) + (windowPool?.heapMb() ?? 0);
 let heapPeakMb = 0;
 /** Where the running stage sits in the run ("window 2/3"); shown with every stage start. */
 let stageLabel = "";
@@ -100,6 +106,24 @@ const end = (note?: string, error = false): number => {
   stageEvent({ type: "stage", stage: current, event: error ? "error" : "end", t: now(), seconds: total, note });
   current = null;
   return seconds;
+};
+
+/** Windows done by each stage that runs on the window worker beside this thread's stages. */
+const sideDone = new Map<Stage, number>();
+/** A stage on the window worker began (its own events: this thread's running stage is another one). */
+const sideStart = (stage: Stage, label: string) =>
+  stageEvent({ type: "stage", stage, event: "start", t: now(), note: label || undefined });
+/** ... and ended after `seconds` of its own: its row, counters and `report.json` seconds, as `end` does. */
+const sideEnd = (stage: Stage, seconds: number, note: string) => {
+  const total = (stageSeconds.get(stage) ?? 0) + seconds;
+  stageSeconds.set(stage, total);
+  const k = (sideDone.get(stage) ?? 0) + 1;
+  sideDone.set(stage, k);
+  const heap = heapMb();
+  heapPeakMb = Math.max(heapPeakMb, heap);
+  const frames = Math.max(k, windowFrames.length);
+  post({ type: "progress", stage, done: k, frames, seconds: total, unit: "steps", stateMb: 0, heapMb: heap });
+  stageEvent({ type: "stage", stage, event: "end", t: now(), seconds: total, note });
 };
 
 /** The window loop's windows (frames each) and the one running: a stage that runs once per
@@ -314,7 +338,7 @@ type WindowOpts = {
   onPass2?: (engine: Pass2Engine) => void;
   onCnmf?: (engine: CnmfEngine) => void;
 };
-type Out = { files: Map<string, Uint8Array>; seconds: number };
+type Out = { files: Map<string, Uint8Array>; seconds: number; units?: Promise<W1Result> };
 
 /** Calls `push` on raw frames `[from, to)` of the session, reading `BLOCK` frames per slice. */
 function forFrames(
@@ -511,7 +535,11 @@ async function withPool<T>(
     try {
       pool = await Pool.create(n, avis, scratchId);
       log(`${n} frame workers`);
+      windowPool = await Pool.create(1, avis, scratchId);
+      windowChain = Promise.resolve();
     } catch (e) {
+      pool?.close();
+      pool = undefined;
       log(`no frame workers (${e instanceof Error ? e.message : String(e)}), one worker`);
     }
   }
@@ -519,7 +547,8 @@ async function withPool<T>(
     return await f();
   } finally {
     pool?.close();
-    pool = undefined;
+    windowPool?.close();
+    pool = windowPool = undefined;
   }
 }
 
@@ -586,6 +615,39 @@ async function runSession(
   };
   let ahead: Ahead | undefined;
   let dropStore: Promise<void> | undefined;
+  type Pending = {
+    i: number;
+    t0: number;
+    t1: number;
+    files: Map<string, Uint8Array>;
+    stages: Record<string, number>;
+    units?: Promise<W1Result>;
+    ready: boolean;
+  };
+  /** Windows through pass 2 whose seeds, init and CNMF may still be on the window worker, oldest first. */
+  const pending: Pending[] = [];
+  /** A window's units and outputs, in window order: the stitch, its report entry, its run-folder files. */
+  const finishWindow = async (p: Pending) => {
+    if (p.units) {
+      const s = performance.now();
+      const u = await p.units;
+      total += (performance.now() - s) / 1e3; // the run's own time: only the wait shows
+      for (const [name, bytes] of u.files) p.files.set(name, bytes);
+      stitch.add_window(u.window, p.t0, p.t1);
+      (["seeds", "init", "cnmf"] as const).forEach((stage, j) => {
+        p.stages[stage] = u.seconds[j];
+      });
+    }
+    const tag = `win_${String(p.i).padStart(2, "0")}_`;
+    for (const [name, bytes] of p.files)
+      if (name.startsWith("summary") || (opts.params.tile_crc && name === "tile_crc.npy")) out.set(tag + name, bytes);
+    windows.push(windowReport(p.t0, p.t1, p.files, p.stages));
+    if (to) {
+      await writeWindow(to, p.i, p.files);
+      maxProj = foldMaxProj(maxProj, p.files);
+      kept.push({ t0: p.t0, t1: p.t1, files: keepForSession(p.files) });
+    }
+  };
   for (let i = 0; i < n; i++) {
     const [t0, t1] = [flat[2 * i], flat[2 * i + 1]];
     const before = new Map(stageSeconds);
@@ -615,19 +677,29 @@ async function runSession(
       ownShifts.push(readNpy(w.files.get("shifts64.npy")!).data as Float64Array);
       ownQuality.push(readNpy(w.files.get("quality.npy")!).data as Float32Array);
     }
-    const tag = `win_${String(i).padStart(2, "0")}_`;
-    for (const [name, bytes] of w.files)
-      if (name.startsWith("summary") || (opts.params.tile_crc && name === "tile_crc.npy")) out.set(tag + name, bytes);
-    windows.push(windowReport(t0, t1, w.files, before));
-    if (to) {
-      await writeWindow(to, i, w.files);
-      maxProj = foldMaxProj(maxProj, w.files);
-      kept.push({ t0, t1, files: keepForSession(w.files) });
-      if (opts.keepStore) await keepTiles(root, to, i);
+    // this window's stage seconds (with the window worker, its seeds, init and CNMF come with its units)
+    const stages: Record<string, number> = {};
+    for (const [stage, seconds] of stageSeconds) {
+      const d = seconds - (before.get(stage) ?? 0);
+      if (d > 0 && (!w.units || stage === "pass1" || stage === "pass2")) stages[stage] = d;
     }
+    const p: Pending = { i, t0, t1, files: w.files, stages, units: w.units, ready: !w.units };
+    p.units?.then(
+      () => {
+        p.ready = true;
+      },
+      () => {
+        p.ready = true;
+      },
+    );
+    pending.push(p);
+    if (to && opts.keepStore) await keepTiles(root, to, i);
     await dropStore;
     await root.removeEntry(tilesDir(i), { recursive: true }).catch(() => undefined);
+    // the windows whose units are in, in order, and no more than two waiting
+    while (pending.length && (pending[0].ready || pending.length > 2)) await finishWindow(pending.shift() as Pending);
   }
+  while (pending.length) await finishWindow(pending.shift() as Pending);
   for (const sg of segs) sg.avi.free();
   stageLabel = "";
   windowFrames = [];
@@ -743,19 +815,14 @@ async function saveRun(
   return (await to.dir("cnmf")).file("C.npy");
 }
 
-/** One window's entry of `report.json`: its frames, the seconds of each of its stages
- * (`before`: the run's stage totals when it began) and its unit counts. */
+/** One window's entry of `report.json`: its frames, the seconds of each of its stages and its unit
+ * counts. */
 function windowReport(
   t0: number,
   t1: number,
   files: Map<string, Uint8Array>,
-  before: Map<string, number>,
+  stages: Record<string, number>,
 ): Record<string, unknown> {
-  const stages: Record<string, number> = {};
-  for (const [stage, seconds] of stageSeconds) {
-    const d = seconds - (before.get(stage) ?? 0);
-    if (d > 0) stages[stage] = d;
-  }
   const get = (name: string) => (files.has(name) ? decode(files.get(name)!) : {});
   const [seeds, init, cnmf, pass2] = [
     get("summary_seeds.json"),
@@ -985,7 +1052,7 @@ async function windowPass1(
   const out = engine.finish(JSON.stringify(timing), crc) as Map<string, Uint8Array>;
   engine.free();
   if (p2) for (const [name, bytes] of p2.files) out.set(name, bytes);
-  return { files: out, seconds: passSeconds + (p2?.seconds ?? 0) };
+  return { files: out, seconds: passSeconds + (p2?.seconds ?? 0), units: p2?.units };
 }
 
 /** Pass 2 (`minime-core pass2`) on pass 1's open tile files, one tile at a time; then the
@@ -1026,13 +1093,57 @@ async function runPass2(
   const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
   opts.onPass2?.(engine);
   let total = seconds;
-  if (files.has("seeds.json")) {
+  let units: Promise<W1Result> | undefined;
+  if (files.has("seeds.json") && windowPool) units = windowUnits(windowPool, files, pass1, engine);
+  else if (files.has("seeds.json")) {
     const s = runSeeds(files, pass1, engine, log, memory, opts);
     for (const [name, bytes] of s.files) out.set(name, bytes);
     total += s.seconds;
   }
   engine.free();
-  return { files: out, seconds: total };
+  return { files: out, seconds: total, units };
+}
+
+/** The window's seeds, init and CNMF on the window worker (the same engines, on pass 1's maxima and
+ * pass 2's factors, so the same results bit for bit): queued behind the earlier windows', it goes on
+ * while this thread runs the next windows' pass 1 and pass 2. Its stage rows come from the worker's
+ * steps. Resolves with the stages' outputs and the window's final units for the stitch. */
+function windowUnits(
+  p: Pool,
+  files: Map<string, Uint8Array>,
+  pass1: Pass1Engine,
+  pass2: Pass2Engine,
+): Promise<W1Result> {
+  const keep = (name: string) => name.endsWith(".json") || name === "template.npy" || name === "shifts.npy";
+  const msg = {
+    type: "w1" as const,
+    files: new Map([...files].filter(([name]) => keep(name))),
+    maxProj: pass1.chunk_max_proj(),
+    blockMax: pass1.chunk_block_max(),
+    tiles: Array.from({ length: pass2.n_tiles() }, (_, k) => pass2.tile_bytes(k)),
+  };
+  const transfer = [msg.maxProj.buffer, msg.blockMax.buffer, ...msg.tiles.map((t) => t.buffer)];
+  const label = stageLabel;
+  const STEPS: Stage[] = ["seeds", "init", "cnmf"];
+  const task = windowChain.then(
+    () =>
+      new Promise<W1Result>((resolve, reject) => {
+        let result: W1Result | undefined;
+        p.run("w1", 1, () => msg, {
+          transfer: () => transfer,
+          onProgress: (_, done, m) => {
+            if (done > 0) sideEnd(STEPS[done - 1], m.seconds ?? 0, m.note ?? "");
+            sideStart(STEPS[done], label);
+          },
+          onResult: (_, r) => {
+            sideEnd("cnmf", r.seconds[2], r.notes[2]);
+            result = r;
+          },
+        }).then(() => resolve(result as W1Result), reject);
+      }),
+  );
+  windowChain = task.catch(() => undefined);
+  return task;
 }
 
 /** Seeds, PNR/GMM filter and seed merge (`minime-core seeds`) on the window's factors; then

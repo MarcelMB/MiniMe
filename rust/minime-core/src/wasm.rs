@@ -454,6 +454,28 @@ impl Pass1Engine {
     }
 }
 
+impl CnmfEngine {
+    /// The loop's final footprints and the peak of each unit's `YrA`: what the stitch takes.
+    pub(crate) fn window(&self) -> Result<(crate::init::Csr, Vec<f64>), JsError> {
+        let r = self
+            .res
+            .as_ref()
+            .ok_or_else(|| JsError::new("run the loop first"))?;
+        let last = r.last();
+        let (a, t) = (last.merge.a.clone(), r.t);
+        let bright = (0..a.k)
+            .map(|i| {
+                f64::from(
+                    last.merge.c[i * t..(i + 1) * t]
+                        .iter()
+                        .fold(f32::NEG_INFINITY, |m, &v| m.max(v)),
+                )
+            })
+            .collect();
+        Ok((a, bright))
+    }
+}
+
 /// CRC-32 of `bytes` continuing from `crc` (`zlib.crc32`).
 #[wasm_bindgen]
 pub fn crc32(bytes: &[u8], crc: u32) -> u32 {
@@ -698,7 +720,7 @@ impl InitEngine {
 #[wasm_bindgen]
 pub struct CnmfEngine {
     p: CnmfParams,
-    res: Option<CnmfResult>,
+    pub(crate) res: Option<CnmfResult>,
 }
 
 #[wasm_bindgen]
@@ -825,7 +847,7 @@ pub fn window_inputs(session: &[u8], shifts: &[u8], t0: usize, t1: usize) -> Res
 #[wasm_bindgen]
 pub struct StitchEngine {
     p: StitchParams,
-    windows: Vec<Window>,
+    pub(crate) windows: Vec<Window>,
     mean_noise: stitch::MeanNoise,
     res: Option<stitch::StitchResult>,
 }
@@ -878,21 +900,7 @@ impl StitchEngine {
     /// The final units of the window `[t0, t1)` whose CNMF loop `cnmf` ran: footprints and the
     /// peak of each unit's `YrA`. Returns the window's unit count.
     pub fn add_cnmf(&mut self, cnmf: &CnmfEngine, t0: usize, t1: usize) -> Result<usize, JsError> {
-        let r = cnmf
-            .res
-            .as_ref()
-            .ok_or_else(|| JsError::new("run the loop first"))?;
-        let last = r.last();
-        let (a, t) = (last.merge.a.clone(), r.t);
-        let bright = (0..a.k)
-            .map(|i| {
-                f64::from(
-                    last.merge.c[i * t..(i + 1) * t]
-                        .iter()
-                        .fold(f32::NEG_INFINITY, |m, &v| m.max(v)),
-                )
-            })
-            .collect();
+        let (a, bright) = cnmf.window()?;
         let k = a.k;
         self.windows.push(Window {
             t: [t0, t1],
