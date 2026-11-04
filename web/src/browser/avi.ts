@@ -80,6 +80,10 @@ export class RawVideo {
   get bytes(): number {
     return this.segs.reduce((s, g) => s + g.file.size, 0);
   }
+  /** Frames of each video, in reading order (`io.RawInfo.segment_frames`). */
+  get segmentFrames(): number[] {
+    return this.segs.map((g) => g.n);
+  }
 
   static async open(dir: Dir, index: Indexer = defaultIndexer): Promise<RawVideo> {
     const { files: ordered, skipped } = await listSegments(dir);

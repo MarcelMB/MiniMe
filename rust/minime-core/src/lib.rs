@@ -16,6 +16,7 @@ pub mod nnqp;
 pub mod npy;
 pub mod pass1;
 pub mod preprocess;
+pub mod preview;
 pub mod seeds;
 pub mod stitch;
 pub mod stream;
