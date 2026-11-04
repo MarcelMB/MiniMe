@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>wasm kernel bench</title>
+<script type="module">
+  import init, * as m from "./pkg/minime_core.js";
+  window.run = async (kernels, rounds, reps, h, w) => {
+    await init();
+    const frames = new Uint8Array(await (await fetch("/frames.u8")).arrayBuffer());
+    const px = h * w;
+    const fr = Array.from({ length: frames.length / px }, (_, i) => frames.subarray(i * px, (i + 1) * px));
+    const res = [];
+    for (const k of kernels) {
+      let hash = 2166136261; // FNV-1a over the new kernel's outputs, to compare builds
+      const same = fr.every((f) => {
+        const a = m.bench_out(k, false, f, h, w), b = m.bench_out(k, true, f, h, w);
+        for (const v of b) hash = Math.imul(hash ^ v, 16777619) >>> 0;
+        return a.length === b.length && a.every((v, i) => v === b[i]);
+      });
+      const to = [], tn = [];
+      for (let r = 0; r <= rounds; r++) {
+        const o = m.bench_time(k, false, fr[0], h, w, reps), n = m.bench_time(k, true, fr[0], h, w, reps);
+        if (r > 0) { to.push(o); tn.push(n); }
+      }
+      const med = (v) => v.sort((a, b) => a - b)[v.length >> 1];
+      res.push({ kernel: k, old: med(to), new: med(tn), identical_on_frames: same ? fr.length : 0, hash: hash.toString(16) });
+    }
+    return res;
+  };
+  window.ready = true;
+</script>
