@@ -5,11 +5,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fmtBytes } from "../format";
 import type { FromWorker, ToWorker } from "../stream/protocol";
 import type { Indexer } from "./avi";
-import { type Dir, FileListDir } from "./dir";
+import { type Dir, FileListDir, HandleDir } from "./dir";
 import { Folders } from "./folders";
 import { type JobBody, JobManager } from "./jobs";
 import { memoryKV } from "./kv";
 import { ASSUMED_UNITS, estimateRunBytes } from "./support";
+import { diskHandle } from "./testing/diskHandle";
 import { NodeDir } from "./testing/nodeDir";
 
 class FakeWorker {
@@ -653,6 +654,76 @@ async function setupWith(pickOutput: () => Promise<Dir>) {
   });
   return { m, workers, body: s.body, name: s.name };
 }
+
+describe("JobManager and an output folder picked in the dialog that is, or lies inside, the raw folder", () => {
+  /** The e2e raw folder as a root of handles (`top/raw`), and a dialog that returns the folder at
+   * `pick` (a path under `top`, made if it is not there). */
+  async function withDialog(pick: string[]) {
+    const top = mkdtempSync(join(tmpdir(), "jobs-"));
+    cpSync(resolve(__dirname, "../../e2e/.data/raw"), join(top, "raw"), { recursive: true });
+    mkdirSync(join(top, ...pick), { recursive: true });
+    const folders = new Folders(memoryKV(), async () => null);
+    await folders.add(new HandleDir(diskHandle(["top", "raw"], join(top, "raw"))), "picked");
+    const picked = new HandleDir(diskHandle(["top", ...pick], join(top, ...pick)));
+    const workers: FakeWorker[] = [];
+    const m = new JobManager({
+      kv: memoryKV(),
+      folders,
+      pickOutput: async () => picked,
+      makeWorker: () => {
+        const w = new FakeWorker();
+        workers.push(w);
+        return w as unknown as Worker;
+      },
+    });
+    const body: JobBody = {
+      raw_dir: "raw",
+      name: "t1",
+      params: {},
+      keep_store: false,
+      overwrite: false,
+      tune: false,
+      tune_args: {},
+      fps: null,
+    };
+    return { m, folders, workers, body, top };
+  }
+  const roots = async (f: Folders) => (await f.list()).map((r) => r.name);
+
+  it("refuses the raw folder itself, in main's words, and does not remember it as a second root", async () => {
+    const { m, folders, workers, body, top } = await withDialog(["raw"]);
+    const before = readdirSync(join(top, "raw")).sort();
+    await expect(m.submit(body)).rejects.toMatchObject({
+      status: 400,
+      message: "output dir raw/t1 lies inside the raw dir raw; choose another",
+    });
+    expect(readdirSync(join(top, "raw")).sort()).toEqual(before);
+    expect(await roots(folders)).toEqual(["raw"]);
+    expect(workers).toHaveLength(0);
+  });
+
+  it("refuses a folder made inside the raw folder, and writes nothing in it", async () => {
+    const { m, folders, workers, body, top } = await withDialog(["raw", "new folder"]);
+    await expect(m.submit(body)).rejects.toMatchObject({
+      status: 400,
+      message: "output dir new folder/t1 lies inside the raw dir raw; choose another",
+    });
+    expect(readdirSync(join(top, "raw", "new folder"))).toEqual([]);
+    expect(await roots(folders)).toEqual(["raw"]);
+    expect(workers).toHaveLength(0);
+  });
+
+  it("takes a folder beside the raw folder, also one whose name starts like it", async () => {
+    for (const pick of [["out"], ["raw2"]]) {
+      const { m, folders, workers, body, top } = await withDialog(pick);
+      await expect(m.submit(body)).resolves.toMatchObject({ status: "running", out_dir: `${pick[0]}/t1` });
+      expect(existsSync(join(top, pick[0], "t1", "params.json"))).toBe(true);
+      expect(readdirSync(join(top, "raw")).sort()).toEqual(["0.avi", "1.avi", "2.avi"]);
+      expect((await roots(folders)).sort()).toEqual(["raw", pick[0]].sort());
+      expect(workers).toHaveLength(1);
+    }
+  });
+});
 
 describe("JobManager and Browser storage", () => {
   afterEach(() => vi.unstubAllGlobals());

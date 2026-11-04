@@ -385,9 +385,12 @@ test("a raw folder picked on its own asks for an output folder and the run goes 
       // biome-ignore lint/suspicious/noExplicitAny: test hooks on window
       const w = window as any;
       w.__dialogs = asked;
+      w.__hand = queue;
       w.showDirectoryPicker = async (opts: unknown) => {
         asked.push(opts);
-        return e2e.getDirectoryHandle(queue.shift() ?? "none");
+        let d = e2e;
+        for (const p of (queue.shift() ?? "none").split("/")) d = await d.getDirectoryHandle(p);
+        return d;
       };
     },
     { files, hand: ["rawonly", "outonly", "outonly"] },
@@ -457,6 +460,40 @@ test("a raw folder picked on its own asks for an output folder and the run goes 
     async () => ((await (window as any).__minimeApi.getJSON("/folders")) as { folders: { path: string }[] }).folders,
   );
   expect(roots.map((r) => r.path).sort()).toEqual(["Browser storage", "outonly", "rawonly"]);
+
+  // an output folder that is, or was made inside, the raw folder is refused (the roots' names say
+  // nothing about that; the handles do) and is not remembered
+  for (const inside of ["rawonly", "rawonly/new folder"]) {
+    const refused = await page.evaluate(async (inside) => {
+      const e2e = await (await navigator.storage.getDirectory()).getDirectoryHandle("e2e");
+      let d = e2e;
+      for (const p of inside.split("/")) d = await d.getDirectoryHandle(p, { create: true });
+      // biome-ignore lint/suspicious/noExplicitAny: test hooks on window
+      const w = window as any;
+      w.__hand.push(inside);
+      try {
+        await w.__minimeApi.postJSON("/jobs", {
+          raw_dir: "rawonly",
+          name: "bad",
+          params: {},
+          keep_store: false,
+          overwrite: false,
+          tune: false,
+          tune_args: {},
+          fps: 30,
+        });
+        return "";
+      } catch (e) {
+        return (e as Error).message;
+      }
+    }, inside);
+    expect(refused).toBe(`output dir ${inside.split("/").pop()}/bad lies inside the raw dir rawonly; choose another`);
+  }
+  const after = await page.evaluate(
+    // biome-ignore lint/suspicious/noExplicitAny: test hook
+    async () => ((await (window as any).__minimeApi.getJSON("/folders")) as { folders: { path: string }[] }).folders,
+  );
+  expect(after.map((r) => r.path).sort()).toEqual(["Browser storage", "outonly", "rawonly"]);
   expect(errors).toEqual([]);
 });
 
