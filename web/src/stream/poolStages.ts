@@ -161,9 +161,13 @@ export async function pass2Pooled(
   return { rankTotal, readMs };
 }
 
-/** The streaming pass with the workers' preprocessing and least squares and this thread's sums:
- * `engine` is the pass (`Engine`, built from the same `files`); `after(t)` is called with the frames
- * folded in so far after every chunk (the caller drains the traces to C.npy). */
+/** The streaming pass on the pool: the workers preprocess and solve chunks of frames, and every
+ * worker also keeps one lane of the fold (`StreamLane`: its rows of the K x K sums, its pixels and
+ * their support pairs), fed every chunk in frame order; this thread stores the traces (`engine`, the
+ * pass built from the same `files`, `push_traces`) and at the end puts the lanes' sums in place
+ * (`put_lane`). Each sum is the one-thread pass's, element for element in frame order, so the result
+ * is the same bit for bit for any number of workers. `after(t)` is called with the frames stored so
+ * far after every chunk (the caller drains the traces to C.npy). */
 export async function streamPooled(
   pool: Pool,
   engine: Engine,
@@ -172,20 +176,32 @@ export async function streamPooled(
   ctx: Ctx,
 ): Promise<void> {
   const T = engine.frames();
-  await pool.broadcast({ type: "s0", files });
+  const N = pool.size;
+  const tb = performance.now();
+  await pool.run("f0", N, (j) => ({ type: "f0", files, lane: j, lanes: N }), { deal: true, onResult: () => undefined });
+  ctx.log(`streaming pass: solvers and ${N} fold lanes built in ${((performance.now() - tb) / 1e3).toFixed(1)} s`);
   const chunks = Math.ceil(T / STREAM_CHUNK);
   const began = performance.now();
-  const busy0 = pool.busyMs.s1;
-  let t = 0;
-  let lastPost = 0;
+  const [busy0, fold0] = [pool.busyMs.s1, pool.busyMs.f1];
+  const acks = new Uint8Array(chunks);
+  let [t, given, folded, lastPost, storeMs] = [0, 0, 0, 0, 0];
   const live = new Map<number, number>();
   await pool.run("s1", chunks, (i) => ({ type: "s1", a: i * STREAM_CHUNK, b: Math.min(T, (i + 1) * STREAM_CHUNK) }), {
     ordered: true,
-    maxAhead: 3 * pool.size,
+    maxAhead: 3 * N,
+    // no more solving while the lanes are more than a few chunks behind: the chunks wait in their queues
+    hold: () => given - folded >= 4 * N,
     onProgress: (i, done) => live.set(i, done),
     onResult: (i, r) => {
       live.delete(i);
-      engine.push_solved(r.y8, r.cc, r.f);
+      const s = performance.now();
+      engine.push_traces(r.cc, r.f);
+      storeMs += performance.now() - s;
+      for (let j = 0; j < N; j++) {
+        const cc = j === N - 1 ? r.cc : r.cc.slice();
+        pool.post(j, { type: "f1", id: i, n: r.f.length, y8: r.parts[j], cc }, [r.parts[j].buffer, cc.buffer]);
+      }
+      given++;
       t += r.f.length;
       after(t);
       const now = performance.now();
@@ -196,8 +212,19 @@ export async function streamPooled(
         ctx.progress(t + running, T, (now - began) / 1e3, engine.state_mb());
       }
     },
+    onSide: (r) => {
+      if (r.kind === "f1" && ++acks[r.id] === N) folded++;
+    },
+    until: () => folded === chunks,
   });
-  utilisation(pool, ctx, "streaming pass", began, pool.busyMs.s1 - busy0, chunks);
+  await pool.run("f2", N, () => ({ type: "f2" }), {
+    deal: true,
+    onResult: (_, r) => engine.put_lane(r.range, r.done, r.seg),
+  });
+  utilisation(pool, ctx, "streaming pass", began, pool.busyMs.s1 - busy0 + pool.busyMs.f1 - fold0, chunks);
+  ctx.log(
+    `streaming pass: solving ${((pool.busyMs.s1 - busy0) / T).toFixed(2)} ms, folding ${((pool.busyMs.f1 - fold0) / T).toFixed(2)} ms of worker time per frame; storing the traces ${(storeMs / T).toFixed(2)} ms here`,
+  );
   await pool.broadcast({ type: "free" });
 }
 
