@@ -1,5 +1,7 @@
 /// <reference lib="webworker" />
 
+import { HandleDir } from "../browser/dir";
+import { WINDOW_FILES, type WindowParts, writeRun } from "../browser/writer";
 import { readNpy } from "./npy";
 import { orderAvis } from "./order";
 import init, {
@@ -18,7 +20,7 @@ import init, {
   window_inputs,
 } from "./pkg/minime_core.js";
 import type { FromWorker, Stage, ToWorker } from "./protocol";
-import { defaultSession } from "./session";
+import { DEFAULTS, MOTION_PARAMS, sessionFor } from "./session";
 
 const post = (m: FromWorker, transfer: Transferable[] = []) => self.postMessage(m, transfer);
 const BLOCK = 64; // frames per File.slice read
@@ -35,12 +37,19 @@ let stageLabel = "";
 let current: Stage | null = null;
 let currentBegan = 0;
 const stageSeconds = new Map<string, number>();
+/** Every stage event as a `progress.jsonl` line (one JSON object, as `minime serve` reads them). */
+const progressLines: string[] = [];
 const now = () => Date.now() / 1e3;
+const stageEvent = (e: Extract<FromWorker, { type: "stage" }>) => {
+  const { type: _, ...event } = e;
+  progressLines.push(JSON.stringify(event));
+  post(e);
+};
 const start = (stage: Stage, frames: number, units: number, height: number, width: number) => {
   current = stage;
   currentBegan = performance.now();
   post({ type: "start", stage, label: stageLabel, frames, units, height, width });
-  post({ type: "stage", stage, event: "start", t: now(), note: stageLabel || undefined });
+  stageEvent({ type: "stage", stage, event: "start", t: now(), note: stageLabel || undefined });
 };
 /** End the running stage; returns its seconds. */
 const end = (note?: string, error = false): number => {
@@ -48,7 +57,7 @@ const end = (note?: string, error = false): number => {
   const seconds = (performance.now() - currentBegan) / 1e3;
   const total = (stageSeconds.get(current) ?? 0) + seconds;
   stageSeconds.set(current, total);
-  post({ type: "stage", stage: current, event: error ? "error" : "end", t: now(), seconds: total, note });
+  stageEvent({ type: "stage", stage: current, event: error ? "error" : "end", t: now(), seconds: total, note });
   current = null;
   return seconds;
 };
@@ -60,7 +69,7 @@ const progress = (done: number, frames: number, seconds: number, stateMb = 0) =>
 const encode = (v: unknown) => new TextEncoder().encode(JSON.stringify(v, null, 1));
 const decode = (b: Uint8Array) => JSON.parse(new TextDecoder().decode(b)) as Record<string, unknown>;
 
-async function run({ avis, inputs }: ToWorker): Promise<void> {
+async function run({ avis, inputs, out: dest, params, rawDir, fps }: ToWorker): Promise<void> {
   const tl = performance.now();
   const log = (what: string) =>
     post({ type: "log", message: `${what} at ${((performance.now() - tl) / 1e3).toFixed(1)} s` });
@@ -74,7 +83,8 @@ async function run({ avis, inputs }: ToWorker): Promise<void> {
   // (ref_stitch.py --session-inputs) overrides them and, with shifts.npy and template.npy,
   // the motion; stitch.json alone stitches ref_stitch.py's window units; an inputs folder
   // with a template is ref_pass1.py's, one without footprints ref_motion.py's
-  if (files.has("session.json") || !files.size) return runWindows(avis, files, log, wasm.memory, tl);
+  if (files.has("session.json") || !files.size)
+    return runWindows(avis, files, log, wasm.memory, tl, { out: dest, params: params ?? {}, rawDir, fps });
   if (files.has("stitch.json")) return runStitch(files, log, wasm.memory);
   if (files.has("template.npy")) return runPass1(avis, files, log, wasm.memory);
   if (!files.has("A_data.npy")) return runMotion(avis, files, log, wasm.memory);
@@ -303,18 +313,29 @@ async function runPass1(
   );
 }
 
+/** What a run folder needs besides the pipeline's outputs (`ToWorker`'s `out`, `params`, `rawDir`
+ * and `fps`). */
+type RunOpts = {
+  out?: FileSystemDirectoryHandle;
+  params: Record<string, unknown>;
+  rawDir?: string;
+  fps?: number | null;
+};
+
 /** The whole pipeline on the session: its motion (unless the inputs hold `shifts.npy` and
  * `template.npy`, the session's own), then every window (`session.json`'s window length and
- * stage parameters, or MiniMe's defaults), pass 1 to the CNMF loop each, keeping only each
- * window's final units (its tile store is cleared before the next window); then the stitch
- * and, with a `stream` object (the default has one), the streaming pass on the stitched
- * footprints. `omega_<t0>_<k>.npy` files replay numpy's draws in the window starting at t0. */
+ * stage parameters, or the given parameters over MiniMe's defaults), pass 1 to the CNMF loop
+ * each, keeping only each window's final units (its tile store is cleared before the next
+ * window); then the stitch and, with a `stream` object (the default has one), the streaming
+ * pass on the stitched footprints. `omega_<t0>_<k>.npy` files replay numpy's draws in the
+ * window starting at t0. With `opts.out` the outputs are written there as a run folder. */
 async function runWindows(
   avis: File[],
   files: Map<string, Uint8Array>,
   log: (what: string) => void,
   memory: WebAssembly.Memory,
   tl: number,
+  opts: RunOpts,
 ): Promise<void> {
   const segs = indexSegments(avis);
   if (!segs.length) throw new Error("no AVIs");
@@ -322,7 +343,7 @@ async function runWindows(
   for (const { avi } of segs) starts.push(starts[starts.length - 1] + avi.n_frames());
   const T = starts[starts.length - 1];
   const [H, W] = [segs[0].avi.height(), segs[0].avi.width()];
-  const session = files.get("session.json") ?? encode(defaultSession(H, W));
+  const session = files.get("session.json") ?? encode(sessionFor(H, W, opts.params));
   const sessionObj = decode(session);
   const out = new Map<string, Uint8Array>([["session.json", session]]);
   let total = 0;
@@ -349,6 +370,7 @@ async function runWindows(
   const stitch = new StitchEngine(new Map([["session.json", session]]));
   const root = await navigator.storage.getDirectory();
   const windows: Record<string, unknown>[] = [];
+  const kept: WindowParts[] = []; // what the run folder keeps of each window (with `opts.out`)
   for (let i = 0; i < n; i++) {
     const [t0, t1] = [flat[2 * i], flat[2 * i + 1]];
     const before = new Map(stageSeconds);
@@ -367,6 +389,14 @@ async function runWindows(
     const tag = `win_${String(i).padStart(2, "0")}_`;
     for (const [name, bytes] of w.files) if (name.startsWith("summary")) out.set(tag + name, bytes);
     windows.push(windowReport(t0, t1, w.files, before));
+    if (opts.out)
+      kept.push({
+        t0,
+        t1,
+        files: new Map(
+          WINDOW_FILES.flatMap((k) => (w.files.has(k) ? [[k, w.files.get(k)] as [string, Uint8Array]] : [])),
+        ),
+      });
     await root.removeEntry(TILE_DIR, { recursive: true }).catch(() => undefined);
   }
   for (const sg of segs) sg.avi.free();
@@ -390,10 +420,72 @@ async function runWindows(
     const sp = await streamPass(avis, sf, log, memory);
     for (const [name, bytes] of sp.files) res.set(name, bytes);
     total += sp.seconds;
-    res.set("units.csv", unitsTable(st.files, sp.files.get("mask.npy") as Uint8Array | undefined, W));
   }
-  res.set("report.json", encode(report(out, windows, T, H, W, (performance.now() - tl) / 1e3)));
+  const rep = report(out, windows, T, H, W, (performance.now() - tl) / 1e3);
+  res.set("report.json", encode(rep));
+  if (opts.out) {
+    const parts = { H, W, T, windows: kept, stitch: st.files, stream: res, report: rep };
+    // the traces now sit in the run folder; the scratch copy goes
+    res.set("C.npy", await saveRun(opts.out, opts, sessionObj, shifts, out, parts));
+  }
   post({ type: "done", files: res, seconds: total }, transferable(res));
+}
+
+type RunData = {
+  H: number;
+  W: number;
+  T: number;
+  windows: WindowParts[];
+  stitch: Map<string, Uint8Array>;
+  stream: Map<string, Uint8Array | Blob>;
+  report: Record<string, unknown>;
+};
+
+/** Write the run folder into `dir` (`browser/writer.ts`), then delete the traces' scratch file
+ * in OPFS; returns `cnmf/C.npy` of the run folder. `motion` holds the motion stage's outputs
+ * (`template.npy`, `quality.npy`), which only a run that estimated its own motion has. */
+async function saveRun(
+  dir: FileSystemDirectoryHandle,
+  opts: RunOpts,
+  session: Record<string, unknown>,
+  shifts: Uint8Array,
+  motion: Map<string, Uint8Array>,
+  d: RunData,
+): Promise<File> {
+  const bytes = (name: string) => {
+    const b = name === "shifts.npy" ? shifts : motion.get(name);
+    if (!b)
+      throw new Error(`a run folder needs ${name}: run from the AVIs alone, not with an inputs folder's own motion`);
+    return b;
+  };
+  const traces = d.stream.get("C.npy");
+  if (!(traces instanceof Blob))
+    throw new Error("a run folder needs the streaming pass: the session has no stream object");
+  const pass1 = session.pass1 as Record<string, unknown>;
+  const to = new HandleDir(dir);
+  await writeRun(to, {
+    session,
+    params: { ...DEFAULTS, ...opts.params, raw_dir: opts.rawDir, fps: opts.fps ?? undefined },
+    report: d.report,
+    H: d.H,
+    W: d.W,
+    T: d.T,
+    tile: Number(pass1.tile),
+    windows: d.windows,
+    motion: {
+      shifts: bytes("shifts.npy"),
+      template: bytes("template.npy"),
+      quality: bytes("quality.npy"),
+      params: Object.fromEntries(MOTION_PARAMS.map((k) => [k, pass1[k]])),
+    },
+    stitch: d.stitch,
+    stream: d.stream,
+    traces,
+    progress: progressLines,
+  });
+  const root = await navigator.storage.getDirectory();
+  await root.removeEntry(TRACE_DIR, { recursive: true }).catch(() => undefined);
+  return (await to.dir("cnmf")).file("C.npy");
 }
 
 /** One window's entry of `report.json`: its frames, the seconds of each of its stages
@@ -454,7 +546,10 @@ function report(
       units_windows: stitch.units_in,
       units_stitched: stitch.units_out,
       units_kept: stream.kept,
-      units_final: stream.merged ?? stitch.units_out,
+      units_merged: stream.merged ?? null,
+      // the final units are the stitched ones: cnmf/A.npz and C.npy hold them (the streaming
+      // pass's update and merge is cnmf/Amerged.npz)
+      units_final: stitch.units_out,
     },
     motion: {
       sidecar_reused: !out.has("summary_motion.json"),
@@ -471,35 +566,6 @@ function report(
     workers: 1,
     where: "browser",
   };
-}
-
-/** One row per stitched unit: centroid (weighted by the footprint), footprint pixels, the
- * windows it was found in, its brightness (peak `YrA` of its window units) and whether the
- * streaming pass's footprint update kept it (`mask.npy`). */
-function unitsTable(stitch: Map<string, Uint8Array>, mask: Uint8Array | undefined, W: number): Uint8Array {
-  const get = (name: string) => {
-    const b = stitch.get(name);
-    if (!b) throw new Error(`the stitch gave no ${name}`);
-    return readNpy(b).data;
-  };
-  const [indptr, indices, data] = [get("A_indptr.npy"), get("A_indices.npy"), get("A_data.npy")];
-  const [bright, nWin] = [get("bright.npy"), get("n_windows.npy")];
-  const kept = mask ? readNpy(mask).data : null;
-  const rows = ["unit,y,x,pixels,windows,brightness,kept"];
-  for (let i = 0; i + 1 < indptr.length; i++) {
-    let [sy, sx, sw] = [0, 0, 0];
-    for (let j = indptr[i]; j < indptr[i + 1]; j++) {
-      const [p, v] = [indices[j], data[j]];
-      sy += v * Math.floor(p / W);
-      sx += v * (p % W);
-      sw += v;
-    }
-    const n = indptr[i + 1] - indptr[i];
-    const c = sw > 0 ? [sy / sw, sx / sw] : [Number.NaN, Number.NaN];
-    const k = kept ? String(kept[i] ? 1 : 0) : "";
-    rows.push(`${i},${c[0].toFixed(2)},${c[1].toFixed(2)},${n},${nWin[i]},${bright[i].toPrecision(6)},${k}`);
-  }
-  return new TextEncoder().encode(`${rows.join("\n")}\n`);
 }
 
 /** The stitch (`minime-core stitch`) of `ref_stitch.py`'s window units (`stitch.json`,

@@ -83,7 +83,9 @@ def main() -> None:
     a.out.mkdir(parents=True)
     with (
         tempfile.TemporaryDirectory() as cache,
-        TestClient(create_app(TOKEN, cache_root=Path(cache))) as c,
+        # a server error is an answer (500), not an exception: a browser run has no factors in
+        # Python's format, so main fails on its recon, pre, noise and residual requests
+        TestClient(create_app(TOKEN, cache_root=Path(cache)), raise_server_exceptions=False) as c,
     ):
         root = a.run.resolve().parent
         runs = c.get("/api/runs", params={"root": str(root)}, headers={"x-token": TOKEN}).json()[
@@ -103,7 +105,11 @@ def main() -> None:
                 np.save(a.out / f"{name}.npy", arr)
                 file = f"{name}.npy"
             else:
-                (a.out / f"{name}.json").write_text(json.dumps(res.json(), indent=1))
+                try:
+                    body_json = res.json()
+                except ValueError:  # a 500 answers in plain text
+                    body_json = {"detail": res.text}
+                (a.out / f"{name}.json").write_text(json.dumps(body_json, indent=1))
                 file = f"{name}.json"
             manifest.append(
                 {

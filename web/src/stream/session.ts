@@ -50,9 +50,38 @@ export const STREAM_BATCH = 100;
 
 export type Session = ReturnType<typeof defaultSession>;
 
+/** The parameters the browser pipeline reads (everything `defaultSessionFrom` takes from DEFAULTS). */
+export const SESSION_PARAMS = Object.keys(DEFAULTS) as readonly string[];
+
+/** The motion sidecar's parameters (`Params.motion_params()`), the ones that fix the shifts. */
+export const MOTION_PARAMS = [
+  "median_ksize",
+  "tophat_wnd",
+  "motion_max_shift",
+  "motion_down",
+  "template_frames",
+  "motion_before_tophat",
+  "motion_bandpass",
+] as const;
+
 /** `session.json` for `H` x `W` frames with every parameter at its default. */
 export function defaultSession(H: number, W: number, windowFrames = WINDOW_FRAMES) {
-  const p = DEFAULTS;
+  return defaultSessionFrom(DEFAULTS, H, W, windowFrames);
+}
+
+/** `session.json` for `H` x `W` frames with the given parameters over the defaults. */
+export function sessionFor(H: number, W: number, params: Record<string, unknown>, windowFrames = WINDOW_FRAMES) {
+  return defaultSessionFrom({ ...DEFAULTS, ...params } as typeof DEFAULTS, H, W, windowFrames);
+}
+
+/** Changed parameters the browser pipeline would ignore (`workers`: it always runs on one thread). */
+export function unusedParams(params: Record<string, unknown>): string[] {
+  return Object.keys(params)
+    .filter((k) => !SESSION_PARAMS.includes(k) && k !== "workers")
+    .sort();
+}
+
+function defaultSessionFrom(p: typeof DEFAULTS, H: number, W: number, windowFrames: number) {
   const size = { H, W };
   return {
     window_frames: windowFrames,
