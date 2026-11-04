@@ -1,14 +1,16 @@
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { Computing, getArray, getJSON } from "../../api";
-import { writeNpy } from "../npy";
+import { linspaceInt, percentile, toU8 } from "../derived/contrast";
+import { readNpy, writeNpy } from "../npy";
 import { csrNpz } from "../npz";
 import { state } from "../state";
 import { DATA, setupE2eRun } from "../testing/e2eRun";
 import { NodeDir } from "../testing/nodeDir";
 import { settled } from "../testing/settled";
+import { windowDir } from "../writer";
 
 type Units = {
   stage: string;
@@ -77,8 +79,17 @@ describe("view routes on the e2e run", () => {
     await bad("/frame/-1?source=raw", 400, "frame -1 out of range 0..299");
     await bad("/frame/abc?source=raw", 422, "t must be an integer");
     await bad("/frame/1.5?source=raw", 422, "t must be an integer");
-    await bad("/frame/0?source=pre", 404, "pre frames is not available for this run");
     await bad("/frame/0", 404, "recon frames is not available for this run"); // the default source
+    await bad("/frame/0?source=recon", 404, "recon frames is not available for this run"); // Python factors
+  });
+
+  it("answers the preprocessed frames from the flat tile store of a Python run", async () => {
+    await expect(getArray(`/runs/${rid}/frame/10?source=pre`)).rejects.toBeInstanceOf(Computing);
+    const a = await settled(() => getArray(`/runs/${rid}/frame/10?source=pre`));
+    expect([a.shape, a.dtype]).toEqual([[64, 64], "uint8"]);
+    const b = await getArray(`/runs/${rid}/frame/11?source=pre`); // the contrast is cached now
+    expect(Array.from(b.data)).not.toEqual(Array.from(a.data));
+    expect((await getJSON<{ available: { pre: boolean } }>(`/runs/${rid}/summary`)).available.pre).toBe(true);
   });
 
   it("computes the contrast once, then answers frames at once", async () => {
@@ -175,6 +186,21 @@ describe("other broken run folders", () => {
     });
   });
 
+  it("says what is wrong with block maxima that do not fit the run, with 500, once computed", async () => {
+    const { rid } = await setupE2eRun(
+      variant((d) => {
+        const w0 = join(d, "factors", windowDir(0));
+        mkdirSync(w0, { recursive: true });
+        writeFileSync(join(w0, "block_max.npy"), writeNpy([2, 8, 8], new Uint8Array(128)));
+      }),
+    );
+    await expect(getArray(`/runs/${rid}/motion/residual`)).rejects.toBeInstanceOf(Computing);
+    await expect(settled(() => getArray(`/runs/${rid}/motion/residual`))).rejects.toMatchObject({
+      status: 500,
+      message: "factors/w00/block_max.npy is shaped (2, 8, 8), not (n, 64, 64)",
+    });
+  });
+
   it("has no unit peaks without a peak for every unit", async () => {
     for (const csv of ["unit_id,size_px\n0,5\n", "unit_id,peak\n0,1.5\n"]) {
       const { rid } = await setupE2eRun(variant((d) => writeFileSync(join(d, "cnmf/units.csv"), csv)));
@@ -238,5 +264,79 @@ describe("a unit without pixels", () => {
       { id: 0, centroid: [null, null], size_px: 0, peak: 0, polygons: [] },
       { id: 1, centroid: [1, 1], size_px: 1, peak: 2.5, polygons: [[[1, 1]]] },
     ]);
+  });
+});
+
+/** The e2e run as a browser run writes it: `factors/meta.json` with its windows and `factors/w00/`
+ * (constant factors, W = 1, V[t] = t, mean = 10; the Python run's block maxima) and the Python
+ * run's tile files moved to `tiles/w00/`. */
+const browserVariant = (): string =>
+  variant((d) => {
+    const meta = JSON.parse(readFileSync(join(d, "factors/meta.json"), "utf8"));
+    writeFileSync(
+      join(d, "factors/meta.json"),
+      JSON.stringify({ ...meta, ranks: [1, 1, 1, 1], windows: [{ t0: 0, t1: 300 }] }),
+    );
+    const w0 = join(d, "factors", windowDir(0));
+    mkdirSync(w0, { recursive: true });
+    writeFileSync(join(w0, "W.npy"), writeNpy([4096], new Float32Array(4096).fill(1)));
+    writeFileSync(
+      join(w0, "V.npy"),
+      writeNpy(
+        [1200],
+        Float32Array.from({ length: 1200 }, (_, i) => i % 300),
+      ),
+    );
+    writeFileSync(join(w0, "mean.npy"), writeNpy([4096], new Float32Array(4096).fill(10)));
+    writeFileSync(join(w0, "rank.npy"), writeNpy([4], BigInt64Array.of(1n, 1n, 1n, 1n)));
+    cpSync(join(d, "factors/block_max.npy"), join(w0, "block_max.npy"));
+    mkdirSync(join(d, "tiles", windowDir(0)));
+    for (const f of readdirSync(join(d, "tiles")).filter((n) => n.startsWith("tile_")))
+      renameSync(join(d, "tiles", f), join(d, "tiles", windowDir(0), f));
+  });
+
+describe("view routes on a browser run (the factors and tile store per window)", () => {
+  let rid = "";
+  beforeAll(async () => {
+    rid = (await setupE2eRun(browserVariant())).rid;
+  });
+
+  it("answers recon frames from the window's factors: frame t is 10 + t, scaled by the contrast", async () => {
+    await expect(getArray(`/runs/${rid}/frame/3?source=recon`)).rejects.toBeInstanceOf(Computing);
+    const a = await settled(() => getArray(`/runs/${rid}/frame/3?source=recon`));
+    expect([a.shape, a.dtype]).toEqual([[64, 64], "uint8"]);
+    // 50 frames spread over the run set the contrast, each of 4096 equal pixels: 10 + t for each t
+    const ts = linspaceInt(299, 50);
+    const sorted = Float32Array.from(ts.flatMap((t) => Array<number>(64 * 64).fill(10 + t))).sort();
+    const [lo, hi] = [percentile(sorted, 1), percentile(sorted, 99.9)];
+    expect(new Set(a.data)).toEqual(new Set(toU8(Float32Array.of(13), lo, hi)));
+    const doc = await (await state.cache(rid)).loadJSON<Record<string, number[]>>("contrast.json", {});
+    expect(doc.recon).toEqual([lo, hi]);
+    const b = await getArray(`/runs/${rid}/frame/200?source=recon`); // no Computing now
+    expect(new Set(b.data)).toEqual(new Set(toU8(Float32Array.of(210), lo, hi)));
+    expect(a.data[0]).toBeLessThan(b.data[0]);
+  });
+
+  it("answers the default source, recon, the same way", async () => {
+    const a = await settled(() => getArray(`/runs/${rid}/frame/3`));
+    expect([a.shape, a.dtype]).toEqual([[64, 64], "uint8"]);
+  });
+
+  it("answers pre frames from tiles/w00 byte for byte as main does from the flat store it was moved from", async () => {
+    const got = await settled(() => getArray(`/runs/${rid}/frame/100?source=pre`));
+    const want = readNpy(new Uint8Array(readFileSync(join(DATA, "contract-python/0017.npy"))));
+    expect(got.shape).toEqual(want.shape);
+    expect(Array.from(got.data)).toEqual(Array.from(want.data));
+  });
+
+  it("computes the motion residual from the windows' block maxima on the first request, then answers it", async () => {
+    await expect(getArray(`/runs/${rid}/motion/residual`)).rejects.toBeInstanceOf(Computing);
+    const a = await settled(() => getArray(`/runs/${rid}/motion/residual`));
+    expect([a.shape, a.dtype]).toEqual([[11, 3], "float32"]);
+    expect(await (await state.cache(rid)).has("residual.npy")).toBe(true);
+    const again = await getArray(`/runs/${rid}/motion/residual`); // cached: no Computing
+    expect(Array.from(again.data)).toEqual(Array.from(a.data));
+    const want = readNpy(new Uint8Array(readFileSync(join(DATA, "contract-python/0007.npy"))));
+    for (let i = 0; i < 33; i++) expect(Math.abs(a.data[i] - want.data[i])).toBeLessThan(1e-4);
   });
 });

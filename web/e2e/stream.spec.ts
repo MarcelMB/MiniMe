@@ -5,6 +5,8 @@ import { expect, type Page, test } from "@playwright/test";
 // Runs the browser pipeline on raw AVIs and saves its outputs for the
 // experiments/streaming/check_*.py scripts:
 //   STREAM_RAW=<raw dir> STREAM_INPUTS=<ref>/inputs STREAM_OUT=<ref>/rust_browser npm run e2e:stream
+// STREAM_KEEP_STORE=1 keeps each window's preprocessed tile store in the run folder (`tiles/wNN/`,
+// the frames' size again, and exported with it): the viewer's preprocessed frames need it.
 // Without STREAM_INPUTS the AVIs alone are picked (the whole pipeline, default parameters), and
 // the MiniMe run folder the page wrote to browser storage (`runs/<name>`) is saved to
 // <STREAM_OUT>/run, which `minime score` and `scripts/contract_dump.py` open.
@@ -62,7 +64,7 @@ test("streams raw AVIs in the browser and saves the outputs", async ({ page }) =
   page.on("worker", (w) => console.log(`worker started: ${w.url()}`));
   page.on("console", (m) => m.text().startsWith("[worker]") && console.log(m.text()));
   page.on("console", (m) => m.text().startsWith("[stream]") && console.log(m.text()));
-  await page.goto("/#/stream");
+  await page.goto(process.env.STREAM_KEEP_STORE ? "/?keep#/stream" : "/#/stream");
   const avis = readdirSync(raw!)
     .filter((f) => /^\d+.*\.avi$/i.test(f))
     .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10)) // STREAM_FILES takes the first n

@@ -172,7 +172,10 @@ export function StreamPage() {
         ended: Date.now() / 1e3,
         error: `worker failed: ${e.message || "could not start"}`,
       }));
-    w.postMessage({ avis, inputs, out });
+    // `?keep` in the page's address keeps each window's tile store in the run folder (the e2e spec
+    // sets it with STREAM_KEEP_STORE=1): the whole movie again, so never by default
+    const keepStore = new URLSearchParams(window.location.search).has("keep");
+    w.postMessage({ avis, inputs, out, keepStore });
   };
 
   const ordered = orderAvis(avis);

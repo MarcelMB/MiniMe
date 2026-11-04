@@ -358,7 +358,7 @@ pub struct Motion {
 }
 
 impl Motion {
-    fn from_image(corr: Correlator, img: Vec<f32>, max_shift: usize) -> Self {
+    pub(crate) fn from_image(corr: Correlator, img: Vec<f32>, max_shift: usize) -> Self {
         let spec = corr.rfft2(&img).iter().map(|v| v.conj()).collect();
         let image = corr.irfft2(corr.rfft2(&img));
         let m = max_shift / corr.down;
@@ -474,6 +474,49 @@ impl Motion {
     }
 }
 
+/// `serve.derived.block_residual` of `n` block maxima (`block_max`, `n * h * w` float32, frame
+/// size from `p`): each block's `(dy, dx)` and Pearson correlation against the session's max
+/// projection, `(n, 3)` flat. The reference is `motion._mean_template(max_proj, down=1)` (the
+/// prepared max projection, no downsampling) and the shifts search `p.motion_max_shift` px (main
+/// calls `motion.estimate` with its default of 20, which a run with the default parameters
+/// shares); like main, the correlation is of the block as it is, not shifted. A registration that
+/// held gives ~0 px for every block.
+pub fn block_residual(
+    block_max: &[f32],
+    n: usize,
+    max_proj: &[f32],
+    p: &MotionParams,
+) -> Result<Vec<f32>, String> {
+    let px = p.h * p.w;
+    if block_max.len() != n * px {
+        return Err(format!(
+            "{n} blocks of {} x {} need {} values, got {}",
+            p.h,
+            p.w,
+            n * px,
+            block_max.len()
+        ));
+    }
+    if max_proj.len() != px {
+        return Err(format!(
+            "the max projection holds {} values, not {} x {} = {px}",
+            max_proj.len(),
+            p.h,
+            p.w
+        ));
+    }
+    let corr = Correlator::new(p.h, p.w, 1)?;
+    let img = corr.prep(&Reg::F32(max_proj.to_vec()));
+    let reference = Motion::from_image(corr, img, p.motion_max_shift);
+    let mut out = Vec::with_capacity(3 * n);
+    for block in block_max.chunks_exact(px.max(1)).take(n) {
+        let reg = Reg::F32(block.to_vec());
+        let [dy, dx] = reference.estimate(&reg);
+        out.extend([dy as f32, dx as f32, reference.quality(&reg)]);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,6 +528,98 @@ mod tests {
         assert!(win[10] && !win[11] && win[290] && !win[289]);
         let hn = hanning(5);
         assert_eq!(hn, vec![0.0, 0.5, 1.0, 0.5, 0.0]);
+    }
+
+    /// A smooth test image with two blobs: `shift_f32(img, .., dy, dx)` is its warp.
+    fn blobs(h: usize, w: usize) -> Vec<f32> {
+        (0..h * w)
+            .map(|i| {
+                let (y, x) = ((i / w) as f32, (i % w) as f32);
+                let r2 = (y - 30.0).powi(2) + (x - 41.0).powi(2);
+                100.0 * (-r2 / 50.0).exp() + 40.0 * (-((y - 12.0).powi(2) + (x - 60.0).powi(2)) / 20.0).exp()
+            })
+            .collect()
+    }
+
+    fn residual_params() -> MotionParams {
+        MotionParams {
+            motion_down: 2, // block_residual compares at full resolution whatever this says
+            ..params(7)
+        }
+    }
+
+    #[test]
+    fn block_residual_finds_the_offset_of_each_block_from_the_session_max() {
+        // blocks that are the session's max shifted by (dy, dx) need the shift (-dy, -dx)
+        let (h, w) = (64, 80);
+        let img = blobs(h, w);
+        let shifts = [(0.0f32, 0.0f32), (4.0, -6.0), (-3.0, 2.0)];
+        let blocks: Vec<f32> = shifts
+            .iter()
+            .flat_map(|&(dy, dx)| shift_f32(&img, h, w, dy, dx))
+            .collect();
+        let p = MotionParams {
+            h,
+            w,
+            ..residual_params()
+        };
+        let out = block_residual(&blocks, 3, &img, &p).unwrap();
+        assert_eq!(out.len(), 9);
+        for (b, &(dy, dx)) in shifts.iter().enumerate() {
+            let (ry, rx, c) = (out[3 * b], out[3 * b + 1], out[3 * b + 2]);
+            assert!(
+                (ry + dy).abs() < 0.5 && (rx + dx).abs() < 0.5,
+                "block {b}: {ry} {rx}"
+            );
+            // the correlation is that of the block with the session max, not of the aligned block
+            assert!(c > 0.5 && c <= 1.0 + 1e-6, "block {b}: {c}");
+        }
+        assert!(out[2] > 0.999, "an unshifted block matches the max: {}", out[2]);
+    }
+
+    #[test]
+    fn block_residual_looks_no_further_than_the_max_shift() {
+        let (h, w) = (64, 80);
+        let img = blobs(h, w);
+        let block = shift_f32(&img, h, w, 5.0, 0.0);
+        let near = MotionParams {
+            h,
+            w,
+            motion_max_shift: 2,
+            ..residual_params()
+        };
+        let [ry, _, _] = block_residual(&block, 1, &img, &near).unwrap()[..] else {
+            panic!()
+        };
+        assert!(ry.abs() <= 2.5, "{ry}");
+        let far = MotionParams {
+            motion_max_shift: 20,
+            ..near
+        };
+        let [ry, _, _] = block_residual(&block, 1, &img, &far).unwrap()[..] else {
+            panic!()
+        };
+        // the Hann window pulls a large offset in a little (-4.5 for 5 px here)
+        assert!((ry + 5.0).abs() < 1.0, "{ry}");
+    }
+
+    #[test]
+    fn block_residual_checks_its_sizes() {
+        let p = MotionParams {
+            h: 8,
+            w: 8,
+            ..residual_params()
+        };
+        let img = vec![0f32; 64];
+        assert_eq!(
+            block_residual(&[0f32; 100], 2, &img, &p).err().as_deref(),
+            Some("2 blocks of 8 x 8 need 128 values, got 100")
+        );
+        assert_eq!(
+            block_residual(&[0f32; 64], 1, &img[..10], &p).err().as_deref(),
+            Some("the max projection holds 10 values, not 8 x 8 = 64")
+        );
+        assert_eq!(block_residual(&[], 0, &img, &p).unwrap(), Vec::<f32>::new());
     }
 
     #[test]
