@@ -40,6 +40,21 @@ mod imp {
     pub fn subs(a: V, b: V) -> V {
         w::u8x16_sub_sat(a, b)
     }
+
+    /// Sixteen rounded 2 x 2 block means `(a + b + c + d + 2) >> 2` of two rows: `a0 a1` are
+    /// 32 consecutive bytes of the upper row, `b0 b1` of the lower one.
+    #[inline(always)]
+    pub fn mean2x2(a0: V, a1: V, b0: V, b1: V) -> V {
+        let two = w::u16x8_splat(2);
+        let m = |a: V, b: V| {
+            let s = w::u16x8_add(
+                w::u16x8_extadd_pairwise_u8x16(a),
+                w::u16x8_extadd_pairwise_u8x16(b),
+            );
+            w::u16x8_shr(w::u16x8_add(s, two), 2)
+        };
+        w::u8x16_narrow_i16x8(m(a0, b0), m(a1, b1))
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -76,6 +91,19 @@ mod imp {
     pub fn subs(a: V, b: V) -> V {
         unsafe { core::arch::aarch64::vqsubq_u8(a, b) }
     }
+
+    /// Sixteen rounded 2 x 2 block means `(a + b + c + d + 2) >> 2` of two rows: `a0 a1` are
+    /// 32 consecutive bytes of the upper row, `b0 b1` of the lower one.
+    #[inline(always)]
+    pub fn mean2x2(a0: V, a1: V, b0: V, b1: V) -> V {
+        unsafe {
+            let m = |a: V, b: V| {
+                let s = a::vaddq_u16(a::vpaddlq_u8(a), a::vpaddlq_u8(b));
+                a::vshrq_n_u16::<2>(a::vaddq_u16(s, a::vdupq_n_u16(2)))
+            };
+            a::vcombine_u8(a::vmovn_u16(m(a0, b0)), a::vmovn_u16(m(a1, b1)))
+        }
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -111,6 +139,25 @@ mod imp {
     #[inline(always)]
     pub fn subs(a: V, b: V) -> V {
         unsafe { x::_mm_subs_epu8(a, b) }
+    }
+
+    /// Sixteen rounded 2 x 2 block means `(a + b + c + d + 2) >> 2` of two rows: `a0 a1` are
+    /// 32 consecutive bytes of the upper row, `b0 b1` of the lower one.
+    #[inline(always)]
+    pub fn mean2x2(a0: V, a1: V, b0: V, b1: V) -> V {
+        let (mut a, mut b) = ([0u8; 32], [0u8; 32]);
+        unsafe {
+            store(a.as_mut_ptr(), a0);
+            store(a.as_mut_ptr().add(16), a1);
+            store(b.as_mut_ptr(), b0);
+            store(b.as_mut_ptr().add(16), b1);
+        }
+        let out: [u8; 16] = std::array::from_fn(|i| {
+            let s =
+                u16::from(a[2 * i]) + u16::from(a[2 * i + 1]) + u16::from(b[2 * i]) + u16::from(b[2 * i + 1]);
+            ((s + 2) >> 2) as u8
+        });
+        unsafe { load(out.as_ptr()) }
     }
 }
 
@@ -150,6 +197,25 @@ mod imp {
     #[inline(always)]
     pub fn subs(a: V, b: V) -> V {
         std::array::from_fn(|i| a[i].saturating_sub(b[i]))
+    }
+
+    /// Sixteen rounded 2 x 2 block means `(a + b + c + d + 2) >> 2` of two rows: `a0 a1` are
+    /// 32 consecutive bytes of the upper row, `b0 b1` of the lower one.
+    #[inline(always)]
+    pub fn mean2x2(a0: V, a1: V, b0: V, b1: V) -> V {
+        let (mut a, mut b) = ([0u8; 32], [0u8; 32]);
+        unsafe {
+            store(a.as_mut_ptr(), a0);
+            store(a.as_mut_ptr().add(16), a1);
+            store(b.as_mut_ptr(), b0);
+            store(b.as_mut_ptr().add(16), b1);
+        }
+        let out: [u8; 16] = std::array::from_fn(|i| {
+            let s =
+                u16::from(a[2 * i]) + u16::from(a[2 * i + 1]) + u16::from(b[2 * i]) + u16::from(b[2 * i + 1]);
+            ((s + 2) >> 2) as u8
+        });
+        unsafe { load(out.as_ptr()) }
     }
 }
 

@@ -98,6 +98,19 @@ fn main() {
                 .collect()
         })
         .collect();
+    let frames_f32: Vec<Vec<f32>> = fr.iter().map(|f| to_f32(f)).collect();
+    ab(
+        "area_down2_u8",
+        &den,
+        |f| area_down2_u8_scalar(f, h, w),
+        |f| area_down2_u8(f, h, w),
+    );
+    ab(
+        "area_down2_f32",
+        &frames_f32,
+        |f| area_down2_f32_scalar(f, h, w),
+        |f| area_down2_f32(f, h, w),
+    );
     ab(
         "median 7",
         &fr,

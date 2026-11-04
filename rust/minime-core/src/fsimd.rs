@@ -88,6 +88,18 @@ mod imp {
         w::f64x2_promote_low_f32x4(w::f32x4_demote_f64x2_zero(x))
     }
 
+    /// The even-indexed lanes of `a b` (eight consecutive floats): `a0 a2 b0 b2`.
+    #[inline(always)]
+    pub fn even(a: F4, b: F4) -> F4 {
+        w::i32x4_shuffle::<0, 2, 4, 6>(a, b)
+    }
+
+    /// The odd-indexed lanes of `a b`: `a1 a3 b1 b3`.
+    #[inline(always)]
+    pub fn odd(a: F4, b: F4) -> F4 {
+        w::i32x4_shuffle::<1, 3, 5, 7>(a, b)
+    }
+
     /// Interleaves the low halves: `a0 b0 a1 b1`.
     #[inline(always)]
     pub fn zip_lo(a: F4, b: F4) -> F4 {
@@ -204,6 +216,18 @@ mod imp {
     #[inline(always)]
     pub fn d_round(x: D2) -> D2 {
         unsafe { a::vcvt_f64_f32(a::vcvt_f32_f64(x)) }
+    }
+
+    /// The even-indexed lanes of `x y` (eight consecutive floats): `x0 x2 y0 y2`.
+    #[inline(always)]
+    pub fn even(x: F4, y: F4) -> F4 {
+        unsafe { a::vuzp1q_f32(x, y) }
+    }
+
+    /// The odd-indexed lanes of `x y`: `x1 x3 y1 y3`.
+    #[inline(always)]
+    pub fn odd(x: F4, y: F4) -> F4 {
+        unsafe { a::vuzp2q_f32(x, y) }
     }
 
     /// Interleaves the low halves: `a0 b0 a1 b1`.
@@ -327,6 +351,16 @@ mod imp {
     }
 
     #[inline(always)]
+    pub fn even(a: F4, b: F4) -> F4 {
+        [a[0], a[2], b[0], b[2]]
+    }
+
+    #[inline(always)]
+    pub fn odd(a: F4, b: F4) -> F4 {
+        [a[1], a[3], b[1], b[3]]
+    }
+
+    #[inline(always)]
     pub fn zip_lo(a: F4, b: F4) -> F4 {
         [a[0], b[0], a[1], b[1]]
     }
@@ -350,8 +384,8 @@ mod imp {
 }
 
 pub use imp::{
-    add, d_add, d_mul, d_round, d_splat, hi, lo, load, mul, narrow16, pack, splat, store, sub, widen16,
-    zip_hi, zip_lo, D2, F4,
+    add, d_add, d_mul, d_round, d_splat, even, hi, lo, load, mul, narrow16, odd, pack, splat, store, sub,
+    widen16, zip_hi, zip_lo, D2, F4,
 };
 
 /// Four `f32` values held as two `f64` pairs (every lane exactly an `f32`'s value when it comes
