@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { fmtDuration } from "../format";
-import { type ProgressEvent, type StageRow, stageRows } from "../launch/params";
+import { defaultRunName, type ProgressEvent, type StageRow, stageRows } from "../launch/params";
 import { StageRows } from "../launch/StageRows";
 import { orderAvis, rate } from "./order";
 import type { FromWorker, Stage } from "./protocol";
@@ -36,6 +36,8 @@ type Run = {
   log: string[];
   done: Done | null;
   error: string;
+  /** Where the run folder is written in browser storage (`runs/<name>`), empty without one. */
+  folder: string;
 };
 
 /** The outputs worth a first look, in this order; the rest sit behind "all files". */
@@ -44,7 +46,6 @@ const MAIN_OUTPUTS: [string, string][] = [
   ["A_indices.npy", "footprint pixel indices"],
   ["A_indptr.npy", "footprint row pointers"],
   ["C.npy", "traces, (K, T) float32"],
-  ["units.csv", "one row per unit: centroid, size, windows, brightness, kept"],
   ["shifts.npy", "motion, (T, 2) dy, dx"],
   ["Amerged_data.npy", "footprints after the streaming update and merge (with Amerged_indices, Amerged_indptr)"],
   ["report.json", "stages, seconds, counts (MiniMe's report.json fields)"],
@@ -66,19 +67,46 @@ export function StreamPage() {
     return () => clearInterval(tick);
   }, [running]);
 
-  const start = () => {
+  const start = async () => {
     worker.current?.terminate();
+    // from the AVIs alone the run goes to a run folder in browser storage (until New run does
+    // this); a reference-inputs folder has its own session and only returns its outputs
+    let out: FileSystemDirectoryHandle | undefined;
+    let folder = "";
+    const began = Date.now() / 1e3;
+    if (!inputs.length) {
+      const name = defaultRunName(new Date());
+      try {
+        const runs = await (await navigator.storage.getDirectory()).getDirectoryHandle("runs", { create: true });
+        out = await runs.getDirectoryHandle(name, { create: true });
+        folder = `runs/${name}`;
+      } catch (e) {
+        setRun({
+          status: "failed",
+          began,
+          ended: Date.now() / 1e3,
+          events: [],
+          live: null,
+          log: [],
+          done: null,
+          error: `could not open browser storage: ${e instanceof Error ? e.message : String(e)}`,
+          folder: "",
+        });
+        return;
+      }
+    }
     const w = new Worker(new URL("./stream.worker.ts", import.meta.url), { type: "module" });
     worker.current = w;
     setRun({
       status: "running",
-      began: Date.now() / 1e3,
+      began,
       ended: null,
       events: [],
       live: null,
       log: [],
       done: null,
       error: "",
+      folder,
     });
     const update = (f: (r: Run) => Run) => setRun((r) => (r ? f(r) : r));
     w.onmessage = (e: MessageEvent<FromWorker>) => {
@@ -144,7 +172,7 @@ export function StreamPage() {
         ended: Date.now() / 1e3,
         error: `worker failed: ${e.message || "could not start"}`,
       }));
-    w.postMessage({ avis, inputs });
+    w.postMessage({ avis, inputs, out });
   };
 
   const ordered = orderAvis(avis);
@@ -235,6 +263,7 @@ function RunView({ run, now }: { run: Run; now: number }) {
         </p>
       )}
       {run.done && <Results d={run.done} />}
+      {run.done && run.folder && <p className="muted">Run folder in browser storage: {run.folder}</p>}
     </>
   );
 }

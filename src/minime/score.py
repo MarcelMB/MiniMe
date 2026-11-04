@@ -238,7 +238,10 @@ def score_pipeline_dir(run_dir: Path, raw_dir: Path | None = None) -> dict:
         raw_dir = Path(_read_json(run_dir / "params.json")["raw_dir"])
     meta = _read_json(run_dir / "factors" / "meta.json")
     A = sparse.load_npz(run_dir / "cnmf" / "A.npz")
-    traces = np.load(run_dir / "cnmf" / "YrA.npy")
+    yra = run_dir / "cnmf" / "YrA.npy"
+    traces = np.load(
+        yra if yra.exists() else run_dir / "cnmf" / "C.npy"
+    )  # browser runs keep C only
     shifts = np.load(run_dir / "motion" / "arrays.npz")["shifts"]
     return score_run(
         A, traces, int(meta["H"]), int(meta["W"]), Path(raw_dir).parent / "meta.json", shifts

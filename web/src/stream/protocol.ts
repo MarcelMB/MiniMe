@@ -1,7 +1,18 @@
 import type { ProgressEvent } from "../launch/params";
 
-/** Messages between the stream page and its worker. */
-export type ToWorker = { avis: File[]; inputs: File[] };
+/** Messages between the stream page and its worker. With `out` (a writable folder) the whole
+ * pipeline writes its run folder there (`browser/writer.ts`); without it the outputs only come
+ * back in `done` (the reference-folder e2e runs). `params` are the changed parameters over
+ * MiniMe's defaults, `rawDir` the raw folder's path for `params.json` and `fps` the frame rate. */
+export type ToWorker = {
+  avis: File[];
+  inputs: File[];
+  out?: FileSystemDirectoryHandle;
+  params?: Record<string, unknown>;
+  keepStore?: boolean;
+  rawDir?: string;
+  fps?: number | null;
+};
 
 export type Stage = "stream" | "motion" | "pass1" | "pass2" | "seeds" | "init" | "cnmf" | "stitch";
 
