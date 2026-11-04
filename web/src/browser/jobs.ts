@@ -3,7 +3,7 @@ import type { FromWorker, ToWorker } from "../stream/protocol";
 import { unusedParams } from "../stream/session";
 import type { Job } from "../types";
 import { listSegments, RawVideo } from "./avi";
-import { type Dir, exists } from "./dir";
+import { type Dir, exists, readJSON, writeJSON } from "./dir";
 import type { Folders } from "./folders";
 import type { KV } from "./kv";
 import { pyFloat, pyRepr } from "./num";
@@ -39,6 +39,59 @@ function checkFps(fps: number): void {
   if (!(fps > 0 && fps <= 1000)) throw new HttpError(400, `frame rate must be in (0, 1000] Hz, got ${pyFloat(fps)}`);
 }
 
+/** `pipeline._check_out_dir`: the run is never written into, or around, the raw folder. */
+function checkOutDir(raw: string, out: string): void {
+  if (raw === out || raw.startsWith(`${out}/`))
+    throw new HttpError(400, `output dir ${out} would contain the raw dir ${raw}; choose another`);
+  if (out.startsWith(`${raw}/`))
+    throw new HttpError(400, `output dir ${out} lies inside the raw dir ${raw}; choose another`);
+}
+
+/** `runs.is_run`: a `params.json` and a `report.json`. */
+async function isRun(d: Dir): Promise<boolean> {
+  return (await exists(d, "params.json")) && (await exists(d, "report.json"));
+}
+
+/** What `pipeline._is_minime_run` takes as a MiniMe `params.json`: a version key (any release of
+ * the package) or, for a run this app wrote, `source: "browser"`. */
+const VERSION_KEYS = ["minime_version", "caanfast_version", "cafast_version", "fastminian_version"];
+
+/** `pipeline._is_minime_run`: `d` holds a `params.json` or `report.json` that a MiniMe run wrote. */
+async function isMinimeRun(d: Dir): Promise<boolean> {
+  const doc = async (name: string): Promise<Record<string, unknown> | null> => {
+    const v = await readJSON<unknown>(d, name).catch(() => null);
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  };
+  const params = await doc("params.json");
+  if (params && (VERSION_KEYS.some((k) => k in params) || params.source === "browser")) return true;
+  const report = await doc("report.json");
+  return report !== null && "stages" in report;
+}
+
+/** `pipeline._check_wipe` and `_reset_dir`, with `runs.is_run` and the refusal of `submit`: the
+ * fresh, empty `processed/<name>`. An existing folder is cleared only when it holds a MiniMe
+ * run (the run being replaced needs `overwrite`; the leftovers of an interrupted one do not);
+ * anything else in it is somebody's files and stays. */
+async function resetOutDir(processed: Dir, name: string, outDir: string, overwrite: boolean): Promise<Dir> {
+  const entry = (await processed.entries()).find((e) => e.name === name);
+  if (entry?.kind === "file") throw new HttpError(400, `output path ${outDir} exists and is not a directory`);
+  if (entry) {
+    const old = await processed.dir(name);
+    if ((await isRun(old)) && !overwrite)
+      throw new HttpError(400, `${outDir} already holds a run; choose another name or overwrite`);
+    if ((await old.entries()).length && !(await isMinimeRun(old)))
+      throw new HttpError(
+        400,
+        `output dir ${outDir} is not empty and holds no minime params.json / report.json; refusing to delete it (choose another name)`,
+      );
+    await processed.remove(name, { recursive: true });
+  }
+  const out = await processed.dir(name, { create: true });
+  // a handle that could not remove an entry says nothing: what is left would end up in the new run
+  if ((await out.entries()).length) throw new HttpError(500, `could not clear ${outDir}`);
+  return out;
+}
+
 /** One run at a time in this tab (main: `jobs.JobManager`, which queues). Job records live in
  * `kv`; a run is a worker that writes its run folder into `<raw parent>/processed/<name>`. */
 export class JobManager {
@@ -46,7 +99,9 @@ export class JobManager {
   private history = new Map<string, [string, unknown][]>();
   private listeners = new Map<string, Set<Emit>>();
   private worker: Worker | null = null;
-  private wake: { release(): Promise<void> } | null = null;
+  private wake: WakeLockSentinel | null = null;
+  private asking = false;
+  private onVisible: (() => void) | null = null;
   constructor(private o: { kv: KV; folders: Folders; makeWorker: () => Worker; now?: () => number }) {}
 
   private now(): number {
@@ -81,36 +136,32 @@ export class JobManager {
   /** Start a run (main's `JobManager.submit` checks, in its order, then the browser's own). */
   async submit(b: JobBody): Promise<JobRecord> {
     if (b.tune) throw new HttpError(400, "auto-tune is not part of the browser app");
-    const raw = await this.o.folders.resolve(b.raw_dir);
+    const rawDir = b.raw_dir.split("/").filter(Boolean).join("/"); // "a/raw/" is the folder "a/raw"
+    const raw = await this.o.folders.resolve(rawDir);
     const { files } = await listSegments(raw);
-    if (!files.length) throw new HttpError(400, `no videos in ${b.raw_dir}: ${RawVideo.NAMING_RULE}`);
+    if (!files.length) throw new HttpError(400, `no videos in ${rawDir}: ${RawVideo.NAMING_RULE}`);
     if (b.fps !== null) checkFps(b.fps);
     checkRunName(b.name);
     const bad = unusedParams(b.params);
     if (bad.length) throw new HttpError(400, `${bad.join(", ")}: not used by the browser app`);
     if ([...this.jobs.values()].some((j) => !isFinal(j.status)))
       throw new HttpError(400, "a run is already going in this tab; wait for it or cancel it");
-    const parent = parentVpath(b.raw_dir);
+    const parent = parentVpath(rawDir);
     if (parent === null)
       throw new HttpError(
         400,
-        `${b.raw_dir} has no parent folder the app can write to: under Runs → Change folder pick the folder that holds ${splitVpath(b.raw_dir).root}, then choose the videos inside it`,
+        `${rawDir} has no parent folder the app can write to: under Runs → Change folder pick the folder that holds ${splitVpath(rawDir).root}, then choose the videos inside it`,
       );
     const outDir = joinVpath(parent, "processed", b.name);
+    checkOutDir(rawDir, outDir);
     const processed = await (await this.o.folders.resolve(parent, "readwrite")).dir("processed", { create: true });
-    // a folder with either marker counts as a run, so the leftovers of an interrupted run are
-    // only replaced when asked for
-    const holdsRun = await processed.dir(b.name).then(
-      async (d) => (await exists(d, "report.json")) || (await exists(d, "params.json")),
-      () => false,
-    );
-    if (holdsRun && !b.overwrite)
-      throw new HttpError(400, `${outDir} already holds a run; choose another name or overwrite`);
-    if (holdsRun) await processed.remove(b.name, { recursive: true });
-    const out = await processed.dir(b.name, { create: true });
+    const out = await resetOutDir(processed, b.name, outDir, b.overwrite);
+    // first, as main's `_write_params` does: it marks the folder as a MiniMe run, so an interrupted
+    // run (no `report.json` yet, so not listed) can be started again under its name
+    await writeJSON(out, "params.json", { source: "browser", raw_dir: rawDir, fps: b.fps });
     const job: JobRecord = {
       id: crypto.randomUUID().replaceAll("-", "").slice(0, 10),
-      raw_dir: b.raw_dir,
+      raw_dir: rawDir,
       name: b.name,
       params: b.params,
       keep_store: b.keep_store,
@@ -130,9 +181,9 @@ export class JobManager {
     };
     this.jobs.set(job.id, job);
     await this.o.kv.set(job.id, job);
-    await this.o.folders.touch(splitVpath(parent).root, b.raw_dir);
+    await this.o.folders.touch(splitVpath(parent).root, rawDir);
     this.record(job.id, "status", { ...job });
-    this.start(job, files, out, b);
+    this.start(job, files, out, { ...b, raw_dir: rawDir });
     return job;
   }
 
@@ -157,16 +208,30 @@ export class JobManager {
       void this.fail(job, e);
       return;
     }
-    void this.keepAwake(job);
+    this.keepAwake(job);
   }
 
-  /** Keep the screen (and with it the page's worker) awake while the run goes, where the
-   * browser has a Wake Lock. */
-  private async keepAwake(job: JobRecord): Promise<void> {
-    const lock = await globalThis.navigator?.wakeLock?.request("screen").catch(() => null);
-    if (!lock) return;
-    if (isFinal(job.status)) await lock.release().catch(() => undefined);
-    else this.wake = lock;
+  /** Keep the screen (and with it the page's worker) awake while the run goes, where the browser
+   * has a Wake Lock. A browser lets the lock go when the tab is hidden, so it is taken again
+   * whenever the tab is shown, until the run ends (`finish`). */
+  private keepAwake(job: JobRecord): void {
+    const wakeLock = globalThis.navigator?.wakeLock;
+    if (!wakeLock) return;
+    const take = async () => {
+      if (this.asking || isFinal(job.status) || (this.wake && !this.wake.released)) return;
+      this.asking = true;
+      const lock = await wakeLock.request("screen").catch(() => null);
+      this.asking = false;
+      if (!lock) return;
+      if (isFinal(job.status))
+        await lock.release().catch(() => undefined); // the run ended meanwhile
+      else this.wake = lock;
+    };
+    this.onVisible = () => {
+      if (globalThis.document.visibilityState === "visible") void take();
+    };
+    globalThis.document?.addEventListener("visibilitychange", this.onVisible);
+    void take();
   }
 
   private fail(job: JobRecord, why: unknown): Promise<void> {
@@ -191,6 +256,8 @@ export class JobManager {
   private async finish(job: JobRecord): Promise<void> {
     this.worker?.terminate();
     this.worker = null;
+    if (this.onVisible) globalThis.document?.removeEventListener("visibilitychange", this.onVisible);
+    this.onVisible = null;
     await this.wake?.release().catch(() => undefined);
     this.wake = null;
     await this.o.kv.set(job.id, job);
