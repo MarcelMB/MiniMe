@@ -1,4 +1,4 @@
-import type { ProgressEvent } from "../launch/params";
+import type { ProgressEvent, ProgressUnit } from "../launch/params";
 
 /** Messages between the stream page and its worker. With `out` (a writable folder) the whole
  * pipeline writes its run folder there (`browser/writer.ts`); without it the outputs only come
@@ -38,15 +38,20 @@ export type FromWorker =
   /** A stage began or ended (`progress.jsonl`'s events, as `minime serve` shows them); a
    * stage that runs once per window ends with the seconds of all its windows so far. */
   | ({ type: "stage"; note?: string } & ProgressEvent)
+  /** The running stage's counters over the whole run: a stage that runs once per window counts
+   * every window (`done` of `frames` units, `seconds` of its own time in all windows so far). */
   | {
       type: "progress";
       stage: Stage;
       done: number;
       frames: number;
       seconds: number;
+      unit: ProgressUnit;
       stateMb: number;
       heapMb: number;
     }
+  /** The run's frames and windows, once the windows are known (for the whole run's time left). */
+  | { type: "plan"; frames: number; windows: number }
   // large outputs (the traces) come as an OPFS file instead of bytes
   | { type: "done"; files: Map<string, Uint8Array | Blob>; seconds: number }
   | { type: "log"; message: string }

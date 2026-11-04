@@ -74,36 +74,44 @@ describe("JobManager", () => {
     expect(m.get(job.id).status).toBe("done");
   });
 
-  it("sends the running stage's counters live and the latest to a page opened later, never in the history", async () => {
+  it("sends each stage's counters live and their latest to a page opened later, never in the history", async () => {
     const { m, workers, body } = await setup();
     const job = await m.submit(body);
     const seen: [string, unknown][] = [];
     m.events(job.id, (n, d) => seen.push([n, d]));
-    workers[0].say({ type: "stage", stage: "motion", event: "start", t: 1 });
-    const p = (done: number) =>
+    const p = (stage: "motion" | "pass1", done: number) =>
       workers[0].say({
         type: "progress",
-        stage: "motion",
+        stage,
         done,
         frames: 900,
         seconds: done / 50,
+        unit: "frames",
         stateMb: 0,
         heapMb: 9,
       });
-    p(100);
-    p(200);
-    expect(seen.slice(2)).toEqual([
-      ["progress", { stage: "motion", done: 100, frames: 900, seconds: 2 }],
-      ["progress", { stage: "motion", done: 200, frames: 900, seconds: 4 }],
+    workers[0].say({ type: "stage", stage: "motion", event: "start", t: 1 });
+    p("motion", 100);
+    p("motion", 200);
+    workers[0].say({ type: "plan", frames: 900, windows: 1 });
+    workers[0].say({ type: "stage", stage: "pass1", event: "start", t: 2 });
+    p("pass1", 50);
+    expect(seen.slice(2, 4)).toEqual([
+      ["progress", { stage: "motion", done: 100, frames: 900, seconds: 2, unit: "frames" }],
+      ["progress", { stage: "motion", done: 200, frames: 900, seconds: 4, unit: "frames" }],
     ]);
+    expect(seen[4]).toEqual(["plan", { frames: 900, windows: 1 }]); // the plan is in the history
     const later: string[] = [];
-    m.events(job.id, (n, d) => later.push(n === "progress" ? `progress ${(d as { done: number }).done}` : n));
-    expect(later).toEqual(["status", "stage", "progress 200"]); // only the latest, after the replay
+    m.events(job.id, (n, d) =>
+      later.push(n === "progress" ? `${(d as { stage: string }).stage} ${(d as { done: number }).done}` : n),
+    );
+    // after the replay: each stage's latest, the running one last
+    expect(later).toEqual(["status", "stage", "plan", "stage", "motion 200", "pass1 50"]);
     workers[0].say({ type: "done", files: new Map(), seconds: 3 });
     await tick();
     const after: string[] = [];
     m.events(job.id, (n) => after.push(n));
-    expect(after).toEqual(["status", "stage", "status"]); // a finished job has no counters
+    expect(after).toEqual(["status", "stage", "plan", "stage", "status"]); // a finished job has no counters
   });
 
   it("refuses an existing run unless overwrite, with main's wording", async () => {

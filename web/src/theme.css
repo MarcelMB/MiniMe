@@ -191,3 +191,16 @@ table.data th button { font: inherit; color: inherit; background: none; border: 
   .span2, .span3, .row2 { grid-column: auto; grid-row: auto; }
   .barrow > :first-child { width: 110px; }
 }
+/* The browser run's live bar: the fill glides between the worker's updates (every 0.5 s) and its
+   stripes drift backwards, against the fill (Harrison, Yeo, Hudson 2010: such a bar feels ~12%
+   faster; the fill itself stays true to the units done). */
+.bar.live > span {
+  transition: width 0.5s linear;
+  background-image: repeating-linear-gradient(135deg, rgb(255 255 255 / 0.25) 0 6px, transparent 6px 12px);
+  background-size: 16.97px 16.97px;
+  animation: ribs 1s linear infinite;
+}
+@keyframes ribs { to { background-position: -16.97px 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .bar.live > span { transition: none; animation: none; }
+}
