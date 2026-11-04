@@ -92,8 +92,9 @@ export function fmtLeft(s: number): string {
 const WINDOW_STAGES = ["pass1", "pass2", "seeds", "init", "cnmf"];
 
 /** Seconds the whole run still needs: every stage's remaining units at its overall rate; the
- * streaming pass, before it starts, at the motion stage's time per frame (both read every frame;
- * the streaming pass is the faster one, so this errs long); the stitch, a second or so, as
+ * streaming pass, before it starts, at pass 1's time per frame (both read every frame; the motion
+ * stage is only the template's first frames now; the streaming pass is the faster one, so this
+ * errs long); the stitch, a second or so, as
  * nothing. Null until every per-window stage has finished its first window. */
 export function runLeft(stages: ReadonlyMap<string, StageProgress>, plan: RunPlan | null): number | null {
   if (!plan) return null;
@@ -114,7 +115,7 @@ export function runLeft(stages: ReadonlyMap<string, StageProgress>, plan: RunPla
   const stream = stages.get("stream");
   if (stream) total += left(stream) ?? 0;
   else {
-    const proxy = motion ?? stages.get("pass1");
+    const proxy = stages.get("pass1") ?? motion;
     if (!proxy || proxy.done <= 0) return null;
     total += (plan.frames * proxy.seconds) / proxy.done;
   }

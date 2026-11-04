@@ -76,6 +76,10 @@ pub fn window_inputs(
         p.insert("T".into(), (t1 - t0).into());
         out.push((format!("{name}.json"), serde_json::to_vec(&p).unwrap()));
     }
+    // no shifts: the window's pass 1 estimates them against the template
+    if shifts.is_empty() {
+        return Ok(out);
+    }
     let sh = npy::read_f32(shifts)?;
     if sh.shape.len() != 2 || sh.shape[1] != 2 || sh.shape[0] < t1 || t0 >= t1 {
         return Err(format!("shifts.npy is {:?}; window {t0}-{t1}", sh.shape));

@@ -110,13 +110,15 @@ test("streams raw AVIs in the browser and saves the outputs", async ({ page }) =
   await inputFiles(page, "avis", avis.slice(0, nFiles));
   if (inputs) await inputFiles(page, "inputs", [inputs], true);
   const keepStore = Boolean(process.env.STREAM_KEEP_STORE);
+  const workers = Number(process.env.STREAM_WORKERS ?? 0) || undefined;
+  const tileCrc = Boolean(process.env.STREAM_TILE_CRC);
   // resolves when the run is done (hours on a long session); a failed run rejects with its message
   const done = await page.evaluate(
-    ({ keepStore }) => {
+    ({ keepStore, workers, tileCrc }) => {
       const files = (id: string) => [...((document.getElementById(id) as HTMLInputElement | null)?.files ?? [])];
-      return window.__minimeStream!(files("avis"), files("inputs"), { keepStore });
+      return window.__minimeStream!(files("avis"), files("inputs"), { keepStore, workers, tileCrc });
     },
-    { keepStore },
+    { keepStore, workers, tileCrc },
   );
   await saveOutputs(page, done.files, out!);
   console.log(`done in ${done.seconds.toFixed(0)} s: ${done.files.length} output files -> ${out}`);

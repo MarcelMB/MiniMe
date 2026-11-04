@@ -703,6 +703,68 @@ python scripts/contract_dump.py e2e/.data/browser-run/run e2e/.data/contract-bro
 The look check and `npm run e2e` need main's build (`npm run build`) and start `minime serve`
 themselves; run only one Playwright config at a time (they share ports and `dist-browser/`).
 
+## Worker pool (2026-11-04): the frame-parallel stages on N workers, same outputs bit for bit
+The run's worker (`stream.worker.ts`) keeps the stages that cannot be split (seeds, init, CNMF,
+stitch, the footprint update) and hands the frame-parallel ones to a pool of frame workers
+(`pool.ts`, `frame.worker.ts`, `poolStages.ts`: nested Web Workers, each its own wasm instance and
+AVI index). No SharedArrayBuffer, so no COOP/COEP: a worker gets its inputs in a message and returns
+its results in one; static hosting is unchanged. `params.workers` sets the count (a whole number
+>= 1; `1` runs everything in the run's own worker as before); the default is the machine's cores less
+two, at most 8. If the pool cannot start, the run goes on with one worker.
+
+- **Motion** is folded into pass 1: the motion stage is now only the template (200 frames of segment
+  0, its frames prepared on the pool, added in frame order); every window's pass 1 estimates its frames'
+  shifts against that template (`Pass1::push(raw, None)`, one median shared), and the windows'
+  shifts and quality are put together for the streaming pass and the run folder. Pass 1 rebuilds the
+  stage's own `Motion` from `template_src.npy` (the image before its FFT round trip; `template.npy`
+  would give shifts 1e-7 px off).
+- **Pass 1**: a window is cut into chunks (about two per worker, whole multiples of 100 frames);
+  a worker runs `Pass1Engine` from its chunk's first frame (`start_at`) and returns its max
+  projection, block maxima, shifts and quality, which the window's engine folds in (`merge_chunk`:
+  maxima are exact in any order). The tile store is one slab file per chunk (`slabs.ts`), written
+  through one sync access handle: a handle per tile and chunk exceeds WebKit's ~250 open handles
+  with 3 workers. Pass 2 reads the slabs through `File` snapshots, which need no exclusive handle.
+- **Pass 2**: tiles are independent (seed = tile index): a worker compresses any tile
+  (`compress_at`) and the window's engine takes the factors in tile order (`set_tile`).
+- **Streaming pass**: a worker preprocesses and solves 16-frame chunks (`StreamSolver`, the same
+  `prep().frame` and `TraceModel::solve`), the run's worker folds the solved frames in frame order
+  (`push_solved`), so every sum, the low-pass state (it runs across segment boundaries), `dsq`
+  (needs the previous frame across them) and the traces are the one-worker pass's. Splitting by
+  6000-frame segment would not be bit-identical (and would leave 2 jobs for a 5-min session).
+- **Overlap**: window w + 1's pass 1 is dealt to the workers when window w's pass 2 is done, so the pool
+  works while the run's worker does that window's seeds, init and CNMF (the stage row counts from the
+  deal).
+- Measured, 3000 frames (one window) of `synth_v4_5min`, headless Chrome 156, M1 Max (8 P + 2 E cores,
+  other agents' load average 4-6), seconds or rate per stage, `workers` 1 / 2 / 4 / 8:
+
+  | stage | 1 | 2 | 4 | 8 | 8 vs 1 |
+  |---|---|---|---|---|---|
+  | template (200 frames x 2) | 7.6 s | 3.9 s | 2.0 s | 1.1 s | 6.9x |
+  | pass 1 | 38 fps | 72 fps | 140 fps | 264 fps | 6.9x |
+  | pass 2 | 3.5 tiles/s | 6.3 | 12.6 | 21.7 | 6.2x |
+  | streaming pass | 72 fps | 136 | 258 | 436 | 6.1x |
+  | seeds + init + CNMF (serial) | 10.5 s | 10.5 s | 10.5 s | 10.5 s | 1x |
+  | whole run | 167 s | 94 s | 53 s | 34 s | 4.9x |
+
+  Whole 5-min session (9000 frames, 3 windows, overlap on): 79 s with 8 workers against 487 s with one
+  worker (the motion stage folded in) and 644 s before (8.2x); its outputs are the one-worker run's bit
+  for bit (92 files, `C.npy` included); F1 0.962, recall 0.960, precision 0.964, trace correlation median
+  0.995, 419 stitched, 418 kept, 417 merged units, as in the reference browser run.
+- Memory: the wasm heap over all workers peaks at 1.0 GB with 8 (the run's worker 0.28 GB, about 90 MB
+  per frame worker). Chrome's peak resident memory on 3000 frames in a profile on disk: 1.9 GB with 1
+  worker, 2.6 GB with 4, 3.3 GB with 8 (the renderer 1.0, 1.6, 2.4 GB: about 0.2 GB per worker); in an
+  ephemeral profile, where OPFS lives in memory and holds about 2 GB at most, 5.2 GB over the 9000
+  frames.
+- Chrome, Firefox and WebKit (Playwright's) give the same outputs as Chrome with one worker (63 files on
+  6000 frames, 4 workers). WebKit allows about 250 open sync access handles for the whole page: one
+  per tile and chunk (100 tiles) did not run, hence the slabs. Terminating the run's worker stops its
+  frame workers (all three browsers); an error in a frame worker ends the run with its message.
+- Checks (`web/e2e/stream.spec.ts` with `STREAM_WORKERS=n`, `STREAM_TILE_CRC=1`,
+  `STREAM_KEEP_STORE=1`): every output file of the run (A, C, units, shifts, quality, template,
+  window factors, kept tiles, tile CRCs) is identical for 1 and N workers and to the run before the
+  pool; only timings in the JSON differ. Native: `cargo test` (chunks merged = one run, solved frames
+  folded = `push`, template from prepared frames, tile factors round trip).
+
 ## Next
 0. Rerun the 8 h and 24 h streaming pass with the traces in OPFS (8 h scale run above);
    machine-hours, so overnight.
@@ -714,12 +776,10 @@ themselves; run only one Playwright config at a time (they share ports and `dist
 1b. ~~`ymean`/`sn` for a browser-only run, window loop chained into the streaming pass~~
    (done). A second streaming pass on the updated footprints (`t2_stream.py --n-updates
    1`'s pass 1, the scored traces) is one more read of the movie; not chained yet.
-1c. Fold the shift estimate into pass 1 (`Pass1` already estimates when no shift is given;
-   the shifts are the same code, so identical): the separate motion stage reads and
-   median-filters every frame once more, about a third of a run (128 of 415 s on 6000
-   frames). Keep the template build as its own short stage.
-2. Speed: preprocessing in a worker pool (frames are independent), faster median
-   (Perreault O(1) or a sorting-network median), then rayon + COOP/COEP.
+1c. ~~Fold the shift estimate into pass 1~~ (done, "Worker pool" below): the motion stage is now the
+   template build only.
+2. Speed: ~~worker pool~~ (done, below); faster median (Perreault O(1) or a sorting-network
+   median), a faster NNQP/CNMF loop (now the largest serial part), then rayon + COOP/COEP.
 3. ~~Save outputs to a folder~~ (done: picked folder or Browser storage, "Browser back end"
    above). Still open: checkpoint the per-segment sums so a run can resume.
 4. WebGPU for traces and sums once the CPU path is complete.
