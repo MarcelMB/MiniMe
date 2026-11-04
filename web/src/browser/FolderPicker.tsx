@@ -13,7 +13,8 @@ export function FolderPicker(p: ComponentProps<typeof MainFolderPicker>) {
     setErr("");
     try {
       // asks for write access in the dialog itself: a prompt later would have no user activation;
-      // a folder that is a root already gets its permission back instead of a second root
+      // a folder that is a root already gets its permission back instead of a second root, and a
+      // folder inside a root is its path there (a raw folder's run then goes to <parent>/processed)
       p.onPick(await state.folders.pick(new HandleDir(await pickDirectory("minime"))));
     } catch (e) {
       if ((e as Error).name !== "AbortError") setErr((e as Error).message);

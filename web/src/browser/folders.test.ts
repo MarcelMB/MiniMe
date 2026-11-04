@@ -8,6 +8,7 @@ import { Folders } from "./folders";
 import { memoryKV } from "./kv";
 import { Registry } from "./runs";
 import { configure } from "./state";
+import { diskHandle } from "./testing/diskHandle";
 import { NodeDir } from "./testing/nodeDir";
 
 const tmp = (name: string) => {
@@ -154,5 +155,82 @@ describe("Folders", () => {
       await f.pick(new HandleDir(make("x")));
       expect(await f.pick(tmp("x"))).toBe("x (2)");
     });
+
+    it("keeps the handle the dialog just gave for a root picked again, not the stored one", async () => {
+      // the stored handle never gets its permission back (a browser that does not share grants
+      // between handles of one folder); the fresh one has it from the dialog
+      const handle = (granted: boolean) =>
+        ({
+          name: "sess",
+          kind: "directory",
+          isSameEntry: async () => true,
+          queryPermission: async () => (granted ? "granted" : "prompt"),
+          requestPermission: async () => (granted ? "granted" : "denied"),
+        }) as unknown as FileSystemDirectoryHandle;
+      const kv = memoryKV();
+      const stale = handle(false);
+      await new Folders(kv, async () => null).add(new HandleDir(stale), "picked");
+      const f = new Folders(kv, async () => null);
+      await expect(f.resolve("sess", "readwrite")).rejects.toMatchObject({ status: 403 });
+      const fresh = handle(true);
+      expect(await f.pick(new HandleDir(fresh))).toBe("sess");
+      expect((await f.resolve("sess", "readwrite")).name).toBe("sess");
+      expect((await kv.get<{ handle: unknown }>("sess"))?.handle).toBe(fresh);
+      expect((await new Folders(kv, async () => null).list()).map((r) => r.name)).toEqual(["sess"]);
+    });
+  });
+
+  describe("pick of a folder inside a root", () => {
+    /** A disk tree `sess/raw/x` with `sess` a root of handles (`diskHandle`: `resolve` and
+     * `isSameEntry` by path); `granted` is the root's permission. */
+    const tree = async (granted = true) => {
+      const top = mkdtempSync(join(tmpdir(), "f-"));
+      mkdirSync(join(top, "sess", "raw", "x"), { recursive: true });
+      const h = (...path: string[]) => diskHandle(path, join(top, ...path));
+      const root = h("sess");
+      if (!granted) Object.assign(root, { queryPermission: async () => "prompt" });
+      const kv = memoryKV();
+      const f = new Folders(kv, async () => null);
+      expect(await f.add(new HandleDir(root), "picked")).toBe("sess");
+      return { f, h };
+    };
+
+    it("answers the folder's path in that root, and adds no root", async () => {
+      const { f, h } = await tree();
+      expect(await f.pick(new HandleDir(h("sess", "raw")))).toBe("sess/raw");
+      expect(await f.pick(new HandleDir(h("sess", "raw", "x")))).toBe("sess/raw/x");
+      expect((await f.list()).map((r) => r.name)).toEqual(["sess"]);
+      expect((await f.resolve("sess/raw/x")).name).toBe("x");
+    });
+
+    it("takes the nearest root when roots lie inside each other", async () => {
+      const { f, h } = await tree();
+      expect(await f.add(new HandleDir(h("sess", "raw")), "picked")).toBe("raw");
+      expect(await f.pick(new HandleDir(h("sess", "raw", "x")))).toBe("raw/x");
+    });
+
+    it("adds a root of its own when the root around it needs reconnecting (a path in it would answer 403)", async () => {
+      const { f, h } = await tree(false);
+      expect(await f.pick(new HandleDir(h("sess", "raw")))).toBe("raw");
+      expect((await f.list()).map((r) => r.name).sort()).toEqual(["raw", "sess"]);
+    });
+
+    it("adds a root of its own beside a root", async () => {
+      const top = mkdtempSync(join(tmpdir(), "f-"));
+      mkdirSync(join(top, "a"));
+      mkdirSync(join(top, "b"));
+      const f = new Folders(memoryKV(), async () => null);
+      await f.add(new HandleDir(diskHandle(["top", "a"], join(top, "a"))), "picked");
+      expect(await f.pick(new HandleDir(diskHandle(["top", "b"], join(top, "b"))))).toBe("b");
+    });
+  });
+
+  it("works without Browser storage when the browser refuses it", async () => {
+    const f = new Folders(memoryKV(), async () => {
+      throw new DOMException("The operation is insecure.", "SecurityError");
+    });
+    expect(await f.add(tmp("sess"), "picked")).toBe("sess");
+    expect((await f.list()).map((r) => r.name)).toEqual(["sess"]);
+    expect((await f.resolve("sess/raw")).name).toBe("raw");
   });
 });

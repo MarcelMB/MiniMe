@@ -1,7 +1,7 @@
 import { type Dir, HandleDir, walk } from "./dir";
 import type { KV } from "./kv";
 import { HttpError } from "./router";
-import { splitVpath } from "./vpath";
+import { joinVpath, splitVpath } from "./vpath";
 
 export type Root = { name: string; dir: Dir; kind: "picked" | "opfs" | "files"; time: number; raw?: string };
 export const OPFS_NAME = "Browser storage";
@@ -23,7 +23,8 @@ export class Folders {
       else if (r?.handle) out.set(r.name, { ...r, dir: new HandleDir(r.handle as FileSystemDirectoryHandle) });
     }
     for (const [k, v] of this.live) out.set(k, v);
-    const o = await this.opfs();
+    // a browser may refuse private storage (a private window): the other folders still answer
+    const o = await this.opfs().catch(() => null);
     if (o && !out.has(OPFS_NAME)) out.set(OPFS_NAME, { name: OPFS_NAME, dir: o, kind: "opfs", time: 0 });
     return out;
   }
@@ -52,9 +53,14 @@ export class Folders {
     if (!r) return;
     r.time = Date.now();
     if (raw) r.raw = raw;
-    if (this.live.has(name) || r.kind === "opfs") this.live.set(name, r);
+    await this.save(r);
+  }
+
+  /** Keep `r` as it is now: a picked folder's handle (not the `Dir`) across reloads. */
+  private async save(r: Root): Promise<void> {
+    if (this.live.has(r.name) || r.kind === "opfs") this.live.set(r.name, r);
     else
-      await this.kv.set(name, {
+      await this.kv.set(r.name, {
         ...r,
         ...("handle" in r.dir ? { handle: (r.dir as { handle: unknown }).handle, dir: undefined } : {}),
       });
@@ -81,21 +87,33 @@ export class Folders {
     return r ? r.dir.permission("readwrite", true) : false;
   }
 
-  /** A folder the system dialog just returned (it asked for write access): the root that is the
-   * same folder, with its permission asked for again (it may have needed reconnecting), else a
-   * new root. */
+  /** A folder the system dialog just returned (it asked for write access), as a vpath: the root
+   * that is the same folder, now with the handle the dialog gave (it has the permission; the stored
+   * one may need reconnecting); a folder inside a root, as its path there (so a raw folder picked
+   * in a Runs folder has the parent its run goes to); else a new root. */
   async pick(dir: Dir): Promise<string> {
-    const same = await this.sameRoot(dir);
-    if (same === null) return this.add(dir, "picked");
-    await this.reconnect(same);
-    return same;
+    const found = await this.within(dir);
+    if (found === null) return this.add(dir, "picked");
+    const { root, rel } = found;
+    if (rel.length) return joinVpath(root.name, ...rel);
+    if (root.kind === "picked") await this.save({ ...root, dir });
+    await this.reconnect(root.name);
+    return root.name;
   }
 
-  /** The name of the root that is the same entry as `dir` (handles only), or null. */
-  private async sameRoot(dir: Dir): Promise<string | null> {
+  /** The root `dir` is (`rel` empty) or lies inside (`rel` the names down to it), the nearest one;
+   * handles only (`resolve` and `isSameEntry` say it, the names do not). A root that needs
+   * reconnecting is not looked into: a path in it would answer 403. */
+  private async within(dir: Dir): Promise<{ root: Root; rel: string[] } | null> {
     if (!(dir instanceof HandleDir)) return null;
-    for (const r of (await this.all()).values())
-      if (r.dir instanceof HandleDir && (await r.dir.handle.isSameEntry(dir.handle).catch(() => false))) return r.name;
-    return null;
+    let best: { root: Root; rel: string[] } | null = null;
+    for (const r of (await this.all()).values()) {
+      if (!(r.dir instanceof HandleDir)) continue;
+      if (await r.dir.handle.isSameEntry(dir.handle).catch(() => false)) return { root: r, rel: [] };
+      if (!(await r.dir.permission("readwrite", false).catch(() => false))) continue;
+      const rel = await r.dir.handle.resolve(dir.handle).catch(() => null);
+      if (rel?.length && (best === null || rel.length < best.rel.length)) best = { root: r, rel };
+    }
+    return best;
   }
 }

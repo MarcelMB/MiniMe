@@ -725,6 +725,61 @@ describe("JobManager and an output folder picked in the dialog that is, or lies 
   });
 });
 
+describe("JobManager and folders picked in the dialog inside a Runs folder (spec section 3)", () => {
+  /** `top/sess` (the e2e raw videos in `sess/raw`) remembered as a Runs folder of handles. */
+  async function runsFolder(pickOutput: () => Promise<Dir>) {
+    const top = mkdtempSync(join(tmpdir(), "jobs-"));
+    cpSync(resolve(__dirname, "../../e2e/.data/raw"), join(top, "sess", "raw"), { recursive: true });
+    mkdirSync(join(top, "sess", "out"));
+    const h = (...path: string[]) => new HandleDir(diskHandle(path, join(top, ...path)));
+    const folders = new Folders(memoryKV(), async () => null);
+    expect(await folders.pick(h("sess"))).toBe("sess");
+    const workers: FakeWorker[] = [];
+    const m = new JobManager({
+      kv: memoryKV(),
+      folders,
+      pickOutput,
+      makeWorker: () => {
+        const w = new FakeWorker();
+        workers.push(w);
+        return w as unknown as Worker;
+      },
+    });
+    const body: JobBody = {
+      raw_dir: "",
+      name: "t1",
+      params: {},
+      keep_store: false,
+      overwrite: false,
+      tune: false,
+      tune_args: {},
+      fps: null,
+    };
+    return { m, folders, workers, body, top, h };
+  }
+
+  it("runs a raw folder picked inside it into <raw parent>/processed/<name>, without asking for an output folder", async () => {
+    const pickOutput = vi.fn(async (): Promise<Dir> => {
+      throw new Error("not asked");
+    });
+    const { m, folders, body, top, h } = await runsFolder(pickOutput);
+    const raw = await folders.pick(h("sess", "raw")); // New run → Choose folder
+    expect(raw).toBe("sess/raw");
+    await expect(m.submit({ ...body, raw_dir: raw })).resolves.toMatchObject({ out_dir: "sess/processed/t1" });
+    expect(pickOutput).not.toHaveBeenCalled();
+    expect(existsSync(join(top, "sess", "processed", "t1", "params.json"))).toBe(true);
+    expect((await folders.list()).map((r) => r.name)).toEqual(["sess"]);
+  });
+
+  it("writes into an output folder picked inside a Runs folder at its path there", async () => {
+    const { m, folders, body, top, h } = await runsFolder(async () => h("sess", "out"));
+    expect(await folders.add(h("sess", "raw"), "picked")).toBe("raw"); // a raw folder on its own
+    await expect(m.submit({ ...body, raw_dir: "raw" })).resolves.toMatchObject({ out_dir: "sess/out/t1" });
+    expect(existsSync(join(top, "sess", "out", "t1", "params.json"))).toBe(true);
+    expect((await folders.list()).map((r) => r.name).sort()).toEqual(["raw", "sess"]);
+  });
+});
+
 describe("JobManager and Browser storage", () => {
   afterEach(() => vi.unstubAllGlobals());
   const storage = (estimate: { quota: number; usage: number } | null) => {
