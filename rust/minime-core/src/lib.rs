@@ -10,6 +10,7 @@ pub mod compress;
 pub mod corr;
 pub mod factors;
 pub mod filters;
+pub mod fsimd;
 pub mod gmm;
 pub mod init;
 pub mod linalg;
@@ -26,6 +27,7 @@ pub mod seeds;
 pub mod simd;
 pub mod stitch;
 pub mod stream;
+pub mod warp;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 

@@ -9,6 +9,7 @@
 //!
 //! All borders are OpenCV's default `BORDER_REFLECT_101`.
 
+use crate::fsimd::{add, ld, mul, splat, st, zip_hi, zip_lo, D4, F4};
 use crate::preprocess::fma;
 
 /// Index `i` reflected into `0..n` without repeating the edge (`gfedcb|abcdefgh|gfedcba`).
@@ -156,9 +157,92 @@ pub fn gauss_u8_scalar(src: &[u8], h: usize, w: usize, sigma: f64) -> Vec<u8> {
     out
 }
 
+/// Vectors of four pixels filtered side by side in `gauss_f32`.
+const CHAINS: usize = 4;
+
 /// `cv2.GaussianBlur(src, (0, 0), sigma)` on float32: rows as `s = fma(x[k], kx[k], s)`,
 /// then columns from the centre out on the summed symmetric pairs.
+///
+/// Four pixels at a time with `fsimd`'s exact `fma` emulation, in the scalar code's order
+/// (`gauss_f32_scalar`); the last `w % 4` columns of each row take the scalar path.
 pub fn gauss_f32(src: &[f32], h: usize, w: usize, sigma: f64) -> Vec<f32> {
+    let n = gauss_ksize(sigma, 4.0);
+    let k: Vec<f32> = gauss_kernel(n, sigma).iter().map(|&v| v as f32).collect();
+    let r = n / 2;
+    let kd: Vec<D4> = k.iter().map(|&v| D4::splat(v)).collect();
+    let nv = w / 4 * 4; // columns done four at a time
+    let mut line = vec![0f32; w + 2 * r];
+    let mut rows = vec![0f32; h * w];
+    for y in 0..h {
+        let s = &src[y * w..(y + 1) * w];
+        for (i, l) in line.iter_mut().enumerate() {
+            *l = s[reflect101(i as isize - r as isize, w)];
+        }
+        let o = &mut rows[y * w..(y + 1) * w];
+        // `CHAINS` vectors at a time: each tap depends on the one before it, so independent
+        // vectors fill the pipeline
+        let mut x = 0;
+        while x < nv {
+            let n = CHAINS.min((nv - x) / 4);
+            let mut acc = [D4::splat(0.0); CHAINS];
+            for (j, kj) in kd.iter().enumerate() {
+                for (c, a) in acc.iter_mut().enumerate().take(n) {
+                    *a = D4::from_f4(ld(&line, x + 4 * c + j)).mul(*kj).add(*a).round32();
+                }
+            }
+            for (c, a) in acc.iter().enumerate().take(n) {
+                st(o, x + 4 * c, a.to_f4());
+            }
+            x += 4 * n;
+        }
+        for (x, v) in o.iter_mut().enumerate().skip(nv) {
+            let mut acc = 0.0;
+            for (j, &kj) in k.iter().enumerate() {
+                acc = fma(line[x + j], kj, acc);
+            }
+            *v = acc;
+        }
+    }
+    let mut out = vec![0f32; h * w];
+    let kc = splat(k[r]);
+    for y in 0..h {
+        let pairs: Vec<(usize, usize)> = (1..=r)
+            .map(|j| {
+                (
+                    reflect101(y as isize - j as isize, h) * w,
+                    reflect101(y as isize + j as isize, h) * w,
+                )
+            })
+            .collect();
+        let o = &mut out[y * w..(y + 1) * w];
+        let mut x = 0;
+        while x < nv {
+            let n = CHAINS.min((nv - x) / 4);
+            let mut acc: [D4; CHAINS] =
+                std::array::from_fn(|c| D4::from_f4(mul(ld(&rows, y * w + x + 4 * (c % n)), kc)));
+            for (j, &(a, b)) in pairs.iter().enumerate() {
+                for (c, v) in acc.iter_mut().enumerate().take(n) {
+                    let t = add(ld(&rows, a + x + 4 * c), ld(&rows, b + x + 4 * c));
+                    *v = D4::from_f4(t).mul(kd[r + j + 1]).add(*v).round32();
+                }
+            }
+            for (c, v) in acc.iter().enumerate().take(n) {
+                st(o, x + 4 * c, v.to_f4());
+            }
+            x += 4 * n;
+        }
+        for (x, v) in o.iter_mut().enumerate().skip(nv) {
+            *v = rows[y * w + x] * k[r];
+            for (j, &(a, b)) in pairs.iter().enumerate() {
+                *v = fma(rows[a + x] + rows[b + x], k[r + j + 1], *v);
+            }
+        }
+    }
+    out
+}
+
+/// `gauss_f32` as first written (one pixel at a time): the reference of the vector one.
+pub fn gauss_f32_scalar(src: &[f32], h: usize, w: usize, sigma: f64) -> Vec<f32> {
     let n = gauss_ksize(sigma, 4.0);
     let k: Vec<f32> = gauss_kernel(n, sigma).iter().map(|&v| v as f32).collect();
     let r = n / 2;
@@ -230,6 +314,76 @@ pub fn area_down2_f32(src: &[f32], h: usize, w: usize) -> Vec<f32> {
 /// 1/16 (edges 3/4, 1/4). Its NEON body (input columns `< (w - 1) / 4 * 4`) fuses as
 /// `fma(far, w, near * w)`, the scalar tail and edge columns as `fma(near, w, far * w)`.
 pub fn resize_up2_f32(src: &[f32], h: usize, w: usize) -> Vec<f32> {
+    const W0: f32 = 0.5625;
+    const W1: f32 = 0.1875;
+    const W3: f32 = 0.0625;
+    fn l1_vec(near: f32, far: f32) -> f32 {
+        fma(far, 0.25, near * 0.75)
+    }
+    fn l1_sc(near: f32, far: f32) -> f32 {
+        fma(near, 0.75, far * 0.25)
+    }
+    fn l2_sc(a: f32, b: f32, c: f32, d: f32) -> f32 {
+        fma(d, W3, fma(c, W1, fma(a, W0, b * W1)))
+    }
+    /// The NEON body's `fma(d, W3, fma(c, W1, fma(b, W1, a * W0)))` on four columns.
+    #[inline(always)]
+    fn l2_lanes(a: D4, b: D4, c: D4, d: D4) -> F4 {
+        let (w0, w1, w3) = (D4::splat(W0), D4::splat(W1), D4::splat(W3));
+        let t = a.mul(w0).round32();
+        let t = b.mul(w1).add(t).round32();
+        let t = c.mul(w1).add(t).round32();
+        d.mul(w3).add(t).to_f4()
+    }
+    let (oh, ow) = (2 * h, 2 * w);
+    let vec_end = (w - 1) / 4 * 4;
+    let mut out = vec![0f32; oh * ow];
+    let edge_row = |s: &[f32], d: &mut [f32]| {
+        d[0] = s[0];
+        d[ow - 1] = s[w - 1];
+        for x in 0..w - 1 {
+            let l: fn(f32, f32) -> f32 = if x < vec_end { l1_vec } else { l1_sc };
+            d[2 * x + 1] = l(s[x], s[x + 1]);
+            d[2 * x + 2] = l(s[x + 1], s[x]);
+        }
+    };
+    edge_row(&src[..w], &mut out[..ow]);
+    edge_row(&src[(h - 1) * w..], &mut out[(oh - 1) * ow..]);
+    for y in 0..h - 1 {
+        let (s0, s1) = (&src[y * w..(y + 1) * w], &src[(y + 1) * w..(y + 2) * w]);
+        let (d0, d1) = out[(2 * y + 1) * ow..(2 * y + 3) * ow].split_at_mut(ow);
+        d0[0] = l1_sc(s0[0], s1[0]);
+        d1[0] = l1_sc(s1[0], s0[0]);
+        d0[ow - 1] = l1_sc(s0[w - 1], s1[w - 1]);
+        d1[ow - 1] = l1_sc(s1[w - 1], s0[w - 1]);
+        // the first `vec_end` input columns, four at a time with the exact fma emulation
+        for x in (0..vec_end).step_by(4) {
+            let [a, b, c, d] = [ld(s0, x), ld(s0, x + 1), ld(s1, x), ld(s1, x + 1)].map(D4::from_f4);
+            let (e0, o0) = (l2_lanes(a, b, c, d), l2_lanes(b, a, d, c));
+            let (e1, o1) = (l2_lanes(c, a, d, b), l2_lanes(d, b, c, a));
+            st(d0, 2 * x + 1, zip_lo(e0, o0));
+            st(d0, 2 * x + 5, zip_hi(e0, o0));
+            st(d1, 2 * x + 1, zip_lo(e1, o1));
+            st(d1, 2 * x + 5, zip_hi(e1, o1));
+        }
+        for x in vec_end..w - 1 {
+            let (a, b, c, d) = (s0[x], s0[x + 1], s1[x], s1[x + 1]);
+            d0[2 * x + 1] = l2_sc(a, b, c, d);
+            d0[2 * x + 2] = l2_sc(b, a, d, c);
+            d1[2 * x + 1] = l2_sc(c, a, d, b);
+            d1[2 * x + 2] = l2_sc(d, b, c, a);
+        }
+    }
+    out
+}
+
+/// `resize_up2_f32` one pixel at a time: its reference.
+///
+/// `cv2.resize(src, (2 w, 2 h), interpolation=cv2.INTER_LINEAR)` on float32, as KleidiCV's
+/// `resize_2x2_f32`: each output pixel weights its four nearest inputs 9/16, 3/16, 3/16,
+/// 1/16 (edges 3/4, 1/4). Its NEON body (input columns `< (w - 1) / 4 * 4`) fuses as
+/// `fma(far, w, near * w)`, the scalar tail and edge columns as `fma(near, w, far * w)`.
+pub fn resize_up2_f32_scalar(src: &[f32], h: usize, w: usize) -> Vec<f32> {
     const W0: f32 = 0.5625;
     const W1: f32 = 0.1875;
     const W3: f32 = 0.0625;
@@ -327,6 +481,51 @@ mod tests {
         assert_eq!(gauss_u8(&f, 600, 600, 1.0), gauss_u8_scalar(&f, 600, 600, 1.0));
         let ones = vec![255u8; 601 * 599];
         assert_eq!(gauss_u8(&ones, 601, 599, 1.0), ones);
+    }
+
+    fn noise_f32(n: usize, seed: u64) -> Vec<f32> {
+        noise(n, seed, 256)
+            .iter()
+            .zip(noise(n, seed ^ 77, 1000))
+            .map(|(&a, b)| f32::from(a) + f32::from(b as u16) / 1000.0 - 0.5)
+            .collect()
+    }
+
+    #[test]
+    fn gauss_f32_matches_the_scalar_reference_bit_for_bit() {
+        for h in [1, 2, 3, 5, 9, 13, 30] {
+            for w in [1, 2, 3, 4, 5, 8, 11, 13, 16, 29, 50] {
+                for sigma in [0.5, 1.0, 3.0, 4.2] {
+                    let f = noise_f32(h * w, (h * 1000 + w) as u64);
+                    let (a, b) = (gauss_f32(&f, h, w, sigma), gauss_f32_scalar(&f, h, w, sigma));
+                    assert!(
+                        a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()),
+                        "{h}x{w} sigma {sigma}"
+                    );
+                }
+            }
+        }
+        // u8-valued input at the size the registration image uses
+        let f: Vec<f32> = noise(300 * 300, 3, 256).iter().map(|&v| f32::from(v)).collect();
+        let (a, b) = (gauss_f32(&f, 300, 300, 3.0), gauss_f32_scalar(&f, 300, 300, 3.0));
+        assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
+    }
+
+    #[test]
+    fn resize_up2_matches_the_scalar_reference_bit_for_bit() {
+        for h in [1, 2, 3, 6, 11] {
+            for w in [1, 2, 3, 4, 5, 8, 9, 10, 13, 17, 31] {
+                let f = noise_f32(h * w, (h * 1000 + w) as u64);
+                let (a, b) = (resize_up2_f32(&f, h, w), resize_up2_f32_scalar(&f, h, w));
+                assert!(
+                    a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()),
+                    "{h}x{w}"
+                );
+            }
+        }
+        let f = noise_f32(300 * 300, 8);
+        let (a, b) = (resize_up2_f32(&f, 300, 300), resize_up2_f32_scalar(&f, 300, 300));
+        assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
     }
 
     #[test]

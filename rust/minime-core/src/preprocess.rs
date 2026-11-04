@@ -137,15 +137,26 @@ fn shift_with<T: Copy, O>(
 }
 
 /// `cv2.warpAffine(f, [[1, 0, -dx], [0, 1, -dy]], INTER_LINEAR)` on uint8 (OpenCV 5:
-/// float32 lerps, round half to even), zeros outside.
+/// float32 lerps, round half to even), zeros outside; four pixels at a time (`warp`), the
+/// same bits as `shift_scalar`.
 pub fn shift(src: &[u8], h: usize, w: usize, dy: f32, dx: f32) -> Vec<u8> {
+    crate::warp::shift_u8(src, h, w, dy, dx)
+}
+
+/// The same warp on float32 frames (`motion.apply_shifts` on the registration image).
+pub fn shift_f32(src: &[f32], h: usize, w: usize, dy: f32, dx: f32) -> Vec<f32> {
+    crate::warp::shift_f32(src, h, w, dy, dx)
+}
+
+/// `shift`, one pixel at a time: its reference.
+pub fn shift_scalar(src: &[u8], h: usize, w: usize, dy: f32, dx: f32) -> Vec<u8> {
     shift_with(src, h, w, dy, dx, f32::from, |v| {
         v.round_ties_even().clamp(0.0, 255.0) as u8
     })
 }
 
-/// The same warp on float32 frames (`motion.apply_shifts` on the registration image).
-pub fn shift_f32(src: &[f32], h: usize, w: usize, dy: f32, dx: f32) -> Vec<f32> {
+/// `shift_f32`, one pixel at a time: its reference.
+pub fn shift_f32_scalar(src: &[f32], h: usize, w: usize, dy: f32, dx: f32) -> Vec<f32> {
     shift_with(src, h, w, dy, dx, |v| v, |v| v)
 }
 
@@ -328,6 +339,86 @@ mod tests {
             .iter()
             .map(|&v| v / (256 / u16::from(levels)) as u8)
             .collect()
+    }
+
+    fn shifts() -> Vec<(f32, f32)> {
+        // whole, tiny, negative, fractional-near-integer, border-sized and out-of-image shifts
+        let mut v = vec![
+            (0.0, 0.0),
+            (1.0, -3.0),
+            (0.37, -1.62),
+            (-2.5, 4.25),
+            (1e-7, -1e-7),
+            (0.9999999, 2.0000002),
+            (-0.0000003, 0.0000003),
+            (5.5, -17.75),
+            (20.0, 20.0),
+            (-20.4, 19.6),
+            (100.0, 1.0),
+            (-100.5, 0.5),
+            (0.5, 1000.0),
+        ];
+        let mut s = 99u64;
+        for _ in 0..40 {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let a = ((s >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 42.0;
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let b = ((s >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 42.0;
+            v.push((a, b));
+        }
+        v
+    }
+
+    #[test]
+    fn shift_matches_the_scalar_warp_bit_for_bit() {
+        let sizes = [
+            (1, 1),
+            (2, 3),
+            (5, 4),
+            (9, 17),
+            (31, 40),
+            (64, 63),
+            (60, 100),
+            (33, 5),
+        ];
+        for (h, w) in sizes {
+            let f = noise(h * w, (h * 100 + w) as u64);
+            let ff: Vec<f32> = f
+                .iter()
+                .zip(noise(h * w, 5))
+                .map(|(&a, b)| f32::from(a) - f32::from(b) / 255.0 * 3.3 - 0.4)
+                .collect();
+            for (dy, dx) in shifts() {
+                assert_eq!(
+                    shift(&f, h, w, dy, dx),
+                    shift_scalar(&f, h, w, dy, dx),
+                    "{h}x{w} {dy} {dx}"
+                );
+                let (a, b) = (shift_f32(&ff, h, w, dy, dx), shift_f32_scalar(&ff, h, w, dy, dx));
+                assert!(
+                    a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()),
+                    "f32 {h}x{w} {dy} {dx}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shift_matches_the_scalar_warp_on_frame_sizes() {
+        for (h, w) in [(600, 600), (601, 599)] {
+            let f = noise(h * w, 21);
+            for (dy, dx) in shifts() {
+                assert_eq!(
+                    shift(&f, h, w, dy, dx),
+                    shift_scalar(&f, h, w, dy, dx),
+                    "{h}x{w} {dy} {dx}"
+                );
+            }
+        }
     }
 
     #[test]
