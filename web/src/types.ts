@@ -25,6 +25,9 @@ export type Summary = RunListing & {
   counts: Record<string, number>;
   peak_rss: number | null;
   peak_rss_children: number | null;
+  /** A browser run: the largest wasm heap (bytes) — the Rust core's memory, not the whole tab's,
+   * which a page cannot read. */
+  peak_wasm?: number;
   bytes: Record<string, number>;
   workers: number | null;
   motion: { quality_median?: number; max_abs_shift_px?: number };

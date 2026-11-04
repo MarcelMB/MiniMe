@@ -1,4 +1,4 @@
-import { isFinal, type ProgressEvent } from "../launch/params";
+import { isFinal, type ProgressEvent, type StageProgress } from "../launch/params";
 import type { FromWorker, ToWorker } from "../stream/protocol";
 import { DEFAULTS, unusedParams, WINDOW_FRAMES } from "../stream/session";
 import type { Job } from "../types";
@@ -72,6 +72,14 @@ function checkFrameSize(h: number, w: number, params: Record<string, unknown>): 
   if (p.motion_down === 2) throw new HttpError(400, `${h} x ${w} frames: 2x downsampling needs an even size`);
 }
 
+/** The path of `handle` inside OPFS (Browser storage), or null for a folder on disk (or no OPFS):
+ * a run folder in OPFS goes to the worker by its path, as Safari cannot send it the handle. */
+async function opfsPath(handle: FileSystemDirectoryHandle | undefined): Promise<string[] | null> {
+  const storage = globalThis.navigator?.storage;
+  if (!handle || !storage?.getDirectory) return null;
+  return (await storage.getDirectory()).resolve(handle).catch(() => null);
+}
+
 /** `runs.is_run`: a `params.json` and a `report.json`. */
 async function isRun(d: Dir): Promise<boolean> {
   return (await exists(d, "params.json")) && (await exists(d, "report.json"));
@@ -134,6 +142,7 @@ export class JobManager {
   private holding = false;
   private history = new Map<string, [string, unknown][]>();
   private listeners = new Map<string, Set<Emit>>();
+  private latest = new Map<string, StageProgress>();
   private worker: Worker | null = null;
   private wake: WakeLockSentinel | null = null;
   private asking = false;
@@ -358,6 +367,8 @@ export class JobManager {
     checkOutDir(rawDir, outDir);
     if (splitVpath(outDir).root === OPFS_NAME) await this.checkStorage(video, b.keep_store);
     const out = await resetOutDir(await holder.open(), b.name, outDir, b.overwrite);
+    const handle = (out as { handle?: FileSystemDirectoryHandle }).handle;
+    const outPath = await opfsPath(handle);
     // first, as main's `_write_params` does: it marks the folder as a MiniMe run, so an interrupted
     // run (no `report.json` yet, so not listed) can be started again under its name
     await writeJSON(out, "params.json", { source: "browser", raw_dir: rawDir, fps: b.fps });
@@ -388,16 +399,16 @@ export class JobManager {
     this.own = job;
     this.unlock = unlock;
     this.record(job.id, "status", { ...job });
-    this.start(job, files, out, { ...b, raw_dir: rawDir });
+    this.start(job, files, outPath ? { outPath } : { out: handle }, { ...b, raw_dir: rawDir });
     return job;
   }
 
   /** Hand the run to a worker; whatever stops it from starting fails the job. */
-  private start(job: JobRecord, avis: File[], out: Dir, b: JobBody): void {
+  private start(job: JobRecord, avis: File[], dest: Pick<ToWorker, "out" | "outPath">, b: JobBody): void {
     const msg: ToWorker = {
       avis,
       inputs: [],
-      out: (out as { handle?: FileSystemDirectoryHandle }).handle,
+      ...dest,
       params: b.params,
       keepStore: b.keep_store,
       rawDir: b.raw_dir,
@@ -451,6 +462,9 @@ export class JobManager {
     if (m.type === "stage") {
       const { type: _, ...event } = m; // `progress.jsonl`'s dict, as main's events carry it
       this.record(job.id, "stage", event satisfies ProgressEvent);
+    } else if (m.type === "progress") {
+      const { stage, done, frames, seconds } = m;
+      this.live(job.id, { stage, done, frames, seconds } satisfies StageProgress);
     } else if (m.type === "log") this.record(job.id, "log", m.message);
     else if (m.type === "done" || m.type === "error") {
       job.status = m.type === "done" ? "done" : "failed";
@@ -472,6 +486,7 @@ export class JobManager {
     this.unlock?.();
     this.unlock = null;
     this.dropScratch(job.id);
+    this.latest.delete(job.id);
     this.record(job.id, "status", { ...job });
   }
 
@@ -497,6 +512,13 @@ export class JobManager {
     for (const l of this.listeners.get(id) ?? []) l(name, data);
   }
 
+  /** The running stage's counters: sent to the open job pages and kept only as the latest one
+   * (a page opened later gets it after the replay), not in the history or `progress.jsonl`. */
+  private live(id: string, p: StageProgress): void {
+    this.latest.set(id, p);
+    for (const l of this.listeners.get(id) ?? []) l("progress", p);
+  }
+
   /** Replay the job's events so far, then stream new ones (main's `/jobs/<id>/events`). A job this
    * tab runs replays what it recorded: a status first, then the stages and log lines, then the
    * status again when it changes. Any other job (from before a reload, or another tab's) replays
@@ -508,8 +530,11 @@ export class JobManager {
       if (open) emit(n, d);
     };
     const past = this.history.get(id);
-    if (past) for (const [n, d] of past) send(n, d);
-    else
+    if (past) {
+      for (const [n, d] of past) send(n, d);
+      const p = this.latest.get(id);
+      if (p && !isFinal(job.status)) send("progress", p);
+    } else
       void this.progress(job).then((stages) => {
         for (const e of stages) send("stage", e);
         send("status", { ...this.get(id) });

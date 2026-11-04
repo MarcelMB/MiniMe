@@ -8,6 +8,9 @@ export type ToWorker = {
   avis: File[];
   inputs: File[];
   out?: FileSystemDirectoryHandle;
+  /** The run folder by its path in OPFS (Browser storage), in place of `out`: Safari cannot send
+   * a directory handle to a worker, so the worker opens it itself. */
+  outPath?: string[];
   params?: Record<string, unknown>;
   keepStore?: boolean;
   rawDir?: string;
