@@ -2,6 +2,7 @@
 //! browser (wasm) build. Python (`src/minime`, `experiments/streaming/`) is the reference.
 
 pub mod avi;
+pub mod bfft;
 pub mod butter;
 pub mod cnmf;
 pub mod compress;
@@ -11,6 +12,7 @@ pub mod corr;
 pub mod factors;
 pub mod fastmath;
 pub mod filters;
+pub mod fma;
 pub mod gmm;
 pub mod init;
 pub mod linalg;

@@ -78,7 +78,8 @@ fn main() {
     };
     let mut total = vec![0f64; 2];
     let mut steps: Vec<std::collections::BTreeMap<&'static str, f64>> = vec![Default::default(); 2];
-    let mut worst = (0f64, 0f64, 0usize, 0usize, 0usize); // recon diff, w diff, rank mismatches
+    let mut sigma_rel = 0f64;
+    let mut worst = (0f64, 0f64, 0usize, 0usize); // recon diff, w diff, rank mismatches
     for rep in 0..reps {
         for &k in &ids {
             let raw = load_tile(&tiles, k);
@@ -117,8 +118,8 @@ fn main() {
                     worst.3 += 1;
                     eprintln!("tile {k}: mean/energy differ");
                 }
-                if a.sigma != b.sigma {
-                    worst.4 += 1;
+                for (x, y) in a.sigma.iter().zip(&b.sigma) {
+                    sigma_rel = sigma_rel.max(f64::from((x - y).abs() / x.abs()));
                 }
                 if a.rank == b.rank {
                     let ra = recon(a, px, p.t);
@@ -159,8 +160,8 @@ fn main() {
     );
     if impls.len() == 2 {
         println!(
-            "rank/k mismatches {}, mean/energy mismatches {}, sigma mismatches {}, max recon rel diff {:.3e}, max W rel diff {:.3e}",
-            worst.2, worst.3, worst.4, worst.0, worst.1
+            "rank/k mismatches {}, mean/energy mismatches {}, max sigma rel diff {sigma_rel:.3e}, max recon rel diff {:.3e}, max W rel diff {:.3e}",
+            worst.2, worst.3, worst.0, worst.1
         );
     }
 }

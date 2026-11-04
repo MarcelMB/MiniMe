@@ -46,6 +46,26 @@ page.on("pageerror", (e) => console.error("pageerror", e.message));
 await page.goto(`http://127.0.0.1:${port}/`);
 await page.waitForFunction(() => window.benchReady);
 console.log(`chrome ${browser.version()}`);
+if (process.argv.includes("--fma")) {
+  // seconds-long loops: 3000-frame rows as in cnmf's gram_rows / y_ct_pairs
+  const n = 3000;
+  const reps = 20000;
+  const r = await page.evaluate(([n, reps]) => window.runFma(n, reps), [n, reps]);
+  const names = {
+    0: "f64 mul_add (gram_rows)",
+    3: "f64 mul + add",
+    1: "f32 mul_add x16 (y_ct_pairs)",
+    2: "f32 fma32 x16 (exact emulation)",
+    4: "f32 mul + add x16",
+  };
+  for (const [k, [ms, check]] of Object.entries(r)) {
+    const ops = (k === "0" || k === "3" ? 1 : 16) * n * reps;
+    console.log(`${names[k].padEnd(36)} ${ms.toFixed(0).padStart(7)} ms  ${((ms * 1e6) / ops).toFixed(2)} ns/op  check ${check}`);
+  }
+  await browser.close();
+  server.close();
+  process.exit(0);
+}
 const grid = null;
 const r = await page.evaluate((cfg) => window.runBench(cfg), { ids, reps, only, grid });
 await browser.close();
