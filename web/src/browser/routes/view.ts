@@ -107,11 +107,12 @@ router.add("GET", "/runs/:rid/units", async (q, p) => {
   };
 });
 
-/** The `peak` column of `cnmf/units.csv`: one value per unit. */
+/** The `peak` column of `cnmf/units.csv`: one value per unit. Lines end in `\r\n` where pandas
+ * wrote the file on Windows. */
 async function peaks(r: RunInfo, K: number): Promise<number[]> {
   const file = "cnmf/units.csv";
   if (!(await exists(r.dir, file))) throw notAvailable("the unit peaks", file);
-  const [head, ...rows] = (await (await fileAt(r.dir, file)).text()).trim().split("\n");
+  const [head, ...rows] = (await (await fileAt(r.dir, file)).text()).trim().split(/\r?\n/);
   const col = head.split(",").indexOf("peak");
   if (col < 0 || rows.length < K) throw notAvailable("the unit peaks", `${file} has no peak for every unit`);
   return rows.map((row) => Number(row.split(",")[col]));
