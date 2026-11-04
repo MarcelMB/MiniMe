@@ -107,8 +107,9 @@ export function writeNpyBytes(s: string): Uint8Array {
   return out;
 }
 
-/** Shape, dtype and data offset of a `.npy` from its first bytes (4 KB are always enough). */
-export function readNpyHeader(bytes: Uint8Array): { shape: number[]; descr: string; offset: number } {
+/** Shape, dtype, data offset and order of a `.npy` from its first bytes (4 KB are always enough).
+ * `fortran` (first index fastest) means the rows of a 2-d array are not contiguous. */
+export function readNpyHeader(bytes: Uint8Array): { shape: number[]; descr: string; offset: number; fortran: boolean } {
   const major = bytes[6];
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const len = major === 1 ? view.getUint16(8, true) : view.getUint32(8, true);
@@ -120,5 +121,5 @@ export function readNpyHeader(bytes: Uint8Array): { shape: number[]; descr: stri
     .map((s) => s.trim())
     .filter(Boolean)
     .map(Number);
-  return { shape, descr, offset: start + len };
+  return { shape, descr, offset: start + len, fortran: /'fortran_order':\s*True/.test(text) };
 }

@@ -95,3 +95,17 @@ describe("a run without units", () => {
     });
   });
 });
+
+describe("traces stored in Fortran order", () => {
+  it("are refused rather than read transposed", async () => {
+    // np.save of a transposed (K, T) array: the header says so, the rows are not contiguous
+    const C = writeNpy([15, 300], new Float32Array(15 * 300));
+    C.set(new TextEncoder().encode("True "), new TextDecoder("latin1").decode(C).indexOf("False"));
+    const { rid } = await setupE2eRun(variant({ C }));
+    for (const path of ["/traces/0", "/traces/overview?bins=10"])
+      await expect(settled(() => getJSON(`/runs/${rid}${path}`))).rejects.toMatchObject({
+        status: 500,
+        message: "cnmf/C.npy is stored in Fortran order, which the browser app does not read",
+      });
+  });
+});
