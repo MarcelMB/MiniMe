@@ -2,7 +2,7 @@ import { RawVideo } from "../avi";
 import { computing } from "../compute";
 import { linspaceInt, percentile, toU8 } from "../derived/contrast";
 import { hasPre, hasRecon, preFrame, reconFrame } from "../derived/recon";
-import { computeResidual } from "../derived/residual";
+import { blockFiles, computeResidual } from "../derived/residual";
 import { tileMap } from "../derived/tiles";
 import { centroids, unitPolygons } from "../derived/units";
 import { exists, fileAt, readBytes } from "../dir";
@@ -12,7 +12,6 @@ import { pyRound, roundHalfEven } from "../num";
 import { HttpError, router } from "../router";
 import type { RunInfo } from "../runs";
 import { state } from "../state";
-import { windowDir } from "../writer";
 
 const f32 = (shape: number[], data: ArrayLike<number>) => ({
   array: { shape, dtype: "float32" as const, data: data instanceof Float32Array ? data : Float32Array.from(data) },
@@ -55,13 +54,13 @@ router.add("GET", "/runs/:rid/motion", async (_q, p) => {
 });
 
 /** The motion residual (the leftover shift of each block's max projection): the cached one, else
- * computed from the windows' block maxima of a browser run (a 202 until done). A run without them
- * (Python's factors are not in the browser's format) has none. */
+ * computed from the block maxima of the run's windows (a browser run) or of its `factors/` (a
+ * Python run), a 202 until done. A run that kept neither has none. */
 router.add("GET", "/runs/:rid/motion/residual", async (_q, p) => {
   const r = await state.registry.get(p.rid);
   const cache = await state.cache(r.id);
   if (!(await cache.has("residual.npy"))) {
-    if (!(await exists(r.dir, `factors/${windowDir(0)}/block_max.npy`))) throw notAvailable("the motion residual");
+    if (!(await blockFiles(r)).length) throw notAvailable("the motion residual");
     return computing(`${r.id}:${r.stamp}:residual`, () => computeResidual(r, cache));
   }
   const a = await cache.loadNpy("residual.npy");

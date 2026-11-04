@@ -9,6 +9,7 @@ processed/
 web/node_modules/
 web/test-results/
 web/dist-browser/
+web/dist-stream/
 web/playwright-report/
 web/e2e/.data/
 src/minime/serve/static/
