@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 
 import { HandleDir } from "../browser/dir";
-import { WINDOW_FILES, type WindowParts, writeRun } from "../browser/writer";
+import { foldMaxProj, keepForSession, type WindowParts, writeRun, writeWindow } from "../browser/writer";
 import { readNpy } from "./npy";
 import { orderAvis } from "./order";
 import init, {
@@ -370,7 +370,11 @@ async function runWindows(
   const stitch = new StitchEngine(new Map([["session.json", session]]));
   const root = await navigator.storage.getDirectory();
   const windows: Record<string, unknown>[] = [];
-  const kept: WindowParts[] = []; // what the run folder keeps of each window (with `opts.out`)
+  // with `opts.out` each window's factors go to the run folder as it finishes; only what the
+  // session-wide steps at the end read stays in memory (`kept`, `maxProj`)
+  const to = opts.out ? new HandleDir(opts.out) : null;
+  const kept: WindowParts[] = [];
+  let maxProj: Float32Array | null = null;
   for (let i = 0; i < n; i++) {
     const [t0, t1] = [flat[2 * i], flat[2 * i + 1]];
     const before = new Map(stageSeconds);
@@ -389,14 +393,11 @@ async function runWindows(
     const tag = `win_${String(i).padStart(2, "0")}_`;
     for (const [name, bytes] of w.files) if (name.startsWith("summary")) out.set(tag + name, bytes);
     windows.push(windowReport(t0, t1, w.files, before));
-    if (opts.out)
-      kept.push({
-        t0,
-        t1,
-        files: new Map(
-          WINDOW_FILES.flatMap((k) => (w.files.has(k) ? [[k, w.files.get(k)] as [string, Uint8Array]] : [])),
-        ),
-      });
+    if (to) {
+      await writeWindow(to, i, w.files);
+      maxProj = foldMaxProj(maxProj, w.files);
+      kept.push({ t0, t1, files: keepForSession(w.files) });
+    }
     await root.removeEntry(TILE_DIR, { recursive: true }).catch(() => undefined);
   }
   for (const sg of segs) sg.avi.free();
@@ -423,8 +424,8 @@ async function runWindows(
   }
   const rep = report(out, windows, T, H, W, (performance.now() - tl) / 1e3);
   res.set("report.json", encode(rep));
-  if (opts.out) {
-    const parts = { H, W, T, windows: kept, stitch: st.files, stream: res, report: rep };
+  if (opts.out && maxProj) {
+    const parts = { H, W, T, windows: kept, maxProj, stitch: st.files, stream: res, report: rep };
     // the traces now sit in the run folder; the scratch copy goes
     res.set("C.npy", await saveRun(opts.out, opts, sessionObj, shifts, out, parts));
   }
@@ -436,6 +437,7 @@ type RunData = {
   W: number;
   T: number;
   windows: WindowParts[];
+  maxProj: Float32Array;
   stitch: Map<string, Uint8Array>;
   stream: Map<string, Uint8Array | Blob>;
   report: Record<string, unknown>;
@@ -472,6 +474,7 @@ async function saveRun(
     T: d.T,
     tile: Number(pass1.tile),
     windows: d.windows,
+    maxProj: d.maxProj,
     motion: {
       shifts: bytes("shifts.npy"),
       template: bytes("template.npy"),

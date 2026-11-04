@@ -7,25 +7,53 @@ import { readNpy, writeNpy } from "./npy";
 import { type Csr, csrNpz, npzBlob } from "./npz";
 import { pyFloat } from "./num";
 
-/** One window's kept outputs, by file name (`max_proj.npy`, `W.npy`, ...). */
+/** What the session-wide steps at the end keep of one window, by file name (`rank.npy`, the seed
+ * tables and masks, the init footprints). Its factors are not here: they go to disk with
+ * `writeWindow` as the window finishes. */
 export type WindowParts = { t0: number; t1: number; files: Map<string, Uint8Array> };
 
-/** The pass-2 factors of a window that go to `factors/wNN/`. */
-const KEEP = ["W.npy", "V.npy", "s.npy", "mean.npy", "k.npy", "rank.npy", "block_max.npy", "max_proj.npy"];
+/** The pass-2 factors of a window that go to `factors/wNN/` (`writeWindow`). */
+const FACTORS = ["W.npy", "V.npy", "s.npy", "mean.npy", "k.npy", "rank.npy", "block_max.npy", "max_proj.npy"];
 
-/** What a window keeps of its stage outputs for the writer: `KEEP`, the noise, the seed stage's
- * tables and the init footprints. The rest (tile CRCs, merge pairs, ...) is dropped. */
-export const WINDOW_FILES: readonly string[] = [
-  ...KEEP,
-  "sigma.npy",
+/** The files of a window the session-wide steps read: `factors/meta.json`'s ranks, the seeds
+ * (`sessionSeeds`: initial seeds, the PNR mask, merged seeds) and the init footprints
+ * (`sessionInit`). Everything else a window gives is written or dropped. */
+const SESSION = [
+  "rank.npy",
   "seeds_init.npy",
   "mask_pnr.npy",
-  "mask_gmm.npy",
   "seeds_merged.npy",
   "A_merge_data.npy",
   "A_merge_indices.npy",
   "A_merge_indptr.npy",
 ];
+
+/** `factors/<windowDir(i)>`: `w00`, `w01`, ... (two digits at least, `w100` past 99). The one place
+ * the folder of window `i` is named, for the writer and for whatever reads the factors back. */
+export const windowDir = (i: number): string => `w${String(i).padStart(2, "0")}`;
+
+/** The part of a window's outputs to hold in memory until the session-wide steps at the end. */
+export function keepForSession(files: Map<string, Uint8Array>): Map<string, Uint8Array> {
+  return new Map(SESSION.flatMap((k) => (files.has(k) ? [[k, files.get(k)] as [string, Uint8Array]] : [])));
+}
+
+/** `acc` (null for the first window) with this window's max projection folded in as a per-pixel
+ * maximum: the session's `max_proj` without holding every window's. */
+export function foldMaxProj(acc: Float32Array | null, files: Map<string, Uint8Array>): Float32Array {
+  const m = readNpy(need(files, "max_proj.npy")).data;
+  const out = acc ?? new Float32Array(m.length).fill(Number.NEGATIVE_INFINITY);
+  if (out.length !== m.length)
+    throw new Error(`max_proj.npy holds ${m.length} values, the earlier windows ${out.length}`);
+  for (let i = 0; i < m.length; i++) out[i] = Math.max(out[i], m[i]);
+  return out;
+}
+
+/** Window `i`'s pass-2 factors into `factors/wNN/`, called as the window finishes so that its
+ * bytes can be released before the next one starts. */
+export async function writeWindow(out: Dir, i: number, files: Map<string, Uint8Array>): Promise<void> {
+  const d = await walk(out, `factors/${windowDir(i)}`, { create: true });
+  for (const k of FACTORS) await d.write(k, need(files, k));
+}
 
 const arr = (w: WindowParts, name: string) => {
   const b = w.files.get(name);
@@ -174,7 +202,10 @@ export type RunParts = {
   W: number;
   T: number;
   tile: number;
+  /** Per window, what `keepForSession` kept (its factors went to `writeWindow`). */
   windows: WindowParts[];
+  /** The per-pixel maximum of the windows' max projections (`foldMaxProj`), H * W values. */
+  maxProj: Float32Array;
   /** The motion stage's `shifts.npy`, `template.npy` and `quality.npy`, and its parameters. */
   motion: { shifts: Uint8Array; template: Uint8Array; quality: Uint8Array; params: Record<string, unknown> };
   /** The stitch's outputs: `A_{data,indices,indptr}.npy`, `sn.npy`, `bright.npy`. */
@@ -198,8 +229,10 @@ const f32Image = (H: number, W: number, name: string, data: ArrayLike<number>): 
   return writeNpy([H, W], Float32Array.from(data));
 };
 
-/** The run folder of spec section 3. `report.json` goes last: a run is listed only when it has
- * `params.json` and `report.json`, so a folder whose run failed halfway is never listed. */
+/** The session-level files of the run folder of spec section 3 (the windows' `factors/wNN/` are
+ * written by `writeWindow` as each window finishes). `report.json` goes last: a run is listed
+ * only when it has `params.json` and `report.json`, so a folder whose run failed halfway is never
+ * listed. */
 export async function writeRun(out: Dir, r: RunParts): Promise<void> {
   if (!r.windows.length) throw new Error("the run has no windows");
   const P = r.H * r.W;
@@ -222,17 +255,8 @@ export async function writeRun(out: Dir, r: RunParts): Promise<void> {
     ranks: ranks[0].map((_, j) => Math.max(...ranks.map((rk) => rk[j]))),
     windows: r.windows.map((w) => ({ t0: w.t0, t1: w.t1 })),
   });
-  const maxProj = new Float32Array(P).fill(Number.NEGATIVE_INFINITY);
-  for (const w of r.windows) {
-    const m = readNpy(need(w.files, "max_proj.npy")).data;
-    for (let i = 0; i < P; i++) maxProj[i] = Math.max(maxProj[i], m[i]);
-  }
-  await factors.write("max_proj.npy", f32Image(r.H, r.W, "max_proj", maxProj));
+  await factors.write("max_proj.npy", f32Image(r.H, r.W, "max_proj", r.maxProj));
   await factors.write("sn.npy", f32Image(r.H, r.W, "sn", readNpy(need(r.stitch, "sn.npy")).data));
-  for (const [i, w] of r.windows.entries()) {
-    const d = await walk(factors, `w${String(i).padStart(2, "0")}`, { create: true });
-    for (const k of KEEP) await d.write(k, need(w.files, k));
-  }
 
   const cnmf = await walk(out, "cnmf", { create: true });
   const A = csrOf({ t0: 0, t1: 0, files: r.stitch }, "A", P);
