@@ -7,7 +7,6 @@ import init, { Pass1Engine, Pass2Engine, StreamSolver, TemplateWorker } from "./
 import type { FromFrameWorker, ToFrameWorker } from "./poolProtocol";
 import { FLUSH, readTile, slabName } from "./slabs";
 
-const TILE_DIR = "pass1_tiles";
 const post = (m: FromFrameWorker, transfer: Transferable[] = []) => self.postMessage(m, transfer);
 
 let memory: WebAssembly.Memory | null = null;
@@ -20,9 +19,9 @@ let template: TemplateWorker | null = null;
 let store: { slabs: File[]; frames: number[]; pixels: number[]; reader: FileReaderSync } | null = null;
 
 const heapMb = () => (memory?.buffer.byteLength ?? 0) / 2 ** 20;
-async function tileDir(): Promise<FileSystemDirectoryHandle> {
+async function tileDir(name: string): Promise<FileSystemDirectoryHandle> {
   const root = await (await navigator.storage.getDirectory()).getDirectoryHandle("scratch", { create: true });
-  return (await root.getDirectoryHandle(scratch, { create: true })).getDirectoryHandle(TILE_DIR, { create: true });
+  return (await root.getDirectoryHandle(scratch, { create: true })).getDirectoryHandle(name, { create: true });
 }
 
 async function handle(m: ToFrameWorker): Promise<void> {
@@ -41,7 +40,7 @@ async function handle(m: ToFrameWorker): Promise<void> {
     case "p2ctx": {
       pass2?.free();
       pass2 = new Pass2Engine(m.files);
-      const dir = await tileDir();
+      const dir = await tileDir(m.tiles);
       // snapshots of the slabs, taken once pass 1 has closed them
       const slabs = await Promise.all(m.chunks.map(async (_, c) => (await dir.getFileHandle(slabName(c))).getFile()));
       const pixels = Array.from({ length: pass2.n_tiles() }, (_, k) => (pass2 as Pass2Engine).tile_pixels(k));
@@ -88,7 +87,7 @@ async function pass1Chunk(m: Extract<ToFrameWorker, { type: "p1" }>): Promise<vo
     if (avi.height() !== H || avi.width() !== W)
       throw new Error(`${file.name}: ${avi.height()}x${avi.width()} frames, inputs say ${H}x${W}`);
   engine.start_at(m.a);
-  const dir = await tileDir();
+  const dir = await tileDir(m.tiles);
   const slab = await (await dir.getFileHandle(slabName(m.chunk), { create: true })).createSyncAccessHandle();
   try {
     let bytes = 0;
@@ -210,9 +209,13 @@ function templateFrames(m: Extract<ToFrameWorker, { type: "t1" | "t2" }>): void 
   ]);
 }
 
+// one message at a time, in order: a worker may be dealt several tasks up front
+let queue: Promise<void> = Promise.resolve();
 self.onmessage = (e: MessageEvent<ToFrameWorker>) => {
   const id = "id" in e.data ? e.data.id : -1;
-  handle(e.data).catch((err: unknown) => {
-    post({ type: "error", id, message: err instanceof Error ? err.message : String(err) });
-  });
+  queue = queue
+    .then(() => handle(e.data))
+    .catch((err: unknown) => {
+      post({ type: "error", id, message: err instanceof Error ? err.message : String(err) });
+    });
 };

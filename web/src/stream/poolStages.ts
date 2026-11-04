@@ -30,9 +30,10 @@ function utilisation(pool: Pool, ctx: Ctx, what: string, began: number, busy: nu
 
 /** Chunk starts (and the end) of a window of `t` frames for `n` workers: about two chunks per
  * worker (the slowest worker then holds up the stage less), in multiples of 100 frames, the
- * tile buffering. */
-export function chunkBounds(t: number, n: number): number[] {
-  const size = Math.max(100, Math.ceil(t / (2 * n) / 100) * 100);
+ * tile buffering; with `even` one chunk per worker of the same size, as a worker that is dealt its
+ * chunks up front cannot take over another's. */
+export function chunkBounds(t: number, n: number, even = false): number[] {
+  const size = even ? Math.ceil(t / n) : Math.max(100, Math.ceil(t / (2 * n) / 100) * 100);
   const bounds: number[] = [];
   for (let a = 0; a < t; a += size) bounds.push(a);
   bounds.push(t);
@@ -71,18 +72,22 @@ export async function templatePooled(
 }
 
 /** The tile store a pooled pass 1 left: its slabs' frame counts and the tiles' sizes (`slabs.ts`). */
-export type Store = { frames: number[]; pixels: number[]; bytes: number };
+export type Store = { tiles: string; frames: number[]; pixels: number[]; bytes: number };
 
-/** Pass 1 of a window of `t` frames on the pool: `engine` (the window's, with no frame pushed) takes
- * the chunks' results. */
+/** Pass 1 of a window of `t` frames on the pool, its tile store in the scratch folder `tiles`:
+ * `engine` (the window's, with no frame pushed) takes the chunks' results. With `deal` the chunks
+ * are posted to the workers before this returns, so it can be called from code that then keeps the
+ * thread busy: the workers go on and the results wait to be taken. */
 export async function pass1Pooled(
   pool: Pool,
   engine: Pass1Engine,
   files: FileMap,
   t: number,
   ctx: Ctx,
+  tiles: string,
+  deal = false,
 ): Promise<Store> {
-  const bounds = chunkBounds(t, pool.size);
+  const bounds = chunkBounds(t, pool.size, deal);
   const parts = bounds.length - 1;
   const stage = pick(files, (n) => n === "params.json" || n === "template.npy" || n === "shifts.npy");
   const live = new Array<number>(parts).fill(0);
@@ -100,7 +105,8 @@ export async function pass1Pooled(
       (now - began) / 1e3,
     );
   };
-  await pool.run("p1", parts, (i) => ({ type: "p1", files: stage, a: bounds[i], b: bounds[i + 1], chunk: i }), {
+  await pool.run("p1", parts, (i) => ({ type: "p1", files: stage, a: bounds[i], b: bounds[i + 1], chunk: i, tiles }), {
+    deal,
     onProgress: (i, done) => {
       live[i] = done;
       report();
@@ -115,6 +121,7 @@ export async function pass1Pooled(
   report(true);
   utilisation(pool, ctx, "pass 1", began, pool.busyMs.p1 - busy0, parts);
   return {
+    tiles,
     frames: bounds.slice(1).map((b, i) => b - bounds[i]),
     pixels: Array.from({ length: engine.n_tiles() }, (_, k) => engine.tile_pixels(k)),
     bytes,
@@ -135,6 +142,7 @@ export async function pass2Pooled(
     type: "p2ctx",
     files: pick(files, (f) => f === "pass2.json" || f.startsWith("omega_")),
     chunks: store.frames,
+    tiles: store.tiles,
   });
   const began = performance.now();
   const busy0 = pool.busyMs.p2;
