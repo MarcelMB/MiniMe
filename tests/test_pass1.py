@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pytest
 
-from minime import io, pass1, tiles
+from minime import io, motion, pass1, tiles
 from minime.params import Params
 
 
@@ -318,3 +318,34 @@ def test_run_workers_raises_when_a_worker_dies():
 
     with pytest.raises(BrokenProcessPool):
         pass1.run_workers(os._exit, [(1,)])
+
+
+def test_spread_starts_and_sample_frames(tiny_session):
+    info = io.probe(tiny_session["raw_dir"])
+    assert pass1.spread_starts(300, 4, 20).tolist() == [0, 93, 187, 280]
+    f = pass1.sample_frames(info, 4, 20)
+    assert f.shape == (80, 64, 64)
+    full = np.concatenate([io.read_avi(s) for s in info.segments])
+    assert np.array_equal(f[20:40], full[93:113]) and np.array_equal(f[60:], full[280:300])
+
+
+def test_build_template_options_land_on_median_position(tmp_path):
+    """The synthetic walk leaves the first frames' position: recentred and spread templates
+    put the session's median shift near 0, the default does not."""
+    from minime.testing import synth
+
+    raw = tmp_path / "raw"
+    synth.write_session(raw, minutes=600 / 30 / 60, fps=30, segment=200, seed=0, side=128)
+    info = io.probe(raw)
+    base = dict(template_frames=100, template_chunks=10)
+    every = pass1._reg(pass1.read_range(info, 0, info.frames), Params(**base))
+    med = {}
+    for name, kw in {
+        "first": {},
+        "recentre": {"template_recentre": True},
+        "spread": {"template_source": "spread"},
+    }.items():
+        p = Params(**base, **kw)
+        med[name] = np.abs(np.median(motion.estimate(every, pass1.build_template(info, p)), 0))
+    assert med["first"].max() > 4, med
+    assert med["recentre"].max() < 1 and med["spread"].max() < 1, med

@@ -18,6 +18,13 @@ GROUPS: dict[str, list[str]] = {
         "template_frames",
         "motion_before_tophat",
         "motion_bandpass",
+        "template_source",
+        "template_chunks",
+        "template_recentre",
+        "motion_refine",
+        "motion_outlier",
+        "motion_fill",
+        "border_coverage",
     ],
     "Tiling + compression": [
         "tile",
@@ -61,6 +68,18 @@ HELP: dict[str, str] = {
     "template_frames": "Frames averaged into the motion template.",
     "motion_before_tophat": "Estimate motion before the tophat, on band-passed frames.",
     "motion_bandpass": "Difference-of-Gaussians sigmas (px) of the band-pass for motion.",
+    "template_source": "Motion template from the first frames ('first') or from frames spread "
+    "over the session ('spread').",
+    "template_chunks": "Runs of frames spread over the session for a 'spread' template or for "
+    "re-centring.",
+    "template_recentre": "Move the first-frames template to the session's median position.",
+    "motion_refine": "Re-estimate each sub-batch against its own mean, tied to the template.",
+    "motion_outlier": "Replace a shift this many px off its neighbours when the frame matches "
+    "the template badly (0 = off).",
+    "motion_fill": "What motion correction puts where a shifted frame has no data: 'zero', "
+    "'replicate' (the nearest edge pixel) or 'template' (the template frames' mean).",
+    "border_coverage": "Pixels filled from inside the frame in fewer than this fraction of the "
+    "motion-corrected frames are set to 0 (0 = off).",
     "tile": "Tile side in px for the low-rank compression.",
     "svd_k0": "Starting rank of each tile's randomized SVD.",
     "svd_power_iter": "Power iterations of the randomized SVD.",

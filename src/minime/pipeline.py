@@ -7,6 +7,7 @@ factors: seeds_init, pnr_refine, gmm_refine (opt-in), seeds_merge, initA, initC,
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import shutil
@@ -354,6 +355,20 @@ def _write_params(
 # ---------------------------------------------------------------------------
 
 
+def border_mask(p1: pass1.Pass1Result, h: int, w: int, min_coverage: float) -> np.ndarray | None:
+    """Pixels the warp fills from inside the frame in at least ``min_coverage`` of the frames
+    (None when off or when every pixel passes); the others are zeroed in pass 1's max
+    projection and block maxima here, and in the tiles by pass 2."""
+    if min_coverage <= 0:
+        return None
+    valid = motion.coverage(p1.shifts, h, w) >= min_coverage
+    if valid.all():
+        return None
+    p1.max_proj[~valid] = 0
+    p1.block_max[:, ~valid] = 0
+    return valid
+
+
 def run(
     raw_dir: Path,
     params: Params,
@@ -393,6 +408,9 @@ def run(
         else:
             template = _template_from_sidecar(sc, info, params)
             template_img = sc.template
+            if params.motion_fill == "template":  # the fill image is not in the sidecar
+                fill = pass1.build_template(info, params).fill
+                template = dataclasses.replace(template, fill=fill)
     grid = tile_grid(info.height, info.width, params.tile)
     store = TileStore(out / "tiles", grid, pass1.n_parts_for(info, workers))
     try:
@@ -405,8 +423,9 @@ def run(
         # the workers save each tile and every later stage reads V from its file, not from
         # RAM: V is T x rank per tile (8 GB on an 8 h session, 23 GB on 24 h), more than the
         # RAM left next to pass 2 or CNMF on a 32 GB Mac
+        valid = border_mask(p1, info.height, info.width, params.border_coverage)
         with timer("pass2"):
-            tiles = pass2.run_pass2(store, grid, params, workers, out / "factors")
+            tiles = pass2.run_pass2(store, grid, params, workers, out / "factors", valid)
         fac = pass2.build_factors(info, grid, p1, tiles, params)
         with timer("factors_save"):
             fac.save_meta(out / "factors")

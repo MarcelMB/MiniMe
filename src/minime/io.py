@@ -161,6 +161,26 @@ def read_avi(path: Path, max_frames: int | None = None, bgr: bool = False) -> np
     return np.concatenate([out[: min(n, out.shape[0])], *([np.stack(extra)] if extra else [])])
 
 
+def read_frames(path: Path, start: int, n: int, bgr: bool = False) -> np.ndarray:
+    """Frames ``start .. start + n`` of one AVI (fewer at its end) as (m, h, w) uint8,
+    seeking to ``start`` (exact for intra-only codecs: GREY, FFV1, MJPG)."""
+    cap = _open(path, bgr)
+    try:
+        if start > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+        frames = []
+        for _ in range(n):
+            ok, f = cap.read()
+            if not ok:
+                break
+            frames.append(_gray(f, bgr).copy())
+    finally:
+        cap.release()
+    if not frames:
+        raise OSError(f"no frames could be read from {path} at frame {start}")
+    return np.stack(frames)
+
+
 def iter_avi(path: Path, batch: int = 1000, bgr: bool = False) -> Iterator[np.ndarray]:
     """Yield the frames of one AVI as (n, h, w) uint8 batches of ``batch`` frames (last shorter).
 
