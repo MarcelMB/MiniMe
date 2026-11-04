@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { getJSON, postJSON, subscribe } from "../../api";
+import { isFinal } from "../../launch/params";
 import type { FromWorker } from "../../stream/protocol";
 import type { Job } from "../../types";
 import { Folders } from "../folders";
@@ -91,8 +92,8 @@ describe("job events", () => {
     await tick();
     expect((await getJSON<Job>(`/jobs/${job.id}`)).status).toBe("done");
 
-    // JobPage sets `close` from subscribe()'s return value and its status handler calls it:
-    // a status replayed synchronously would find `close` still unset
+    // JobPage sets `close` from subscribe()'s return value and its status handler calls it on the
+    // final status: a status replayed synchronously would find `close` still unset
     const seen: [string, unknown][] = [];
     let close: () => void = () => {
       throw new Error("close called before subscribe returned");
@@ -103,7 +104,7 @@ describe("job events", () => {
         log: (d) => seen.push(["log", d]),
         status: (d) => {
           seen.push(["status", (d as Job).status]);
-          close();
+          if (isFinal((d as Job).status)) close();
         },
       },
       () => seen.push(["error", null]),
@@ -131,6 +132,27 @@ describe("job events", () => {
     close();
     workers[0].say({ type: "log", message: "b" });
     expect(seen).toEqual(["pass1", "a"]);
+  });
+
+  it("lets go of a subscriber that closes while the past events are replayed", async () => {
+    const job = await postJSON<Job>("/jobs", body); // running: more events will come
+    workers[0].say({ type: "log", message: "before" });
+    const seen: string[] = [];
+    let close: () => void = () => {};
+    close = subscribe(
+      `/jobs/${job.id}/events`,
+      {
+        status: () => {
+          seen.push("status");
+          close(); // on the first event, in the middle of the replay
+        },
+        log: (d) => seen.push(String(d)),
+      },
+      () => {},
+    );
+    await tick();
+    workers[0].say({ type: "log", message: "after" });
+    expect(seen).toEqual(["status"]); // not the rest of the replay, not what came after
   });
 
   it("does not subscribe at all when the page closes before the job manager is ready", async () => {

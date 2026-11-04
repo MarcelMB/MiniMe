@@ -57,7 +57,13 @@ addEventProvider((path, emit) => {
   let closed = false;
   jobs()
     .then((j) => {
-      if (!closed) close = j.events(decodeURIComponent(m[1]), emit);
+      if (closed) return;
+      // a handler may close the stream while the past events are replayed, before `events`
+      // has returned the way to unsubscribe: nothing is delivered after that, and it unsubscribes
+      close = j.events(decodeURIComponent(m[1]), (name, data) => {
+        if (!closed) emit(name, data);
+      });
+      if (closed) close();
     })
     .catch(() => {
       // an unknown job: the page's own GET /jobs/<id> shows the 404
