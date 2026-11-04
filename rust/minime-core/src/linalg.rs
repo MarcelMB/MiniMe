@@ -2,6 +2,35 @@
 //! eigensolver for symmetric matrices, and the normal-equation solver rule of
 //! `init._solve_normal` (Cholesky unless `cond > 1e12`, else the pseudo-inverse).
 
+/// `s + x y`, fused where the target has an FMA instruction. wasm32 has none, so
+/// `f64::mul_add` there is a software routine (15.6 ns, 17 times a multiply and an add, on
+/// M1 Max in Chrome); `cnmf` summed 54 M of them in one Gram matrix, 0.84 s of a 1.1 s
+/// spatial update. The unfused sum differs from the fused one by rounding (1e-16 relative
+/// per term), far below any decision's margin.
+#[inline(always)]
+pub fn madd64(x: f64, y: f64, s: f64) -> f64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        s + x * y
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        x.mul_add(y, s)
+    }
+}
+
+/// `x.madd(y, s)` for float64: `madd64` as a method, for the places that read `x.mul_add(y, s)`.
+pub trait Madd {
+    fn madd(self, y: f64, s: f64) -> f64;
+}
+
+impl Madd for f64 {
+    #[inline(always)]
+    fn madd(self, y: f64, s: f64) -> f64 {
+        madd64(self, y, s)
+    }
+}
+
 pub const COND_MAX: f64 = 1e12;
 pub const PINV_RCOND: f64 = 1e-12;
 
