@@ -54,8 +54,8 @@ pub fn pass2_bench_tile(
 
 /// Cost of the fused multiply-adds `cnmf` uses, on data shaped like its loops: `kind` 0
 /// float64 `mul_add` sums (`gram_rows`, `n` frames of a row pair), 1 float32 `mul_add` with
-/// 16 sums over the frames (`y_ct_pairs`), 2 the same through `fma::fma32`, 3 float64 and
-/// 4 float32 with a separate multiply and add. Returns `[ms, checksum]`.
+/// 16 sums over the frames (`y_ct_pairs`), 3 float64 and 4 float32 with a separate
+/// multiply and add. Returns `[ms, checksum]`.
 #[wasm_bindgen]
 pub fn fma_bench(kind: u32, n: usize, reps: usize) -> Vec<f64> {
     let mut s = 12345u64;
@@ -81,7 +81,6 @@ pub fn fma_bench(kind: u32, n: usize, reps: usize) -> Vec<f64> {
                     for (a, &v) in acc.iter_mut().zip(row) {
                         *a = match kind {
                             1 => v.mul_add(xv, *a),
-                            2 => crate::fma::fma32(v, xv, *a),
                             _ => *a + v * xv,
                         };
                     }

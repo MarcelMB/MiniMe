@@ -81,7 +81,7 @@
   window.runFma = async (n, reps) => {
     await init();
     const out = {};
-    for (const kind of [0, 3, 1, 2, 4]) {
+    for (const kind of [0, 3, 1, 4]) {
       fma_bench(kind, n, 2); // warm up
       out[kind] = fma_bench(kind, n, reps);
     }
