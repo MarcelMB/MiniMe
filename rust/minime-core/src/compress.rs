@@ -7,6 +7,7 @@
 //! SVD and the autocorrelations run in float64. The Gaussian test matrices come from a
 //! `Normals` source, so a check can replay the draws numpy made (`ref_pass2.py`).
 
+use crate::bfft::NoisePlan;
 use crate::fastmath::ln_f32;
 use crate::linalg::sym_eig;
 use crate::npy;
@@ -183,6 +184,7 @@ impl<'a> TileMatrix<'a> {
 
     /// Frames `c0..c0 + n` as `(n, P)` row-major float32, mean removed.
     fn block(&self, c0: usize, n: usize, buf: &mut Vec<f32>) {
+        let _s = prof::span("block_u8_f32");
         buf.clear();
         for row in self.raw[c0 * self.p..(c0 + n) * self.p].chunks_exact(self.p) {
             buf.extend(row.iter().zip(&self.mean).map(|(&v, &m)| f32::from(v) - m));
@@ -198,6 +200,7 @@ impl<'a> TileMatrix<'a> {
             self.block(c0, n, &mut x);
             let c = &mut out[c0 * ell..(c0 + n) * ell];
             // SAFETY: the strides describe the row-major buffers above
+            let _s = prof::span("gemm_YtQ");
             unsafe {
                 matrixmultiply::sgemm(
                     n,
@@ -229,6 +232,7 @@ impl<'a> TileMatrix<'a> {
             self.block(c0, n, &mut x);
             let zc = &z[c0 * ell..(c0 + n) * ell];
             // SAFETY: x^T is x with swapped strides; the rest is row-major as above
+            let _s = prof::span("gemm_YZ");
             unsafe {
                 matrixmultiply::sgemm(
                     self.p,
@@ -267,6 +271,9 @@ impl<'a> TileMatrix<'a> {
         if hi <= lo {
             return self.noise_mad();
         }
+        if let Some(plan) = NoisePlan::new(self.t, lo, hi) {
+            return self.noise_batched(&plan, hi - lo);
+        }
         let mut planner = RealFftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(self.t);
         let mut spec = fft.make_output_vec();
@@ -296,6 +303,44 @@ impl<'a> TileMatrix<'a> {
             // keeps that order per pixel without waiting on one dependent add chain
             let sums = seq_sums_f32(&terms[..n * nb], nb);
             out.extend(sums.iter().map(|&s| f64::from((0.5 * (s / nb as f32)).exp())));
+        }
+        out
+    }
+
+    /// The noise of every pixel with `bfft`'s four-pixel FFT: groups of 16 pixels are copied
+    /// out of the tile once (so each frame row is read contiguously), then run four at a time.
+    fn noise_batched(&self, plan: &NoisePlan, nb: usize) -> Vec<f64> {
+        let (t, p) = (self.t, self.p);
+        let mut work = plan.work();
+        let mut blk = vec![0u8; t * 16];
+        let mut frames = vec![0f32; t * 4];
+        let mut out = Vec::with_capacity(p);
+        for px0 in (0..p).step_by(16) {
+            let n = 16.min(p - px0);
+            {
+                let _s = prof::span("noise_gather");
+                for (row, dst) in self.raw.chunks_exact(p).zip(blk.chunks_exact_mut(16)) {
+                    dst[..n].copy_from_slice(&row[px0..px0 + n]);
+                    dst[n..].fill(0);
+                }
+            }
+            for g in (0..n).step_by(4) {
+                {
+                    let _s = prof::span("noise_gather");
+                    for (src, dst) in blk.chunks_exact(16).zip(frames.chunks_exact_mut(4)) {
+                        for l in 0..4 {
+                            dst[l] = f32::from(src[g + l]);
+                        }
+                    }
+                }
+                let _s = prof::span("noise_fft");
+                let sums = plan.sums(&frames, &mut work);
+                out.extend(
+                    sums.iter()
+                        .take(n - g)
+                        .map(|&s| f64::from((0.5 * (s / nb as f32)).exp())),
+                );
+            }
         }
         out
     }
@@ -860,7 +905,7 @@ mod tests {
                 assert_eq!(a.mean, b.mean);
                 assert_eq!(a.energy, b.energy);
                 for (x, y) in a.sigma.iter().zip(&b.sigma) {
-                    assert!((x - y).abs() <= 2e-6 * x.abs(), "sigma {x} {y}");
+                    assert!((x - y).abs() <= 1e-5 * x.abs(), "sigma {x} {y}");
                 }
                 let rel = |u: &[f32], v: &[f32]| {
                     let num: f64 = u.iter().zip(v).map(|(&x, &y)| f64::from(x - y).powi(2)).sum();

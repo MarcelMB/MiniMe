@@ -2,7 +2,7 @@
 <meta charset="utf-8" />
 <title>pass 2 wasm bench</title>
 <script type="module">
-  import init, { pass2_bench_tile } from "/pkg/minime_core.js";
+  import init, { fma_bench, pass2_bench_tile } from "/pkg/minime_core.js";
 
   const npyF32 = (buf) => {
     const hl = new DataView(buf).getUint16(8, true);
@@ -76,6 +76,16 @@
       }
     }
     return { sums, worst, perTile, reps: cfg.reps, T };
+  };
+  /** `fma_bench` kinds on `n` elements, `reps` times each: [ms, checksum] per kind. */
+  window.runFma = async (n, reps) => {
+    await init();
+    const out = {};
+    for (const kind of [0, 3, 1, 2, 4]) {
+      fma_bench(kind, n, 2); // warm up
+      out[kind] = fma_bench(kind, n, reps);
+    }
+    return out;
   };
   window.benchReady = true;
 </script>

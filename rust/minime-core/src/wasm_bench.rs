@@ -51,3 +51,44 @@ pub fn pass2_bench_tile(
     set(&out, "v", &Float32Array::from(tf.v.as_slice()));
     Ok(out.into())
 }
+
+/// Cost of the fused multiply-adds `cnmf` uses, on data shaped like its loops: `kind` 0
+/// float64 `mul_add` sums (`gram_rows`, `n` frames of a row pair), 1 float32 `mul_add` with
+/// 16 sums over the frames (`y_ct_pairs`), 2 the same through `fma::fma32`, 3 float64 and
+/// 4 float32 with a separate multiply and add. Returns `[ms, checksum]`.
+#[wasm_bindgen]
+pub fn fma_bench(kind: u32, n: usize, reps: usize) -> Vec<f64> {
+    let mut s = 12345u64;
+    let mut rnd = move || {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((s >> 33) as f64 / (1u64 << 31) as f64) - 0.5
+    };
+    let x64: Vec<f64> = (0..n).map(|_| rnd()).collect();
+    let y64: Vec<f64> = (0..n).map(|_| rnd()).collect();
+    let v32: Vec<f32> = (0..n * 16).map(|_| rnd() as f32).collect();
+    let c32: Vec<f32> = (0..n).map(|_| rnd() as f32).collect();
+    let t0 = prof::now_ms();
+    let mut check = 0f64;
+    for _ in 0..reps {
+        match kind {
+            0 => check += x64.iter().zip(&y64).fold(0.0, |s, (&x, &y)| x.mul_add(y, s)),
+            3 => check += x64.iter().zip(&y64).fold(0.0, |s, (&x, &y)| s + x * y),
+            _ => {
+                let mut acc = [0f32; 16];
+                for (row, &xv) in v32.chunks_exact(16).zip(&c32) {
+                    for (a, &v) in acc.iter_mut().zip(row) {
+                        *a = match kind {
+                            1 => v.mul_add(xv, *a),
+                            2 => crate::fma::fma32(v, xv, *a),
+                            _ => *a + v * xv,
+                        };
+                    }
+                }
+                check += acc.iter().map(|&v| f64::from(v)).sum::<f64>();
+            }
+        }
+    }
+    vec![prof::now_ms() - t0, check]
+}
