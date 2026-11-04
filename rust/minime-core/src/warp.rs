@@ -114,9 +114,10 @@ fn warp<R: Rows>(src: &R, h: usize, dy: f32, dx: f32, mut put: impl FnMut(usize,
         let sy = y as f32 + dy;
         let y0f = sy.floor();
         let (y0, ay) = (y0f as i64, sy - y0f);
+        let y1 = y0.saturating_add(1);
         let inside = |yy: i64| yy >= 0 && yy < h as i64;
         let r0 = inside(y0).then(|| src.row(y0 as usize, &mut buf0));
-        let r1 = inside(y0 + 1).then(|| src.row(y0 as usize + 1, &mut buf1));
+        let r1 = inside(y1).then(|| src.row(y1 as usize, &mut buf1));
         let pixel = |x: usize| -> f32 {
             let (x0, ax) = (cols.x0[x], cols.ax[x]);
             let (p00, p01, p10, p11) = (at(r0, x0), at(r0, x0 + 1), at(r1, x0), at(r1, x0 + 1));
