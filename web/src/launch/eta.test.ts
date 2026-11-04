@@ -94,8 +94,8 @@ describe("runLeft", () => {
     expect(runLeft(after1, null)).toBeNull();
   });
 
-  it("adds the windows left at each stage's rate and the streaming pass at motion's speed", () => {
+  it("adds the windows left at each stage's rate and the streaming pass at pass 1's speed", () => {
     const windows = 2 * (70 + 28 + 0.4 + 0.7 + 8);
-    expect(runLeft(after1, plan)).toBeCloseTo(windows + (9000 * 190) / 9400, 6);
+    expect(runLeft(after1, plan)).toBeCloseTo(windows + (9000 * 70) / 3000, 6);
   });
 });

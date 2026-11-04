@@ -300,8 +300,23 @@ impl StreamPass {
         for i in 0..k {
             self.cc[i] = self.sol[i].max(0.0);
         }
+        self.fold(y, self.sol[k] as f32);
+    }
+
+    /// Fold in one preprocessed frame whose least squares was solved elsewhere (a pool worker
+    /// running `TraceModel::solve` on the same model): `cc` the clipped traces `max(c, 0)` in
+    /// float64, `f` the background trace as float32. The same arithmetic as `push`, which
+    /// solves and then calls `fold`.
+    pub fn push_solved(&mut self, y: &[f32], cc: &[f64], f: f32) {
+        self.cc.copy_from_slice(cc);
+        self.fold(y, f);
+    }
+
+    /// The frame's traces are in `self.cc`: store them and add the frame to the running sums.
+    fn fold(&mut self, y: &[f32], f: f32) {
+        let k = self.model.k;
         self.c.extend(self.cc.iter().map(|&v| v as f32));
-        self.f.push(self.sol[k] as f32);
+        self.f.push(f);
         if self.t > 0 && self.t.is_multiple_of(self.params.segment_frames) {
             self.done.add(&self.seg);
             self.seg = Stats::zeros(self.seg.l.len(), k, self.seg.ysum.len());
@@ -559,4 +574,99 @@ pub fn merge_from_stats(a: &Csr, st: &Stats, k: usize, mask: &[bool], thres_corr
         out.nrows += 1;
     }
     out
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+
+    fn lcg(seed: &mut u32) -> f64 {
+        *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        f64::from(*seed >> 8) / f64::from(1u32 << 24)
+    }
+
+    /// Frames solved on one `TraceModel` and folded in by `push_solved` (what a pool worker
+    /// and the accumulating engine do) give the sums, traces and low-pass state of `push`.
+    #[test]
+    fn solved_frames_fold_in_exactly_as_push_does() {
+        let (h, w, t, k) = (10usize, 12usize, 47usize, 4usize);
+        let p = h * w;
+        let params = Params {
+            h,
+            w,
+            t,
+            segment_frames: 20, // two segment boundaries inside the pass
+            median_ksize: 3,
+            tophat_wnd: 3,
+            motion_before_tophat: true,
+            dl_wnd: 2,
+            sparse_snr: 1.0,
+            size_thres: [None, None],
+            noise_freq: 0.06,
+            loop_merge_corr: 0.9,
+        };
+        let mut seed = 7u32;
+        // k blobs of a few pixels each
+        let (mut indptr, mut indices, mut data) = (vec![0usize], Vec::new(), Vec::new());
+        for u in 0..k {
+            let (cy, cx) = (2 + 2 * u, 2 + 3 * (u % 3));
+            for dy in 0..3 {
+                for dx in 0..3 {
+                    indices.push((cy + dy).min(h - 1) * w + (cx + dx).min(w - 1));
+                    data.push(0.2 + lcg(&mut seed));
+                }
+            }
+            indptr.push(indices.len());
+        }
+        // duplicate pixels (clamped at the border) are harmless for this test
+        let a = Csr {
+            nrows: k,
+            ncols: p,
+            indptr,
+            indices,
+            data,
+        };
+        let ymean: Vec<f64> = (0..p).map(|_| 20.0 + 10.0 * lcg(&mut seed)).collect();
+        let frames: Vec<Vec<f32>> = (0..t)
+            .map(|_| {
+                (0..p)
+                    .map(|_| (255.0 * lcg(&mut seed)) as f32 * (lcg(&mut seed) as f32))
+                    .collect()
+            })
+            .collect();
+
+        let mut one = StreamPass::new(params.clone(), &a, &ymean);
+        for y in &frames {
+            one.push(y);
+        }
+
+        let model = TraceModel::build(&a, &ymean);
+        let mut two = StreamPass::new(params, &a, &ymean);
+        let mut sol = Vec::new();
+        for y in &frames {
+            model.solve(y, &mut sol);
+            let cc: Vec<f64> = sol[..k].iter().map(|v| v.max(0.0)).collect();
+            two.push_solved(y, &cc, sol[k] as f32);
+        }
+
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        let bits32 = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits32(&one.c), bits32(&two.c));
+        assert_eq!(bits32(&one.f), bits32(&two.f));
+        let (a, b) = (one.total(), two.total());
+        assert_eq!(a.n, b.n);
+        assert_eq!(a.n, t);
+        for (x, y) in [
+            (&a.l, &b.l),
+            (&a.m, &b.m),
+            (&a.csum, &b.csum),
+            (&a.ysum, &b.ysum),
+            (&a.dsq, &b.dsq),
+            (&a.mlp, &b.mlp),
+            (&a.lsum, &b.lsum),
+        ] {
+            assert_eq!(bits(x), bits(y));
+        }
+        assert!(a.mlp.iter().any(|&v| v != 0.0));
+    }
 }
