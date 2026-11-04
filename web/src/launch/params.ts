@@ -45,6 +45,7 @@ export type ProgressEvent = {
   t: number;
   seconds?: number;
   n?: number; // auto-tune steps: settings tried
+  note?: string; // the browser run: where the stage sits in the run ("window 2/3")
 };
 export type StageRow = {
   stage: string;
@@ -55,6 +56,16 @@ export type StageRow = {
   /** Shown after the name, muted: what the stage is doing or did ("3 settings", "41 fps"). */
   note?: string;
 };
+
+/** The running stage's counters (the browser app's worker sends them; `minime serve` does not):
+ * `done` of `frames` (tiles in pass 2; 1 of 1 for a stage that is one step) in `seconds`. */
+export type StageProgress = { stage: string; done: number; frames: number; seconds: number };
+
+/** Rate and seconds left from the units done since the stage (or window) began. */
+export function rate(done: number, total: number, seconds: number): { perSecond: number; eta: number } {
+  const perSecond = seconds > 0 ? done / seconds : 0;
+  return { perSecond, eta: perSecond > 0 ? (total - done) / perSecond : Number.POSITIVE_INFINITY };
+}
 
 export function stageRows(events: ProgressEvent[]): StageRow[] {
   const rows = new Map<string, StageRow>();

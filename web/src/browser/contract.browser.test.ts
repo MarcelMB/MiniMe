@@ -25,7 +25,8 @@ const close = (a: ArrayLike<number>, b: ArrayLike<number>, tol: number) => {
  * while main opens the exported folder, whose `raw_dir` is missing and which has no fps (so no
  * zoom windows). */
 const SKIP: [string, string[]][] = [
-  ["/summary", ["id", "name", "path", "raw_dir", "mtime", "fps", "available", "params"]],
+  // `peak_wasm`: the browser's own key for the wasm heap of its run (main has no such field)
+  ["/summary", ["id", "name", "path", "raw_dir", "mtime", "fps", "available", "params", "peak_wasm"]],
   ["/zooms", ["windows"]],
 ];
 

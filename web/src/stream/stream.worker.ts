@@ -90,7 +90,8 @@ const decode = (b: Uint8Array) => JSON.parse(new TextDecoder().decode(b)) as Rec
 async function run({
   avis,
   inputs,
-  out: dest,
+  out: given,
+  outPath,
   params,
   rawDir,
   fps,
@@ -99,6 +100,11 @@ async function run({
   browserStorage,
 }: ToWorker): Promise<void> {
   const tl = performance.now();
+  let dest = given;
+  if (outPath) {
+    dest = await navigator.storage.getDirectory();
+    for (const p of outPath) dest = await dest.getDirectoryHandle(p);
+  }
   scratchId = scratch ?? crypto.randomUUID();
   await (await scratchParent()).removeEntry(scratchId, { recursive: true }).catch(() => undefined); // an earlier run's
   progressLog = new ProgressLog(dest ? new HandleDir(dest) : null);
@@ -576,6 +582,8 @@ function windowReport(
     stages,
     counts: {
       rank_total: pass2.rank_total,
+      seeds_init: seeds.seeds_init,
+      seeds_pnr: seeds.seeds_pnr,
       seeds_merged: seeds.seeds_merged,
       units_initA: init.units_initA,
       units_init_merge: init.units_init_merge,
@@ -601,9 +609,15 @@ function report(
     const s = [...v].sort((a, b) => a - b);
     return s.length ? (s[(s.length - 1) >> 1] + s[s.length >> 1]) / 2 : null;
   };
+  // every window finds its own seeds: the run's seed counts (the Overview's funnel, as MiniMe's
+  // `counts` has them) are the sums over the windows; the stitch then joins the window units
+  const sum = (key: string) => windows.reduce((n, w) => n + Number((w.counts as Record<string, unknown>)[key] ?? 0), 0);
   return {
     stages: [...stageSeconds].map(([stage, seconds]) => ({ stage, seconds })),
     counts: {
+      seeds_init: sum("seeds_init"),
+      seeds_pnr: sum("seeds_pnr"),
+      seeds_merged: sum("seeds_merged"),
       windows: windows.length,
       units_windows: stitch.units_in,
       units_stitched: stitch.units_out,

@@ -154,6 +154,9 @@ export class Registry {
       counts: r.report.counts,
       peak_rss: r.report.peak_rss ?? null,
       peak_rss_children: r.report.peak_rss_children ?? null,
+      // a browser run's `report.json` has the wasm heap instead (main's summary has no such key,
+      // so a Python run's summary stays main's)
+      ...(typeof r.report.wasm_heap_peak_mb === "number" ? { peak_wasm: r.report.wasm_heap_peak_mb * 2 ** 20 } : {}),
       bytes: r.report.bytes ?? {},
       workers: r.report.workers ?? null,
       motion: r.report.motion ?? {},

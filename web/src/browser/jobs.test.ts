@@ -74,6 +74,38 @@ describe("JobManager", () => {
     expect(m.get(job.id).status).toBe("done");
   });
 
+  it("sends the running stage's counters live and the latest to a page opened later, never in the history", async () => {
+    const { m, workers, body } = await setup();
+    const job = await m.submit(body);
+    const seen: [string, unknown][] = [];
+    m.events(job.id, (n, d) => seen.push([n, d]));
+    workers[0].say({ type: "stage", stage: "motion", event: "start", t: 1 });
+    const p = (done: number) =>
+      workers[0].say({
+        type: "progress",
+        stage: "motion",
+        done,
+        frames: 900,
+        seconds: done / 50,
+        stateMb: 0,
+        heapMb: 9,
+      });
+    p(100);
+    p(200);
+    expect(seen.slice(2)).toEqual([
+      ["progress", { stage: "motion", done: 100, frames: 900, seconds: 2 }],
+      ["progress", { stage: "motion", done: 200, frames: 900, seconds: 4 }],
+    ]);
+    const later: string[] = [];
+    m.events(job.id, (n, d) => later.push(n === "progress" ? `progress ${(d as { done: number }).done}` : n));
+    expect(later).toEqual(["status", "stage", "progress 200"]); // only the latest, after the replay
+    workers[0].say({ type: "done", files: new Map(), seconds: 3 });
+    await tick();
+    const after: string[] = [];
+    m.events(job.id, (n) => after.push(n));
+    expect(after).toEqual(["status", "stage", "status"]); // a finished job has no counters
+  });
+
   it("refuses an existing run unless overwrite, with main's wording", async () => {
     const { m, body, name, folders } = await setup();
     const out = await (await folders.resolve(name)).dir("processed", { create: true });

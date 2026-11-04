@@ -39,8 +39,9 @@ export function Overview() {
       </section>
       <section className="card">
         <span className="label">Peak memory</span>
-        <span className="big">{s.peak_rss ? fmtBytes(s.peak_rss) : "–"}</span>
+        <span className="big">{s.peak_rss ? fmtBytes(s.peak_rss) : s.peak_wasm ? fmtBytes(s.peak_wasm) : "–"}</span>
         <span className="muted">
+          {!s.peak_rss && s.peak_wasm ? "wasm memory only, not the whole browser tab" : ""}
           {s.peak_rss_children ? `${fmtBytes(s.peak_rss_children)} per worker` : ""}
           {s.bytes.raw ? ` · raw ${fmtBytes(s.bytes.raw)}` : ""}
         </span>
