@@ -12,6 +12,7 @@ import { NodeDir } from "./testing/nodeDir";
 import {
   foldMaxProj,
   keepForSession,
+  ProgressLog,
   type RunParts,
   sessionInit,
   sessionSeeds,
@@ -422,5 +423,52 @@ describe("writeRun", () => {
     const r = runParts();
     r.stitch.delete("sn.npy");
     await expect(writeRun(out, r)).rejects.toThrow(/sn\.npy/);
+  });
+});
+
+describe("progress.jsonl while the run goes", () => {
+  const newDir = () => new NodeDir(mkdtempSync(join(tmpdir(), "progress-")));
+  const settle = () => new Promise((r) => setTimeout(r, 10));
+  const text = async (d: Dir) => (await (await d.file("progress.jsonl")).text()).trim().split("\n");
+
+  it("holds every stage event so far, so a run that stops halfway shows its stages", async () => {
+    const out = await newDir().dir("run", { create: true });
+    const rec = new RecordingDir(out);
+    const log = new ProgressLog(rec);
+    log.add({ stage: "motion", event: "start", t: 1 });
+    await settle();
+    expect(await text(out)).toEqual(['{"stage":"motion","event":"start","t":1}']);
+    for (let i = 0; i < 5; i++) log.add({ stage: "pass1", event: i % 2 ? "end" : "start", t: 2 + i });
+    await settle();
+    expect(await text(out)).toHaveLength(6);
+    expect(log.lines).toHaveLength(6);
+    // events that come while a write goes are written together, not one write each
+    expect(rec.log.length).toBeLessThan(6);
+  });
+
+  it("stops writing once closed, after the last write is through (report.json stays the last write)", async () => {
+    const out = await newDir().dir("run", { create: true });
+    const rec = new RecordingDir(out);
+    const log = new ProgressLog(rec);
+    log.add({ stage: "stream", event: "start", t: 1 });
+    log.add({ stage: "stream", event: "end", t: 2 });
+    await log.close();
+    const writes = rec.log.length;
+    expect(await text(out)).toHaveLength(2);
+    log.add({ stage: "stream", event: "error", t: 3 });
+    await settle();
+    expect(rec.log).toHaveLength(writes);
+    expect(log.lines).toHaveLength(3); // still kept for writeRun
+  });
+
+  it("keeps the run going when the file cannot be written, and writes nothing without a run folder", async () => {
+    const out = await newDir().dir("run", { create: true });
+    const log = new ProgressLog(new RecordingDir(out, [], 0)); // every write fails
+    log.add({ stage: "motion", event: "start", t: 1 });
+    await expect(log.close()).resolves.toBeUndefined();
+    const none = new ProgressLog(null);
+    none.add({ stage: "motion", event: "start", t: 1 });
+    await expect(none.close()).resolves.toBeUndefined();
+    expect(none.lines).toHaveLength(1);
   });
 });

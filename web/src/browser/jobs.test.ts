@@ -421,7 +421,7 @@ describe("JobManager and its worker", () => {
     m.events(job.id, (n, d) => seen.push([n, d]));
     expect(seen.map(([n]) => n)).toEqual(["status", "log", "status"]);
     expect((seen[seen.length - 1][1] as { status: string }).status).toBe("done");
-    // a job from before a reload has no history: one status event carries its state
+    // a job from before a reload whose run folder has no progress.jsonl: one status event
     const kv = memoryKV();
     const a = await setup(kv);
     const old = await a.m.submit(a.body);
@@ -429,8 +429,50 @@ describe("JobManager and its worker", () => {
     await again.load();
     const late: [string, unknown][] = [];
     again.events(old.id, (n, d) => late.push([n, d]));
+    await tick();
     expect(late.map(([n]) => n)).toEqual(["status"]);
     expect((late[0][1] as { status: string }).status).toBe("interrupted");
+  });
+
+  it("replays a job from before a reload from its run folder's progress.jsonl, as main does, status last", async () => {
+    const kv = memoryKV();
+    let t = 1000;
+    const a = await setup(kv);
+    const timed = new JobManager({ kv, folders: a.folders, makeWorker: a.makeWorker, now: () => t });
+    const job = await timed.submit(a.body); // started at 1000
+    a.workers[0].say({ type: "done", files: new Map(), seconds: 1 });
+    await tick();
+    const line = (stage: string, event: string, at: number, seconds?: number) =>
+      JSON.stringify({ stage, event, t: at, ...(seconds !== undefined && { seconds }) });
+    // what the worker wrote as it went (Windows line ends are read too), with a line of an older
+    // run of the same folder (main skips what is older than the job) and a line cut off
+    writeFileSync(
+      join(a.top, "processed", "t1", "progress.jsonl"),
+      [
+        line("motion", "start", 900),
+        line("pass1", "start", 1003),
+        line("motion", "start", 1001),
+        line("motion", "end", 1002, 1),
+        line("pass1", "end", 1005, 2),
+        '{"stage": "str',
+      ].join("\r\n"),
+    );
+    t = 2000;
+    const again = new JobManager({ kv, folders: a.folders, makeWorker: a.makeWorker });
+    await again.load();
+    const seen: [string, unknown][] = [];
+    again.events(job.id, (n, d) => seen.push([n, d]));
+    await tick();
+    expect(
+      seen.map(([n, d]) => (n === "stage" ? `${(d as { stage: string }).stage} ${(d as { event: string }).event}` : n)),
+    ).toEqual(["motion start", "motion end", "pass1 start", "pass1 end", "status"]);
+    expect(seen[1][1]).toEqual({ stage: "motion", event: "end", t: 1002, seconds: 1 });
+    expect((seen[4][1] as { status: string }).status).toBe("done");
+    // a subscriber that left before the file was read gets nothing
+    const gone: string[] = [];
+    again.events(job.id, (n) => gone.push(n))();
+    await tick();
+    expect(gone).toEqual([]);
   });
 
   it("answers an unknown job with 404", async () => {
