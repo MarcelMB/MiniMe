@@ -13,16 +13,17 @@ export type ToFrameWorker =
   | { type: "init"; avis: File[]; scratch: string }
   /** Build the streaming pass's solver (`StreamSolver`) from its inputs. */
   | { type: "s0"; files: FileMap }
-  /** Build pass 2's engine for a window (`pass2.json`, `omega_*.npy`). */
-  | { type: "p2ctx"; files: FileMap; parts: number }
+  /** Build pass 2's engine for a window (`pass2.json`, `omega_*.npy`) and open its tile store, whose
+   * slabs hold `chunks[c]` frames each (`slabs.ts`). */
+  | { type: "p2ctx"; files: FileMap; chunks: number[] }
   /** Free the solver and pass 2's engine (their memory stays with the wasm instance, but is reusable). */
   | { type: "free" }
   /** Pass 1 on frames `[a, b)` of the window `files` describe (`params.json`, `template.npy`,
-   * optionally `shifts.npy`), tile parts written as `.partNN`. */
-  | { type: "p1"; id: number; files: FileMap; a: number; b: number; part: number }
+   * optionally `shifts.npy`), its tiles written to slab `chunk`. */
+  | { type: "p1"; id: number; files: FileMap; a: number; b: number; chunk: number }
   /** Preprocess and solve frames `[a, b)` of the session. */
   | { type: "s1"; id: number; a: number; b: number }
-  /** Compress tile `k` of the window's tile store, kept in `parts` parts per tile. */
+  /** Compress tile `k` of the window's tile store. */
   | { type: "p2"; id: number; k: number };
 
 export type P1Result = {
@@ -33,7 +34,7 @@ export type P1Result = {
   shifts: Float32Array;
   shifts64: Float64Array;
   quality: Float32Array;
-  /** Bytes written to the tile parts. */
+  /** Bytes written to the slab. */
   bytes: number;
 };
 export type S1Result = { y8: Uint8Array; cc: Float64Array; f: Float32Array };

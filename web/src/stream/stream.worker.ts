@@ -31,7 +31,7 @@ import init, {
   window_inputs,
 } from "./pkg/minime_core.js";
 import { Pool, workerCount } from "./pool";
-import { pass1Pooled, pass2Pooled, streamPooled, tileCrcs } from "./poolStages";
+import { pass1Pooled, pass2Pooled, type Store, streamPooled, tileCrcs, tilesAsFiles } from "./poolStages";
 import type { FromWorker, Stage, ToWorker } from "./protocol";
 import { DEFAULTS, MOTION_PARAMS, sessionFor } from "./session";
 
@@ -51,6 +51,8 @@ const DRAIN = 4096; // frames of traces held in wasm before they go to C.npy in 
 let wasmMemory: WebAssembly.Memory | null = null;
 /** The run's frame workers (`pool.ts`) when it has more than one worker. */
 let pool: Pool | undefined;
+/** The tile store of the window just through pass 1 when the pool ran it (slabs, `slabs.ts`). */
+let slabStore: Store | undefined;
 const heapMb = () => (wasmMemory?.buffer.byteLength ?? 0) / 2 ** 20 + (pool?.heapMb() ?? 0);
 let heapPeakMb = 0;
 /** Where the running stage sits in the run ("window 2/3"); shown with every stage start. */
@@ -367,19 +369,21 @@ const FLUSH = 100; // frames buffered before they are appended to the tile files
 async function keepTiles(root: FileSystemDirectoryHandle, to: HandleDir, i: number): Promise<void> {
   const from = await root.getDirectoryHandle(TILE_DIR);
   const dest = (await walk(to, `tiles/${windowDir(i)}`, { create: true })) as HandleDir;
-  const names = new Map<string, FileSystemFileHandle[]>();
+  if (slabStore) {
+    // a pooled run's store is slabs: write the tiles as the one-worker files
+    await tilesAsFiles(from, slabStore, async (name, bytes) => {
+      const out = await (await dest.handle.getFileHandle(name, { create: true })).createWritable();
+      await out.write(bytes);
+      await out.close();
+    });
+    return;
+  }
   // biome-ignore lint/suspicious/noExplicitAny: entries() is missing from TS 5.6's DOM lib
   for await (const [name, h] of (from as any).entries() as AsyncIterable<[string, FileSystemHandle]>) {
-    const m = /^(.*)\.part(\d+)$/.exec(name);
-    if (h.kind !== "file" || !m) continue;
-    const parts = names.get(m[1]) ?? [];
-    parts[Number(m[2])] = h as FileSystemFileHandle; // the pool's parts of a tile, in frame order
-    names.set(m[1], parts);
-  }
-  for (const [tile, parts] of names) {
-    const out = await (await dest.handle.getFileHandle(`${tile}.part00`, { create: true })).createWritable();
-    for (const h of parts) await (await h.getFile()).stream().pipeTo(out, { preventClose: true });
-    await out.close();
+    if (h.kind !== "file" || !name.endsWith(".part00")) continue;
+    const file = await (h as FileSystemFileHandle).getFile();
+    const out = await (await dest.handle.getFileHandle(name, { create: true })).createWritable();
+    await file.stream().pipeTo(out); // closes `out` when the file is through
   }
 }
 
@@ -800,8 +804,9 @@ async function windowPass1(
     tWrite += performance.now() - s;
   };
   let lastPost = 0;
-  let pooled = { parts: 1, bytes: 0 };
-  if (pool) pooled = await pass1Pooled(pool, engine, files, t1 - t0, { progress, log });
+  let pooled: Store = { frames: [], pixels: [], bytes: 0 };
+  slabStore = undefined;
+  if (pool) slabStore = pooled = await pass1Pooled(pool, engine, files, t1 - t0, { progress, log });
   else {
     forFrames(
       segs,
@@ -834,7 +839,7 @@ async function windowPass1(
   }
   if (pool) {
     storeBytes = pooled.bytes;
-    if (opts.crc) crc.set(await tileCrcs(dir, nTiles, pooled.parts, crc32));
+    if (opts.crc) crc.set(await tileCrcs(dir, pooled, crc32));
   }
   const tCrc = (performance.now() - s) / 1e3;
   const mb = memory.buffer.byteLength / 2 ** 20;
@@ -842,7 +847,7 @@ async function windowPass1(
   end(
     `${t1 - t0} frames, ${((t1 - t0) / passSeconds).toFixed(0)} fps; ${(storeBytes / 2 ** 20).toFixed(0)} MB of tiles`,
   );
-  const p2 = files.has("pass2.json") ? await runPass2(handles, files, log, memory, engine, opts, pooled.parts) : null;
+  const p2 = files.has("pass2.json") ? await runPass2(handles, files, log, memory, engine, opts, pooled) : null;
   for (const h of handles) h.close();
   const timing = {
     where: "browser",
@@ -867,7 +872,7 @@ async function runPass2(
   memory: WebAssembly.Memory,
   pass1: Pass1Engine,
   opts: WindowOpts,
-  parts: number,
+  store: Store,
 ): Promise<Out> {
   const engine = new Pass2Engine(files);
   const n = engine.n_tiles();
@@ -877,7 +882,7 @@ async function runPass2(
   const began = performance.now();
   let [tRead, rankTotal] = [0, 0];
   if (pool) {
-    const r = await pass2Pooled(pool, engine, files, parts, { progress, log });
+    const r = await pass2Pooled(pool, engine, files, store, { progress, log });
     [tRead, rankTotal] = [r.readMs, r.rankTotal];
   } else
     for (let k = 0; k < n; k++) {

@@ -174,6 +174,11 @@ impl Pass2Engine {
         Ok(self.compress_tile_k(k, raw)?.to_bytes())
     }
 
+    /// Pixels of tile `k` (its bytes per frame in the tile store).
+    pub fn tile_pixels(&self, k: usize) -> usize {
+        self.grid[k].pixels()
+    }
+
     /// Take tile `k`'s factors (from `compress_at`); the tiles must come in order. Returns the rank.
     pub fn set_tile(&mut self, k: usize, factors: &[u8]) -> Result<usize, JsError> {
         if k != self.done.len() {
