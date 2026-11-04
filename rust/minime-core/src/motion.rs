@@ -352,6 +352,7 @@ pub struct Motion {
     corr: Correlator,
     spec: Vec<Complex32>, // conj(rfft2(template)), column-major
     image: Vec<f32>,      // `motion.template_image`
+    src: Vec<f32>,        // the image `spec` was made from (before `image`'s FFT round trip)
     max_shift: usize,
     win_y: Vec<bool>,
     win_x: Vec<bool>,
@@ -367,10 +368,17 @@ impl Motion {
             corr,
             spec,
             image,
+            src: img,
             max_shift,
             win_y,
             win_x,
         }
+    }
+
+    /// The prepared template before its FFT round trip: `from_template_image` of it rebuilds
+    /// this `Motion` exactly (of `template_image()` it does not: that one is round-tripped once more).
+    pub fn source_image(&self) -> &[f32] {
+        &self.src
     }
 
     /// A template from a stored prepared template image (`motion.template_image`, as in

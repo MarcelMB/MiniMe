@@ -74,7 +74,10 @@ pub struct Pass1 {
     pub max_proj: Vec<u8>,
     pub block_max: Vec<u8>, // (edges.len() - 1, h, w)
     pub shifts: Vec<f32>,   // (t, 2) dy, dx
-    pub quality: Vec<f32>,  // empty without a template
+    /// The estimated shifts before the cast to float32 (`motion.estimate`'s float64), (t, 2);
+    /// empty when every shift was given.
+    pub shifts64: Vec<f64>,
+    pub quality: Vec<f32>, // empty without a template
     pub t: usize,
     block: usize,
     tiles: Vec<Vec<u8>>, // corrected frames since the last `take_tiles`, per tile
@@ -97,6 +100,7 @@ impl Pass1 {
             motion,
             max_proj: vec![0; h * w],
             shifts: Vec::new(),
+            shifts64: Vec::new(),
             quality: Vec::new(),
             t: 0,
             block: 0,
@@ -106,6 +110,76 @@ impl Pass1 {
 
     pub fn n_blocks(&self) -> usize {
         self.edges.len() - 1
+    }
+
+    /// Begin at frame `a` of the window instead of its first: a chunk worker's `Pass1` (its
+    /// `shifts`, `shifts64` and `quality` then start at frame `a`, its block maxima span the
+    /// window and `merge_chunk` folds them into the window's).
+    pub fn start_at(&mut self, a: usize) {
+        self.t = a;
+    }
+
+    /// Fold in a chunk run on another `Pass1` of this window (see `start_at`): frames `a..a+n`,
+    /// its max projection, block maxima (the same layout as ours) and per-frame shifts and
+    /// quality. Maxima are exact in any order; the per-frame vectors are placed at their frames.
+    #[allow(clippy::too_many_arguments)]
+    pub fn merge_chunk(
+        &mut self,
+        a: usize,
+        n: usize,
+        max_proj: &[u8],
+        block_max: &[u8],
+        shifts: &[f32],
+        shifts64: &[f64],
+        quality: &[f32],
+    ) -> Result<(), String> {
+        if max_proj.len() != self.max_proj.len() || block_max.len() != self.block_max.len() {
+            return Err(format!(
+                "chunk maxima hold {} + {} values, expected {} + {}",
+                max_proj.len(),
+                block_max.len(),
+                self.max_proj.len(),
+                self.block_max.len()
+            ));
+        }
+        if shifts.len() != 2 * n
+            || !(shifts64.is_empty() || shifts64.len() == 2 * n)
+            || !(quality.is_empty() || quality.len() == n)
+        {
+            return Err(format!(
+                "chunk of {n} frames holds {} shifts and {} qualities",
+                shifts.len() / 2,
+                quality.len()
+            ));
+        }
+        if a + n > *self.edges.last().unwrap() {
+            return Err(format!(
+                "chunk {a}..{} is past the window's {} frames",
+                a + n,
+                self.edges.last().unwrap()
+            ));
+        }
+        for (m, &v) in self.max_proj.iter_mut().zip(max_proj) {
+            *m = (*m).max(v);
+        }
+        for (m, &v) in self.block_max.iter_mut().zip(block_max) {
+            *m = (*m).max(v);
+        }
+        fn put<T: Copy + Default>(dst: &mut Vec<T>, at: usize, src: &[T]) {
+            if dst.len() < at + src.len() {
+                dst.resize(at + src.len(), T::default());
+            }
+            dst[at..at + src.len()].copy_from_slice(src);
+        }
+        put(&mut self.shifts, 2 * a, shifts);
+        if !shifts64.is_empty() {
+            put(&mut self.shifts64, 2 * a, shifts64);
+        }
+        if !quality.is_empty() {
+            put(&mut self.quality, a, quality);
+        }
+        self.t = self.t.max(a + n);
+        Ok(())
     }
 
     /// Correct one raw frame (`h * w` uint8) and fold it in. `shift`: `(dy, dx)`, or
@@ -124,7 +198,11 @@ impl Pass1 {
             (self.motion.is_some() || !p.motion_before_tophat).then(|| registration_from_denoised(&den, p));
         let [dy, dx] = match (given, &self.motion, &reg) {
             (Some(s), _, _) => s,
-            (None, Some(m), Some(r)) => m.estimate(r).map(|v| v as f32),
+            (None, Some(m), Some(r)) => {
+                let e = m.estimate(r);
+                self.shifts64.extend(e);
+                e.map(|v| v as f32)
+            }
             _ => return Err("no shift given and no template to estimate it".into()),
         };
         let (blk, warped) = if p.motion_before_tophat {
@@ -193,6 +271,9 @@ pub fn outputs(p1: &Pass1, tile_crc: &[u32], summary: serde_json::Value) -> Vec<
         ("shifts.npy".into(), npy::write(&[n, 2], &p1.shifts)),
         ("tile_crc.npy".into(), npy::write(&[tile_crc.len()], tile_crc)),
     ];
+    if !p1.shifts64.is_empty() {
+        out.push(("shifts64.npy".into(), npy::write(&[n, 2], &p1.shifts64)));
+    }
     if !p1.quality.is_empty() {
         out.push(("quality.npy".into(), npy::write(&[n], &p1.quality)));
     }
@@ -287,5 +368,131 @@ mod tests {
     fn crc32_matches_zlib() {
         assert_eq!(crc32(b"123456789", 0), 0xCBF4_3926);
         assert_eq!(crc32(b"6789", crc32(b"12345", 0)), 0xCBF4_3926);
+    }
+
+    /// `n` frames of two moving blobs on noise (a small LCG), `h` x `w` uint8.
+    fn frames(h: usize, w: usize, n: usize) -> Vec<Vec<u8>> {
+        let mut seed = 12345u32;
+        (0..n)
+            .map(|t| {
+                let (oy, ox) = (((t * 7) % 9) as f32 - 4.0, ((t * 5) % 7) as f32 - 3.0);
+                (0..h * w)
+                    .map(|i| {
+                        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                        let (y, x) = ((i / w) as f32 - oy, (i % w) as f32 - ox);
+                        let blob = 120.0 * (-((y - 20.0).powi(2) + (x - 25.0).powi(2)) / 40.0).exp()
+                            + 90.0 * (-((y - 44.0).powi(2) + (x - 50.0).powi(2)) / 30.0).exp();
+                        (blob + f32::from((seed >> 24) as u8 % 24)) as u8
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn test_params(h: usize, w: usize, t: usize) -> Pass1Params {
+        Pass1Params {
+            motion: MotionParams {
+                h,
+                w,
+                median_ksize: 7,
+                tophat_wnd: 15,
+                motion_max_shift: 20,
+                motion_down: 2,
+                template_frames: 4,
+                motion_before_tophat: true,
+                motion_bandpass: [1.0, 6.0],
+            },
+            tile: 32,
+            seeds_wnd: 6,
+            seeds_stp: 3,
+            t0: 0,
+            t1: t,
+        }
+    }
+
+    #[test]
+    fn chunks_started_at_their_frame_and_merged_equal_one_run() {
+        let (h, w, t) = (64, 80, 17);
+        let fr = frames(h, w, t);
+        let p = test_params(h, w, t);
+        let template = Motion::build(&p.motion, 4, &mut |i| {
+            Ok(crate::motion::registration_image(&fr[i], &p.motion))
+        })
+        .unwrap();
+        // a worker rebuilds the motion from the template's source image, not from `template_image`
+        let rebuilt = || Motion::from_template_image(&p.motion, template.source_image().to_vec()).unwrap();
+
+        let mut whole = Pass1::new(&p, Some(rebuilt()));
+        for f in &fr {
+            whole.push(f, None).unwrap();
+        }
+        let whole_tiles = whole.take_tiles();
+
+        let mut merged = Pass1::new(&p, Some(rebuilt()));
+        // chunks out of order, with boundaries inside a seed block
+        for (a, b) in [(9, 17), (0, 5), (5, 9)] {
+            let mut c = Pass1::new(&p, Some(rebuilt()));
+            c.start_at(a);
+            for f in &fr[a..b] {
+                c.push(f, None).unwrap();
+            }
+            merged
+                .merge_chunk(
+                    a,
+                    b - a,
+                    &c.max_proj,
+                    &c.block_max,
+                    &c.shifts,
+                    &c.shifts64,
+                    &c.quality,
+                )
+                .unwrap();
+        }
+        assert_eq!(merged.t, whole.t);
+        assert_eq!(merged.max_proj, whole.max_proj);
+        assert_eq!(merged.block_max, whole.block_max);
+        assert_eq!(merged.shifts, whole.shifts);
+        assert_eq!(merged.shifts64, whole.shifts64);
+        assert_eq!(merged.shifts64.len(), 2 * t);
+        assert_eq!(merged.quality.len(), t);
+        for (a, b) in merged.quality.iter().zip(&whole.quality) {
+            assert_eq!(a.to_bits(), b.to_bits());
+        }
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&merged.shifts64), bits(&whole.shifts64));
+        // the shifts are the float64 estimates cast, as the one-run engine hands them on
+        for (s32, s64) in whole.shifts.iter().zip(&whole.shifts64) {
+            assert_eq!(*s32, *s64 as f32);
+        }
+        // a chunk's tile parts in frame order are the whole run's tile files
+        let mut parts: Vec<Vec<Vec<u8>>> = Vec::new();
+        for (a, b) in [(0, 5), (5, 9), (9, 17)] {
+            let mut c = Pass1::new(&p, Some(rebuilt()));
+            c.start_at(a);
+            for f in &fr[a..b] {
+                c.push(f, None).unwrap();
+            }
+            parts.push(c.take_tiles());
+        }
+        for (k, whole_tile) in whole_tiles.iter().enumerate() {
+            let joined: Vec<u8> = parts.iter().flat_map(|c| c[k].iter().copied()).collect();
+            assert_eq!(&joined, whole_tile, "tile {k}");
+        }
+        // a rebuilt motion estimates exactly what the original does, which `template_image()` would not
+        let reg = crate::motion::registration_image(&fr[11], &p.motion);
+        let (e0, e1) = (template.estimate(&reg), rebuilt().estimate(&reg));
+        assert_eq!(bits(&e0), bits(&e1));
+    }
+
+    #[test]
+    fn merging_a_chunk_checks_its_sizes() {
+        let p = test_params(64, 80, 10);
+        let mut w = Pass1::new(&p, None);
+        let mp = vec![0u8; 64 * 80];
+        let bm = vec![0u8; w.block_max.len()];
+        assert!(w.merge_chunk(0, 2, &mp, &bm, &[0.0; 3], &[], &[]).is_err());
+        assert!(w.merge_chunk(9, 2, &mp, &bm, &[0.0; 4], &[], &[]).is_err());
+        assert!(w.merge_chunk(0, 2, &mp[1..], &bm, &[0.0; 4], &[], &[]).is_err());
+        assert!(w.merge_chunk(8, 2, &mp, &bm, &[0.0; 4], &[], &[]).is_ok());
     }
 }

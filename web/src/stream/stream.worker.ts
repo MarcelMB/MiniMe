@@ -20,6 +20,8 @@ import init, {
   Engine,
   InitEngine,
   MotionEngine,
+  npy_f32,
+  npy_shifts,
   Pass1Engine,
   Pass2Engine,
   SeedsEngine,
@@ -333,7 +335,9 @@ function motionStage(
   engine.free();
   const maxShift = Number(decode(out.get("summary.json") as Uint8Array).max_abs_shift);
   end(
-    `${t1 - t0} frames, ${((t1 - t0) / (seconds - tTemplate)).toFixed(0)} fps; largest shift ${maxShift.toFixed(1)} px`,
+    t1 > t0
+      ? `${t1 - t0} frames, ${((t1 - t0) / (seconds - tTemplate)).toFixed(0)} fps; largest shift ${maxShift.toFixed(1)} px`
+      : `template from ${n} frames`,
   );
   return { files: out, seconds };
 }
@@ -409,21 +413,24 @@ async function runWindows(
   const out = new Map<string, Uint8Array>([["session.json", session]]);
   let total = 0;
   let shifts = files.get("shifts.npy");
-  if (!shifts || !files.has("template.npy")) {
-    // the session's own motion: the stage's parameters are pass 1's, over every frame
+  // the session's own motion: the template from the first frames of segment 0 is a short stage of its
+  // own; every frame's shift is then estimated by its window's pass 1 (same code, same template) and
+  // the windows' shifts and qualities are put together after the loop
+  const ownMotion = !shifts || !files.has("template.npy");
+  if (ownMotion) {
     stageLabel = "motion";
-    const mp = encode({ ...(sessionObj.pass1 as Record<string, unknown>), t0: 0, t1: T });
+    const mp = encode({ ...(sessionObj.pass1 as Record<string, unknown>), t0: 0, t1: 0 });
     const m = motionStage(segs, new Map([["params.json", mp]]), log, memory);
     total += m.seconds;
-    shifts = m.files.get("shifts.npy");
     const template = m.files.get("template.npy");
-    if (!shifts || !template) throw new Error("the motion stage gave no shifts or template");
+    const source = m.files.get("template_src.npy");
+    if (!template || !source) throw new Error("the template stage gave no template");
     files = new Map(files);
-    files.set("shifts.npy", shifts);
-    files.set("template.npy", template);
-    for (const name of ["shifts.npy", "template.npy", "quality.npy"]) out.set(name, m.files.get(name)!);
-    out.set("summary_motion.json", m.files.get("summary.json")!);
+    files.set("template.npy", source); // pass 1 rebuilds the stage's own motion from this
+    out.set("template.npy", template);
   }
+  const ownShifts: Float64Array[] = [];
+  const ownQuality: Float32Array[] = [];
   const length = Number(sessionObj.window_frames);
   const flat = time_windows(T, length, Uint32Array.from(starts));
   const n = flat.length / 2;
@@ -440,7 +447,8 @@ async function runWindows(
     const [t0, t1] = [flat[2 * i], flat[2 * i + 1]];
     const before = new Map(stageSeconds);
     const wf = new Map(files);
-    for (const [name, bytes] of window_inputs(session, shifts, t0, t1) as Map<string, Uint8Array>) wf.set(name, bytes);
+    for (const [name, bytes] of window_inputs(session, shifts ?? new Uint8Array(0), t0, t1) as Map<string, Uint8Array>)
+      wf.set(name, bytes);
     const prefix = `omega_${String(t0).padStart(6, "0")}_`;
     for (const [name, bytes] of files) if (name.startsWith(prefix)) wf.set(`omega_${name.slice(prefix.length)}`, bytes);
     stageLabel = `window ${i + 1}/${n}`;
@@ -451,6 +459,10 @@ async function runWindows(
       onCnmf: (engine) => stitch.add_cnmf(engine, t0, t1),
     });
     total += w.seconds;
+    if (ownMotion) {
+      ownShifts.push(readNpy(w.files.get("shifts64.npy")!).data as Float64Array);
+      ownQuality.push(readNpy(w.files.get("quality.npy")!).data as Float32Array);
+    }
     const tag = `win_${String(i).padStart(2, "0")}_`;
     for (const [name, bytes] of w.files) if (name.startsWith("summary")) out.set(tag + name, bytes);
     windows.push(windowReport(t0, t1, w.files, before));
@@ -464,6 +476,26 @@ async function runWindows(
   }
   for (const sg of segs) sg.avi.free();
   stageLabel = "";
+  if (ownMotion) {
+    const cat = <A extends Float32Array | Float64Array>(parts: A[]): A => {
+      const all = new (parts[0].constructor as new (n: number) => A)(parts.reduce((n, a) => n + a.length, 0));
+      let at = 0;
+      for (const a of parts) {
+        all.set(a, at);
+        at += a.length;
+      }
+      return all;
+    };
+    const all = cat(ownShifts);
+    shifts = npy_shifts(all);
+    out.set("shifts.npy", shifts);
+    out.set("quality.npy", npy_f32(cat(ownQuality)));
+    const maxShift = all.reduce((a, v) => Math.max(a, Math.abs(v)), 0);
+    out.set(
+      "summary_motion.json",
+      encode({ where: "browser", stage: "motion", frames: all.length / 2, max_abs_shift: maxShift }),
+    );
+  }
   const st = runStitchEngine(stitch, log, memory);
   for (const [name, bytes] of st.files) out.set(name, bytes);
   total += st.seconds;
@@ -476,7 +508,7 @@ async function runWindows(
     if (indptr) await checkTraceRoom(readNpy(indptr).shape[0] - 1, T, !!opts.browserStorage);
     const sf = new Map<string, Uint8Array>([
       ["params.json", stream_params(session, T)],
-      ["shifts.npy", shifts],
+      ["shifts.npy", shifts as Uint8Array],
     ]);
     for (const name of ["A_data.npy", "A_indices.npy", "A_indptr.npy", "ymean.npy", "sn.npy"]) {
       const b = st.files.get(name);
@@ -492,7 +524,7 @@ async function runWindows(
   if (opts.out && maxProj) {
     const parts = { H, W, T, windows: kept, maxProj, stitch: st.files, stream: res, report: rep };
     // the traces now sit in the run folder; the scratch copy goes
-    res.set("C.npy", await saveRun(opts.out, opts, sessionObj, shifts, out, parts));
+    res.set("C.npy", await saveRun(opts.out, opts, sessionObj, shifts as Uint8Array, out, parts));
   }
   post({ type: "done", files: res, seconds: total }, transferable(res));
 }

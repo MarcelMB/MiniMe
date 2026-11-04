@@ -80,7 +80,7 @@ impl AviFile {
     }
 }
 
-fn map_bytes(files: &Map, name: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn map_bytes(files: &Map, name: &str) -> Result<Vec<u8>, String> {
     let v = files.get(&JsValue::from_str(name));
     if v.is_undefined() {
         return Err(format!("missing input file {name}"));
@@ -89,7 +89,7 @@ fn map_bytes(files: &Map, name: &str) -> Result<Vec<u8>, String> {
 }
 
 /// `h * w` pixels of a raw chunk whose rows are `stride` bytes apart.
-fn unpad(chunk: &[u8], h: usize, w: usize, stride: usize) -> Vec<u8> {
+pub(crate) fn unpad(chunk: &[u8], h: usize, w: usize, stride: usize) -> Vec<u8> {
     if stride == w {
         return chunk[..h * w].to_vec();
     }
@@ -98,7 +98,7 @@ fn unpad(chunk: &[u8], h: usize, w: usize, stride: usize) -> Vec<u8> {
         .collect()
 }
 
-fn npy_map(files: Vec<(String, Vec<u8>)>) -> Map {
+pub(crate) fn npy_map(files: Vec<(String, Vec<u8>)>) -> Map {
     let m = Map::new();
     for (name, bytes) in files {
         m.set(&JsValue::from_str(&name), &Uint8Array::from(bytes.as_slice()));
@@ -109,9 +109,9 @@ fn npy_map(files: Vec<(String, Vec<u8>)>) -> Map {
 /// One streaming pass: `push_raw` every frame in order, then `finish`.
 #[wasm_bindgen]
 pub struct Engine {
-    inp: Inputs,
-    pass: StreamPass,
-    stride: usize,
+    pub(crate) inp: Inputs,
+    pub(crate) pass: StreamPass,
+    pub(crate) stride: usize,
 }
 
 #[wasm_bindgen]
@@ -331,6 +331,8 @@ impl MotionEngine {
                 "template.npy".to_string(),
                 npy::write(&[ph, pw], m.template_image()),
             ),
+            // what `Pass1Engine` needs to estimate the same shifts (`template_image` is round-tripped once more)
+            ("template_src.npy".into(), npy::write(&[ph, pw], m.source_image())),
             ("shifts.npy".into(), npy::write(&[n, 2], &self.shifts)),
             ("quality.npy".into(), npy::write(&[n], &self.quality)),
             ("frames_t.npy".into(), npy::write(&[k], &self.chk_t)),
@@ -358,10 +360,10 @@ impl MotionEngine {
 /// shifts are estimated against `template.npy`.
 #[wasm_bindgen]
 pub struct Pass1Engine {
-    p: Pass1Params,
-    pass: Pass1,
-    shifts: Option<Vec<f32>>,
-    stride: usize,
+    pub(crate) p: Pass1Params,
+    pub(crate) pass: Pass1,
+    pub(crate) shifts: Option<Vec<f32>>,
+    pub(crate) stride: usize,
 }
 
 #[wasm_bindgen]
@@ -463,10 +465,10 @@ pub fn crc32(bytes: &[u8], crc: u32) -> u32 {
 /// otherwise it draws its own (seed = tile index).
 #[wasm_bindgen]
 pub struct Pass2Engine {
-    p: Pass2Params,
-    grid: Vec<pass1::Tile>,
-    files: Map,
-    done: Vec<TileFactors>,
+    pub(crate) p: Pass2Params,
+    pub(crate) grid: Vec<pass1::Tile>,
+    pub(crate) files: Map,
+    pub(crate) done: Vec<TileFactors>,
 }
 
 #[wasm_bindgen]
@@ -493,29 +495,7 @@ impl Pass2Engine {
 
     /// Compress the next tile (`(T, th, tw)` uint8 bytes); returns its kept rank.
     pub fn compress(&mut self, raw: &[u8]) -> Result<usize, JsError> {
-        let k = self.done.len();
-        let p = self
-            .grid
-            .get(k)
-            .ok_or_else(|| JsError::new("all tiles done"))?
-            .pixels();
-        if raw.len() != self.p.t * p {
-            return Err(JsError::new(&format!(
-                "tile {k}: {} bytes, expected {}",
-                raw.len(),
-                self.p.t * p
-            )));
-        }
-        let mut rng: Box<dyn Normals> = if self.replayed() {
-            let b = map_bytes(&self.files, &format!("omega_{k:03}.npy")).map_err(|e| JsError::new(&e))?;
-            Box::new(Recorded::new(
-                npy::read_f32(&b).map_err(|e| JsError::new(&e))?.data,
-            ))
-        } else {
-            Box::new(Gaussian::new(k as u64))
-        };
-        let tf =
-            compress::compress_tile(raw, self.p.t, p, &self.p, rng.as_mut()).map_err(|e| JsError::new(&e))?;
+        let tf = self.compress_tile_k(self.done.len(), raw)?;
         let r = tf.rank;
         self.done.push(tf);
         Ok(r)
@@ -544,6 +524,34 @@ impl Pass2Engine {
             })
             .collect();
         npy_map(files)
+    }
+}
+
+impl Pass2Engine {
+    /// `compress` of tile `k` (its draws are seeded or replayed by `k`): the tile is independent of
+    /// the others, so a pool worker can do any of them.
+    pub(crate) fn compress_tile_k(&self, k: usize, raw: &[u8]) -> Result<TileFactors, JsError> {
+        let p = self
+            .grid
+            .get(k)
+            .ok_or_else(|| JsError::new("all tiles done"))?
+            .pixels();
+        if raw.len() != self.p.t * p {
+            return Err(JsError::new(&format!(
+                "tile {k}: {} bytes, expected {}",
+                raw.len(),
+                self.p.t * p
+            )));
+        }
+        let mut rng: Box<dyn Normals> = if self.replayed() {
+            let b = map_bytes(&self.files, &format!("omega_{k:03}.npy")).map_err(|e| JsError::new(&e))?;
+            Box::new(Recorded::new(
+                npy::read_f32(&b).map_err(|e| JsError::new(&e))?.data,
+            ))
+        } else {
+            Box::new(Gaussian::new(k as u64))
+        };
+        compress::compress_tile(raw, self.p.t, p, &self.p, rng.as_mut()).map_err(|e| JsError::new(&e))
     }
 }
 
