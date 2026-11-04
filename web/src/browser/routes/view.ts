@@ -127,7 +127,8 @@ export function frameSource(r: RunInfo, source: "raw" | "pre" | "recon"): Promis
 
 async function open(r: RunInfo, source: string): Promise<Frames> {
   if (source !== "raw") throw notAvailable(`${source} frames`);
-  const dir = await state.registry.rawDir(r).catch(() => {
+  const dir = await state.registry.rawDir(r).catch((e: unknown) => {
+    if (e instanceof HttpError && e.status === 403) throw e; // the folder has to be reconnected
     throw new HttpError(404, `raw videos not found in ${String(r.params.raw_dir ?? "None")}`);
   });
   const v = await RawVideo.open(dir);

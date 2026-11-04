@@ -7,7 +7,7 @@ import { writeNpy } from "../npy";
 import { csrNpz } from "../npz";
 import { state } from "../state";
 import { DATA, setupE2eRun } from "../testing/e2eRun";
-import type { NodeDir } from "../testing/nodeDir";
+import { NodeDir } from "../testing/nodeDir";
 import { settled } from "../testing/settled";
 
 type Units = {
@@ -134,6 +134,22 @@ describe("other broken run folders", () => {
     const { rid, name } = await setupE2eRun();
     rmSync(join(await topOf(name), "raw"), { recursive: true });
     await notFound(`/runs/${rid}/frame/0?source=raw`, `raw videos not found in ${name}/raw`);
+  });
+
+  it("keeps the 403 of a raw folder that has to be reconnected", async () => {
+    const { rid, name } = await setupE2eRun();
+    // the raw videos in a root of their own, whose permission is gone
+    const rawRoot = mkdtempSync(join(tmpdir(), "rawroot-"));
+    cpSync(join(DATA, "raw"), join(rawRoot, "raw"), { recursive: true });
+    const dir = new NodeDir(rawRoot);
+    const root = await state.folders.add(dir, "picked");
+    const pj = join(await topOf(name), "processed/t/params.json");
+    writeFileSync(pj, JSON.stringify({ ...JSON.parse(readFileSync(pj, "utf8")), raw_dir: `${root}/raw` }));
+    dir.permission = async () => false;
+    await expect(getJSON(`/runs/${rid}/frame/0?source=raw`)).rejects.toMatchObject({
+      status: 403,
+      message: expect.stringMatching(/^Reconnect the folder /),
+    });
   });
 
   it("refuses raw frames of another size than the run's", async () => {
