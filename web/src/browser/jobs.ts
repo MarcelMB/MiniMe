@@ -194,8 +194,8 @@ export class JobManager {
         open: async () => (await folders.resolve(parent, "readwrite")).dir("processed", { create: true }),
       };
     if (picked) {
-      const root = await folders.pick(picked);
-      return { vpath: root, open: () => folders.resolve(root, "readwrite") };
+      const at = await folders.pick(picked); // a root, or a folder inside one
+      return { vpath: at, open: () => folders.resolve(at, "readwrite") };
     }
     if (!hasDialog && (await folders.list()).some((r) => r.name === OPFS_NAME))
       return { vpath: OPFS_NAME, open: () => folders.resolve(OPFS_NAME, "readwrite") };
