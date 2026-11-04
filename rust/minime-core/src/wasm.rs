@@ -188,13 +188,13 @@ impl Engine {
 /// `t0..t1` with `push_raw`, then `finish`.
 #[wasm_bindgen]
 pub struct MotionEngine {
-    p: MotionParams,
+    pub(crate) p: MotionParams,
     t0: usize,
     t1: usize,
     check: Vec<usize>,
     stride: usize,
     tmpl_n: usize,
-    builder: Option<TemplateBuilder>,
+    pub(crate) builder: Option<TemplateBuilder>,
     motion: Option<Motion>,
     shifts: Vec<f64>,
     quality: Vec<f32>,

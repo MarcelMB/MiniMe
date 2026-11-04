@@ -16,6 +16,13 @@ export type ToFrameWorker =
   /** Build pass 2's engine for a window (`pass2.json`, `omega_*.npy`) and open its tile store, whose
    * slabs hold `chunks[c]` frames each (`slabs.ts`). */
   | { type: "p2ctx"; files: FileMap; chunks: number[] }
+  /** The motion template's workers (`TemplateWorker`) from the stage's `params.json`. */
+  | { type: "t0"; params: Uint8Array }
+  /** Round 1's mean image, which round 2 aligns to. */
+  | { type: "tfirst"; image: Float32Array }
+  /** Prepare template frames `[a, b)` of the session, as round 1 or round 2 averages them. */
+  | { type: "t1"; id: number; a: number; b: number }
+  | { type: "t2"; id: number; a: number; b: number }
   /** Free the solver and pass 2's engine (their memory stays with the wasm instance, but is reusable). */
   | { type: "free" }
   /** Pass 1 on frames `[a, b)` of the window `files` describe (`params.json`, `template.npy`,
@@ -39,6 +46,8 @@ export type P1Result = {
 };
 export type S1Result = { y8: Uint8Array; cc: Float64Array; f: Float32Array };
 export type P2Result = { factors: Uint8Array; readMs: number };
+/** The prepared template frames `a..b`, one after the other. */
+export type TResult = { preps: Float32Array };
 
 type Meta = { id: number; ms: number; heapMb: number };
 export type FromFrameWorker =
@@ -47,4 +56,5 @@ export type FromFrameWorker =
   | { type: "error"; id: number; message: string }
   | ({ type: "done"; kind: "p1" } & Meta & P1Result)
   | ({ type: "done"; kind: "s1" } & Meta & S1Result)
-  | ({ type: "done"; kind: "p2" } & Meta & P2Result);
+  | ({ type: "done"; kind: "p2" } & Meta & P2Result)
+  | ({ type: "done"; kind: "t1" | "t2" } & Meta & TResult);

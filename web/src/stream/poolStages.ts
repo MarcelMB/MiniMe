@@ -6,7 +6,7 @@
 // - the streaming pass: workers preprocess and solve chunks of frames, this thread folds the solved
 //   frames into the pass's sums in frame order.
 
-import type { Engine, Pass1Engine, Pass2Engine } from "./pkg/minime_core.js";
+import type { Engine, MotionEngine, Pass1Engine, Pass2Engine } from "./pkg/minime_core.js";
 import type { Pool } from "./pool";
 import type { FileMap } from "./poolProtocol";
 import { readTile, slabName } from "./slabs";
@@ -37,6 +37,37 @@ export function chunkBounds(t: number, n: number): number[] {
   for (let a = 0; a < t; a += size) bounds.push(a);
   bounds.push(t);
   return bounds;
+}
+
+/** The motion template of `n` frames on the pool: the workers prepare the frames of each round, `engine`
+ * adds them in frame order and hands round 1's template to round 2. `total` and `began` are the
+ * stage's frame count and start for its progress. */
+export async function templatePooled(
+  pool: Pool,
+  engine: MotionEngine,
+  params: Uint8Array,
+  n: number,
+  total: number,
+  began: number,
+  ctx: Ctx,
+): Promise<void> {
+  await pool.broadcast({ type: "t0", params });
+  const TASK = 5; // frames per task: a worker's 0.1 s
+  let done = 0;
+  for (const round of ["t1", "t2"] as const) {
+    await pool.run(round, Math.ceil(n / TASK), (i) => ({ type: round, a: i * TASK, b: Math.min(n, (i + 1) * TASK) }), {
+      ordered: true,
+      onResult: (i, r) => {
+        const k = Math.min(n, (i + 1) * TASK) - i * TASK;
+        const len = r.preps.length / k;
+        for (let j = 0; j < k; j++) engine.push_template_prepped(r.preps.subarray(j * len, (j + 1) * len));
+        done += k;
+        ctx.progress(done, total, (performance.now() - began) / 1e3);
+      },
+    });
+    if (round === "t1") await pool.broadcast({ type: "tfirst", image: engine.first_image() });
+  }
+  await pool.broadcast({ type: "free" });
 }
 
 /** The tile store a pooled pass 1 left: its slabs' frame counts and the tiles' sizes (`slabs.ts`). */

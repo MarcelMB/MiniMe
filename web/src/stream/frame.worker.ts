@@ -3,7 +3,7 @@
 // a time from the run's worker. It never holds more than a chunk of frames or one tile.
 
 import { forFrames, indexSegments, type Segment } from "./frames";
-import init, { Pass1Engine, Pass2Engine, StreamSolver } from "./pkg/minime_core.js";
+import init, { Pass1Engine, Pass2Engine, StreamSolver, TemplateWorker } from "./pkg/minime_core.js";
 import type { FromFrameWorker, ToFrameWorker } from "./poolProtocol";
 import { FLUSH, readTile, slabName } from "./slabs";
 
@@ -15,6 +15,7 @@ let segs: Segment[] = [];
 let scratch = "";
 let solver: StreamSolver | null = null;
 let pass2: Pass2Engine | null = null;
+let template: TemplateWorker | null = null;
 /** Pass 2's tile store: the slab snapshots, frames per chunk and the tiles' sizes. */
 let store: { slabs: File[]; frames: number[]; pixels: number[]; reader: FileReaderSync } | null = null;
 
@@ -47,10 +48,21 @@ async function handle(m: ToFrameWorker): Promise<void> {
       store = { slabs, frames: m.chunks, pixels, reader: new FileReaderSync() };
       return post({ type: "ack", heapMb: heapMb() });
     }
+    case "t0": {
+      template?.free();
+      template = new TemplateWorker(m.params);
+      return post({ type: "ack", heapMb: heapMb() });
+    }
+    case "tfirst": {
+      if (!template) throw new Error("the template worker is not built");
+      template.set_first(m.image);
+      return post({ type: "ack", heapMb: heapMb() });
+    }
     case "free": {
       solver?.free();
       pass2?.free();
-      solver = pass2 = null;
+      template?.free();
+      solver = pass2 = template = null;
       store = null;
       return post({ type: "ack", heapMb: heapMb() });
     }
@@ -60,6 +72,9 @@ async function handle(m: ToFrameWorker): Promise<void> {
       return streamChunk(m);
     case "p2":
       return tile(m);
+    case "t1":
+    case "t2":
+      return templateFrames(m);
   }
 }
 
@@ -166,6 +181,32 @@ function tile(m: Extract<ToFrameWorker, { type: "p2" }>): void {
   const factors = pass2.compress_at(m.k, buf);
   post({ type: "done", kind: "p2", id: m.id, ms: performance.now() - began, heapMb: heapMb(), factors, readMs }, [
     factors.buffer,
+  ]);
+}
+
+/** Template frames `[a, b)` (all of segment 0): prepared for round 1 or round 2. */
+function templateFrames(m: Extract<ToFrameWorker, { type: "t1" | "t2" }>): void {
+  const began = performance.now();
+  if (!template) throw new Error("the template worker is not built");
+  const t = template;
+  const preps: Float32Array[] = [];
+  forFrames(
+    segs,
+    m.a,
+    m.b,
+    (s) => t.set_stride(s),
+    (c) => {
+      preps.push(m.type === "t1" ? t.round1(c) : t.round2(c));
+    },
+  );
+  const all = new Float32Array(preps.reduce((n, p) => n + p.length, 0));
+  let at = 0;
+  for (const p of preps) {
+    all.set(p, at);
+    at += p.length;
+  }
+  post({ type: "done", kind: m.type, id: m.id, ms: performance.now() - began, heapMb: heapMb(), preps: all }, [
+    all.buffer,
   ]);
 }
 
