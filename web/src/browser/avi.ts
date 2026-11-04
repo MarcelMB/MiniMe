@@ -1,9 +1,10 @@
 import { orderAvis } from "../stream/order";
 import type { Dir } from "./dir";
 import { HttpError } from "./router";
+import { type SegIndex, segIndex } from "./segindex";
 import { wasm } from "./wasm";
 
-export type SegIndex = { n: number; height: number; width: number; offsets: number[]; sizes: number[] };
+export type { SegIndex };
 /** Frame offsets and sizes of each AVI (wasm `AviFile.parse`). */
 export type Indexer = (files: File[]) => Promise<SegIndex[]>;
 
@@ -28,16 +29,7 @@ const wholeFileIndexer: Indexer = async (files) => {
   const out: SegIndex[] = [];
   for (const file of files) {
     const all = new Uint8Array(await file.arrayBuffer());
-    const avi = AviFile.parse((off: number, len: number) => all.subarray(off, off + len), file.size);
-    const n = avi.n_frames();
-    out.push({
-      n,
-      height: avi.height(),
-      width: avi.width(),
-      offsets: Array.from({ length: n }, (_, i) => avi.offset(i)),
-      sizes: Array.from({ length: n }, (_, i) => avi.size(i)),
-    });
-    avi.free();
+    out.push(segIndex(AviFile.parse((off: number, len: number) => all.subarray(off, off + len), file.size)));
   }
   return out;
 };
