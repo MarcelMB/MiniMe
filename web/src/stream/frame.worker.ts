@@ -5,9 +5,9 @@
 import { forFrames, indexSegments, type Segment } from "./frames";
 import init, { Pass1Engine, Pass2Engine, StreamSolver } from "./pkg/minime_core.js";
 import type { FromFrameWorker, ToFrameWorker } from "./poolProtocol";
+import { FLUSH, readTile, slabName } from "./slabs";
 
 const TILE_DIR = "pass1_tiles";
-const FLUSH = 100; // frames buffered before they are appended to the tile parts
 const post = (m: FromFrameWorker, transfer: Transferable[] = []) => self.postMessage(m, transfer);
 
 let memory: WebAssembly.Memory | null = null;
@@ -15,10 +15,10 @@ let segs: Segment[] = [];
 let scratch = "";
 let solver: StreamSolver | null = null;
 let pass2: Pass2Engine | null = null;
-let pass2Parts = 0;
+/** Pass 2's tile store: the slab snapshots, frames per chunk and the tiles' sizes. */
+let store: { slabs: File[]; frames: number[]; pixels: number[]; reader: FileReaderSync } | null = null;
 
 const heapMb = () => (memory?.buffer.byteLength ?? 0) / 2 ** 20;
-const part = (k: number, p: number) => `tile_${String(k).padStart(3, "0")}.part${String(p).padStart(2, "0")}`;
 async function tileDir(): Promise<FileSystemDirectoryHandle> {
   const root = await (await navigator.storage.getDirectory()).getDirectoryHandle("scratch", { create: true });
   return (await root.getDirectoryHandle(scratch, { create: true })).getDirectoryHandle(TILE_DIR, { create: true });
@@ -40,13 +40,18 @@ async function handle(m: ToFrameWorker): Promise<void> {
     case "p2ctx": {
       pass2?.free();
       pass2 = new Pass2Engine(m.files);
-      pass2Parts = m.parts;
+      const dir = await tileDir();
+      // snapshots of the slabs, taken once pass 1 has closed them
+      const slabs = await Promise.all(m.chunks.map(async (_, c) => (await dir.getFileHandle(slabName(c))).getFile()));
+      const pixels = Array.from({ length: pass2.n_tiles() }, (_, k) => (pass2 as Pass2Engine).tile_pixels(k));
+      store = { slabs, frames: m.chunks, pixels, reader: new FileReaderSync() };
       return post({ type: "ack", heapMb: heapMb() });
     }
     case "free": {
       solver?.free();
       pass2?.free();
       solver = pass2 = null;
+      store = null;
       return post({ type: "ack", heapMb: heapMb() });
     }
     case "p1":
@@ -58,33 +63,25 @@ async function handle(m: ToFrameWorker): Promise<void> {
   }
 }
 
-/** Pass 1 on window frames `[a, b)`: its own part of every tile file, and the chunk's maxima,
- * shifts and quality for the window's engine to fold in. */
+/** Pass 1 on window frames `[a, b)`: the chunk's slab of the tile store, and its maxima, shifts and
+ * quality for the window's engine to fold in. */
 async function pass1Chunk(m: Extract<ToFrameWorker, { type: "p1" }>): Promise<void> {
   const began = performance.now();
   const engine = new Pass1Engine(m.files);
-  const [H, W, t0, nTiles] = [engine.height(), engine.width(), engine.t0(), engine.n_tiles()];
+  const [H, W, t0] = [engine.height(), engine.width(), engine.t0()];
   for (const { file, avi } of segs)
     if (avi.height() !== H || avi.width() !== W)
       throw new Error(`${file.name}: ${avi.height()}x${avi.width()} frames, inputs say ${H}x${W}`);
   engine.start_at(m.a);
   const dir = await tileDir();
-  const handles: FileSystemSyncAccessHandle[] = [];
+  const slab = await (await dir.getFileHandle(slabName(m.chunk), { create: true })).createSyncAccessHandle();
   try {
-    for (let k = 0; k < nTiles; k++)
-      handles.push(await (await dir.getFileHandle(part(k, m.part), { create: true })).createSyncAccessHandle());
-    const tileBytes = Array.from({ length: nTiles }, (_, k) => engine.tile_pixels(k));
     let bytes = 0;
     const flush = () => {
-      const n = engine.buffered();
-      const packed = engine.take_tiles();
-      let o = 0;
-      for (let k = 0; k < nTiles; k++) {
-        const len = n * tileBytes[k];
-        handles[k].write(packed.subarray(o, o + len), { at: handles[k].getSize() });
-        o += len;
-      }
-      bytes += o;
+      if (!engine.buffered()) return;
+      const block = engine.take_tiles();
+      slab.write(block, { at: bytes });
+      bytes += block.length;
     };
     let lastPost = 0;
     forFrames(
@@ -103,8 +100,7 @@ async function pass1Chunk(m: Extract<ToFrameWorker, { type: "p1" }>): Promise<vo
       },
     );
     flush();
-    for (const h of handles) h.close();
-    handles.length = 0;
+    slab.close();
     const r = {
       a: m.a,
       n: m.b - m.a,
@@ -124,7 +120,11 @@ async function pass1Chunk(m: Extract<ToFrameWorker, { type: "p1" }>): Promise<vo
       r.quality.buffer,
     ]);
   } finally {
-    for (const h of handles) h.close();
+    try {
+      slab.close();
+    } catch {
+      // closed above
+    }
   }
 }
 
@@ -157,33 +157,16 @@ function streamChunk(m: Extract<ToFrameWorker, { type: "s1" }>): void {
   ]);
 }
 
-/** Compress tile `k`: read its parts in order, then `compress_at`. */
-async function tile(m: Extract<ToFrameWorker, { type: "p2" }>): Promise<void> {
+/** Compress tile `k`: read its pieces of every slab in order, then `compress_at`. */
+function tile(m: Extract<ToFrameWorker, { type: "p2" }>): void {
   const began = performance.now();
-  if (!pass2) throw new Error("pass 2 is not set up");
-  const dir = await tileDir();
-  const handles: FileSystemSyncAccessHandle[] = [];
-  try {
-    // the parts of tile k, in frame order
-    for (let p = 0; p < pass2Parts; p++)
-      handles.push(await (await dir.getFileHandle(part(m.k, p))).createSyncAccessHandle());
-    const buf = new Uint8Array(handles.reduce((n, h) => n + h.getSize(), 0));
-    let at = 0;
-    for (const h of handles) {
-      const n = h.getSize();
-      h.read(buf.subarray(at, at + n), { at: 0 });
-      at += n;
-    }
-    for (const h of handles) h.close();
-    handles.length = 0;
-    const readMs = performance.now() - began;
-    const factors = pass2.compress_at(m.k, buf);
-    post({ type: "done", kind: "p2", id: m.id, ms: performance.now() - began, heapMb: heapMb(), factors, readMs }, [
-      factors.buffer,
-    ]);
-  } finally {
-    for (const h of handles) h.close();
-  }
+  if (!pass2 || !store) throw new Error("pass 2 is not set up");
+  const buf = readTile(store.slabs, store.frames, store.pixels, m.k, store.reader);
+  const readMs = performance.now() - began;
+  const factors = pass2.compress_at(m.k, buf);
+  post({ type: "done", kind: "p2", id: m.id, ms: performance.now() - began, heapMb: heapMb(), factors, readMs }, [
+    factors.buffer,
+  ]);
 }
 
 self.onmessage = (e: MessageEvent<ToFrameWorker>) => {

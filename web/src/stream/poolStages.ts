@@ -9,6 +9,7 @@
 import type { Engine, Pass1Engine, Pass2Engine } from "./pkg/minime_core.js";
 import type { Pool } from "./pool";
 import type { FileMap } from "./poolProtocol";
+import { readTile, slabName } from "./slabs";
 
 const STREAM_CHUNK = 16; // frames per streaming task: a worker's 0.2 s, 6 MB of preprocessed pixels
 
@@ -38,15 +39,18 @@ export function chunkBounds(t: number, n: number): number[] {
   return bounds;
 }
 
-/** Pass 1 of window `[t0, t1)` on the pool: `engine` (the window's, with no frame pushed) takes the
- * chunks' results. Returns the number of tile parts, per tile, and the bytes of the tile store. */
+/** The tile store a pooled pass 1 left: its slabs' frame counts and the tiles' sizes (`slabs.ts`). */
+export type Store = { frames: number[]; pixels: number[]; bytes: number };
+
+/** Pass 1 of a window of `t` frames on the pool: `engine` (the window's, with no frame pushed) takes
+ * the chunks' results. */
 export async function pass1Pooled(
   pool: Pool,
   engine: Pass1Engine,
   files: FileMap,
   t: number,
   ctx: Ctx,
-): Promise<{ parts: number; bytes: number }> {
+): Promise<Store> {
   const bounds = chunkBounds(t, pool.size);
   const parts = bounds.length - 1;
   const stage = pick(files, (n) => n === "params.json" || n === "template.npy" || n === "shifts.npy");
@@ -65,7 +69,7 @@ export async function pass1Pooled(
       (now - began) / 1e3,
     );
   };
-  await pool.run("p1", parts, (i) => ({ type: "p1", files: stage, a: bounds[i], b: bounds[i + 1], part: i }), {
+  await pool.run("p1", parts, (i) => ({ type: "p1", files: stage, a: bounds[i], b: bounds[i + 1], chunk: i }), {
     onProgress: (i, done) => {
       live[i] = done;
       report();
@@ -79,23 +83,27 @@ export async function pass1Pooled(
   });
   report(true);
   utilisation(pool, ctx, "pass 1", began, pool.busyMs.p1 - busy0, parts);
-  return { parts, bytes };
+  return {
+    frames: bounds.slice(1).map((b, i) => b - bounds[i]),
+    pixels: Array.from({ length: engine.n_tiles() }, (_, k) => engine.tile_pixels(k)),
+    bytes,
+  };
 }
 
-/** Pass 2 on the tiles of the window's tile store (`parts` parts per tile): the workers compress
- * them in any order, `engine` takes the factors in tile order. Returns the components in all. */
+/** Pass 2 on the tiles of the window's tile store: the workers compress them in any order, `engine`
+ * takes the factors in tile order. Returns the components in all. */
 export async function pass2Pooled(
   pool: Pool,
   engine: Pass2Engine,
   files: FileMap,
-  parts: number,
+  store: Store,
   ctx: Ctx,
 ): Promise<{ rankTotal: number; readMs: number }> {
   const n = engine.n_tiles();
   await pool.broadcast({
     type: "p2ctx",
     files: pick(files, (f) => f === "pass2.json" || f.startsWith("omega_")),
-    parts,
+    chunks: store.frames,
   });
   const began = performance.now();
   const busy0 = pool.busyMs.p2;
@@ -154,28 +162,32 @@ export async function streamPooled(
   await pool.broadcast({ type: "free" });
 }
 
-/** CRC-32 of every tile file of the store as its parts, in order, make it (the pass 1 check). */
+/** The slabs of a pooled tile store, as read-only snapshots (pass 1 has closed them). */
+async function slabFiles(dir: FileSystemDirectoryHandle, store: Store): Promise<File[]> {
+  return Promise.all(store.frames.map(async (_, c) => (await dir.getFileHandle(slabName(c))).getFile()));
+}
+
+/** CRC-32 of every tile of a pooled store as one file (the pass 1 check). */
 export async function tileCrcs(
   dir: FileSystemDirectoryHandle,
-  nTiles: number,
-  parts: number,
+  store: Store,
   crc32: (bytes: Uint8Array, crc: number) => number,
 ): Promise<Uint32Array> {
-  const out = new Uint32Array(nTiles);
-  for (let k = 0; k < nTiles; k++) {
-    let crc = 0;
-    for (let p = 0; p < parts; p++) {
-      const name = `tile_${String(k).padStart(3, "0")}.part${String(p).padStart(2, "0")}`;
-      const h = await (await dir.getFileHandle(name)).createSyncAccessHandle();
-      try {
-        const buf = new Uint8Array(h.getSize());
-        h.read(buf, { at: 0 });
-        crc = crc32(buf, crc);
-      } finally {
-        h.close();
-      }
-    }
-    out[k] = crc;
-  }
-  return out;
+  const slabs = await slabFiles(dir, store);
+  const reader = new FileReaderSync();
+  return Uint32Array.from({ length: store.pixels.length }, (_, k) =>
+    crc32(readTile(slabs, store.frames, store.pixels, k, reader), 0),
+  );
+}
+
+/** Hand the pooled store's tiles to `write(name, bytes)` as the `tile_KKK.part00` files a one-worker run keeps. */
+export async function tilesAsFiles(
+  dir: FileSystemDirectoryHandle,
+  store: Store,
+  write: (name: string, bytes: Uint8Array) => Promise<void>,
+): Promise<void> {
+  const slabs = await slabFiles(dir, store);
+  const reader = new FileReaderSync();
+  for (let k = 0; k < store.pixels.length; k++)
+    await write(`tile_${String(k).padStart(3, "0")}.part00`, readTile(slabs, store.frames, store.pixels, k, reader));
 }
