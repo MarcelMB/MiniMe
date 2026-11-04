@@ -685,6 +685,31 @@ two, at most 8. If the pool cannot start, the run goes on with one worker.
 - **Overlap**: window w + 1's pass 1 is dealt to the workers when window w's pass 2 is done, so the pool
   works while the run's worker does that window's seeds, init and CNMF (the stage row counts from the
   deal).
+- Measured, 3000 frames (one window) of `synth_v4_5min`, headless Chrome 156, M1 Max (8 P + 2 E cores,
+  other agents' load average 4-6), seconds or rate per stage, `workers` 1 / 2 / 4 / 8:
+
+  | stage | 1 | 2 | 4 | 8 | 8 vs 1 |
+  |---|---|---|---|---|---|
+  | template (200 frames x 2) | 7.6 s | 3.9 s | 2.0 s | 1.1 s | 6.9x |
+  | pass 1 | 38 fps | 72 fps | 140 fps | 264 fps | 6.9x |
+  | pass 2 | 3.5 tiles/s | 6.3 | 12.6 | 21.7 | 6.2x |
+  | streaming pass | 72 fps | 136 | 258 | 436 | 6.1x |
+  | seeds + init + CNMF (serial) | 10.5 s | 10.5 s | 10.5 s | 10.5 s | 1x |
+  | whole run | 167 s | 94 s | 53 s | 34 s | 4.9x |
+
+  Whole 5-min session (9000 frames, 3 windows, overlap on): 79 s with 8 workers against 487 s with one
+  worker (the motion stage folded in) and 644 s before (8.2x); its outputs are the one-worker run's bit
+  for bit (92 files, `C.npy` included); F1 0.962, recall 0.960, precision 0.964, trace correlation median
+  0.995, 419 stitched, 418 kept, 417 merged units, as in the reference browser run.
+- Memory: the wasm heap over all workers peaks at 1.0 GB with 8 (the run's worker 0.28 GB, about 90 MB
+  per frame worker). Chrome's peak resident memory on 3000 frames in a profile on disk: 1.9 GB with 1
+  worker, 2.6 GB with 4, 3.3 GB with 8 (the renderer 1.0, 1.6, 2.4 GB: about 0.2 GB per worker); in an
+  ephemeral profile, where OPFS lives in memory and holds about 2 GB at most, 5.2 GB over the 9000
+  frames.
+- Chrome, Firefox and WebKit (Playwright's) give the same outputs as Chrome with one worker (63 files on
+  6000 frames, 4 workers). WebKit allows about 250 open sync access handles for the whole page: one
+  per tile and chunk (100 tiles) did not run, hence the slabs. Terminating the run's worker stops its
+  frame workers (all three browsers); an error in a frame worker ends the run with its message.
 - Checks (`web/e2e/stream.spec.ts` with `STREAM_WORKERS=n`, `STREAM_TILE_CRC=1`,
   `STREAM_KEEP_STORE=1`): every output file of the run (A, C, units, shifts, quality, template,
   window factors, kept tiles, tile CRCs) is identical for 1 and N workers and to the run before the
