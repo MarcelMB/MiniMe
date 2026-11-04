@@ -3,7 +3,7 @@ import { isFinal, type ProgressEvent } from "../launch/params";
 import type { FromWorker, ToWorker } from "../stream/protocol";
 import { DEFAULTS, unusedParams, WINDOW_FRAMES } from "../stream/session";
 import type { Job } from "../types";
-import { type Indexer, listSegments, RawVideo } from "./avi";
+import { type Indexer, listSegments, openRawVideo, RawVideo } from "./avi";
 import { type Dir, exists, HandleDir, readJSON, writeJSON } from "./dir";
 import { type Folders, OPFS_NAME } from "./folders";
 import type { KV } from "./kv";
@@ -242,7 +242,8 @@ export class JobManager {
     const dialog = this.outputDialog();
     const picked = dialog && parentVpath(rawDir) === null ? await dialog().catch(() => null) : null;
     const raw = await this.o.folders.resolve(rawDir);
-    const { files } = await listSegments(raw);
+    const listed = await listSegments(raw);
+    const { files } = listed;
     if (!files.length) throw new HttpError(400, `no videos in ${rawDir}: ${RawVideo.NAMING_RULE}`);
     if (b.fps !== null) checkFps(b.fps);
     checkRunName(b.name);
@@ -250,7 +251,7 @@ export class JobManager {
     if (bad.length) throw new HttpError(400, `${bad.join(", ")}: not used by the browser app`);
     if ([...this.jobs.values()].some((j) => !isFinal(j.status)))
       throw new HttpError(400, "a run is already going in this tab; wait for it or cancel it");
-    const video = await RawVideo.open(raw, this.o.index);
+    const video = await openRawVideo(rawDir, raw, { index: this.o.index, listed }); // as New run indexed it
     checkFrameSize(video.height, video.width, b.params);
     await checkPickedOutsideRaw(raw, picked, rawDir, b.name);
     const holder = await this.holder(rawDir, picked, dialog !== null);

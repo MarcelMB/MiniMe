@@ -1,15 +1,16 @@
-import { RawVideo } from "../avi";
+import { openRawVideo, RawVideo } from "../avi";
 import type { Dir } from "../dir";
 import { fpsFromFolder } from "../fps";
 import { HttpError, router } from "../router";
 import { state } from "../state";
 import { parentVpath } from "../vpath";
 
-/** `routes_jobs._info`: the raw folder at `path` and its videos. 404 without videos, 400 for
- * videos that cannot be read; a folder that needs reconnecting stays the 403 `resolve` raised. */
+/** `routes_jobs._info`: the raw folder at `path` and its videos (indexed once while they stay as
+ * they are: New run asks for them with every preview). 404 without videos, 400 for videos that
+ * cannot be read; a folder that needs reconnecting stays the 403 `resolve` raised. */
 export async function openRaw(path: string): Promise<{ raw: Dir; v: RawVideo }> {
   const raw = await state.folders.resolve(path);
-  const v = await RawVideo.open(raw).catch((e) => {
+  const v = await openRawVideo(path, raw).catch((e) => {
     throw e instanceof HttpError ? e : new HttpError(400, `cannot read the videos in ${path}: ${e}`);
   });
   return { raw, v };
