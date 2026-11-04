@@ -39,6 +39,7 @@ impl Inputs {
     pub fn load(get: &mut dyn FnMut(&str) -> Result<Vec<u8>, String>) -> Result<Self, String> {
         let params: Params =
             serde_json::from_slice(&get("params.json")?).map_err(|e| format!("params.json: {e}"))?;
+        preprocess::check_median_ksize(params.median_ksize)?;
         let p = params.h * params.w;
         let data = npy::read_f64(&get("A_data.npy")?)?.data;
         let indices: Vec<usize> = npy::read_i64(&get("A_indices.npy")?)?
@@ -168,4 +169,29 @@ pub fn finish(
         serde_json::to_vec_pretty(&summary).unwrap(),
     ));
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_streaming_pass_refuses_an_even_median_size_before_reading_anything_else() {
+        let load = |k: usize| {
+            let json = format!(
+                r#"{{"H": 4, "W": 4, "T": 10, "segment_frames": 10, "median_ksize": {k}, "tophat_wnd": 3,
+                "motion_before_tophat": true, "dl_wnd": 3, "sparse_snr": 1.0, "size_thres": [25, null],
+                "noise_freq": 0.06, "loop_merge_corr": 0.9}}"#
+            );
+            Inputs::load(&mut |name| match name {
+                "params.json" => Ok(json.clone().into_bytes()),
+                other => Err(format!("missing {other}")),
+            })
+            .err()
+        };
+        assert_eq!(load(6).as_deref(), Some("median_ksize must be odd, got 6"));
+        // odd: the first thing it misses is the next file
+        assert_eq!(load(7).as_deref(), Some("missing A_data.npy"));
+        assert_eq!(load(1).as_deref(), Some("missing A_data.npy"));
+    }
 }
