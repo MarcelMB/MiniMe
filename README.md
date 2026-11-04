@@ -204,7 +204,14 @@ Edge), or Browser storage (other browsers). Chrome and Edge read and write folde
 after a reload pick the folder again (Runs, Change folder). Firefox and Safari open folders
 read-only. A run in Browser storage has "Download run (.zip)"; unzipped it is a normal run
 folder that `minime serve` and `minime score` open. Before a run into Browser storage the free
-space is checked, and a run that cannot fit is refused with the numbers.
+space is checked, and a run that cannot fit is refused with the numbers (checked again once the
+units are found, for the traces).
+
+The run lives in its tab: keep the tab open until the job page says done, and preferably in
+view. One run goes at a time, also across tabs. Chrome's Memory Saver may discard a tab that
+stays in the background for long; for a run of hours add the page's site under Settings,
+Performance, "Always keep these sites active". A run whose tab was closed shows as interrupted;
+start it again under the same name.
 
 ## Parameters
 

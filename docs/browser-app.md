@@ -126,8 +126,8 @@ baseline sidecar's shifts and template, one worker), frames 0–3000 of the 30-m
   template: `--estimate`), keeps max projection and block maxima, and buffers the corrected
   frames per tile; the caller appends `take_tiles()` to the tile files every 100 frames.
 - Browser: `Pass1Engine` in `wasm.rs`; the worker writes one OPFS file per tile
-  (`pass1_tiles/tile_NNN.part00`, sync access handles) and runs pass 1 when the inputs
-  folder has `template.npy`.
+  (`pass1_tiles/tile_NNN.part00`, sync access handles; since the back end, in the run's own
+  `scratch/<job id>/`) and runs pass 1 when the inputs folder has `template.npy`.
 - With `--estimate` (shifts from Rust's own FFT, ≤ 4e-6 px off) 4 of 3.96 M block-max
   pixels and 17 of 100 tiles differ by one grey level. The check uses the given shifts.
 
@@ -567,8 +567,8 @@ The reference folder is optional and only overrides what it holds.
   alone, headless Chrome: 10:44 wall (motion 187 s, pass 1 217 s, pass 2 85 s, CNMF 25 s,
   streaming pass 127 s), heap peak 273 MB; 3 windows (409, 400, 396 units) stitched into
   419, 418 kept by the update, 417 after the merge; largest shift 12.1 px, quality median
-  0.83. Scored against the truth (421 cells; `browser_run_dir.py` lays the outputs out as
-  a run dir, then `minime score`): F1 **0.962** (recall 0.960, precision 0.964, detectable
+  0.83. Scored against the truth (421 cells; then `browser_run_dir.py` laid the outputs out
+  as a run dir; the run folder is now scored as it is, `minime score <run>`): F1 **0.962** (recall 0.960, precision 0.964, detectable
   recall 0.965), trace correlation median **0.995**. The Python batch run on the same
   session (`minime_2026-10-28_1717`): F1 0.968 (recall 0.948, precision 0.990), traces
   0.994. (The truth is regenerated from `meta.json`; the generator still reproduces the raw
@@ -605,10 +605,24 @@ files (`npm run build:browser` → `web/dist-browser/`, `.wasm` as `application/
   Home's error note; Change folder, then pick it again, and it is the same folder as before.
   A downloaded, unzipped run opens read-only from Change folder in every browser.
 - **Browser storage**: a run there has "Download run (.zip)" (a stored zip64 of the run
-  folder, streamed from OPFS). Before a run into it the quota is checked
-  (`navigator.storage.estimate()` against twice the traces, the window factors and, with Keep
-  store, the tile store) and a run that does not fit is refused with the numbers; the browser
-  is asked once to keep the storage (`persist()`).
+  folder, streamed from OPFS; the button says "Preparing…" while the zip is put together).
+  Before a run into it the quota is checked (`navigator.storage.estimate()` against twice the
+  traces at an assumed 500 units, the window factors and, with Keep store, the tile store) and a
+  run that does not fit is refused with the numbers; the browser is asked once to keep the
+  storage (`persist()`). Once the stitch has found the units the worker checks again with the
+  real K, before the streaming pass allocates its traces (for a run on disk: the one scratch
+  copy of the traces).
+- **Jobs and tabs**: a run holds the Web Lock `minime-run` from Start to its end, so one run
+  goes at a time across the site's tabs; a second tab refuses Start ("a run is already going in
+  another tab") and shows the first tab's job as running, not interrupted. A job is marked
+  interrupted only when no tab holds the lock. Each run keeps its working files (the pass-1
+  tile store, the traces before they reach the run folder) in OPFS `scratch/<job id>/`,
+  removed when it ends, is cancelled or was interrupted. The worker writes `progress.jsonl` as
+  the run goes; the job page of a job from before a reload replays it, as main does.
+- **Keep the tab**: the run lives in its tab. Keep it open and preferably in view (the Wake
+  Lock only holds while the tab is visible); Chrome's Memory Saver may discard a background
+  tab, so for a run of hours add the site under Settings, Performance, "Always keep these
+  sites active". A closed tab leaves the job interrupted; start it again under the same name.
 - **A Python run in the browser**: opens with every page. Its `raw_dir` is an absolute disk
   path the page cannot open, so there are no raw frames and no frame rate from the raw folder;
   recon frames and the noise image are not available (404 "not available for this run"); the
@@ -644,9 +658,8 @@ themselves; run only one Playwright config at a time (they share ports and `dist
 0. Rerun the 8 h and 24 h streaming pass with the traces in OPFS (8 h scale run above);
    machine-hours, so overnight.
 1. ~~Discovery port~~, ~~run from the AVIs alone~~ (done). Next: the full 36-file GRIN
-   session in Chrome with the AVIs alone (~45 min single core, so overnight), scored with
-   `browser_run_dir.py` + `minime score` against the batch run's F1 0.740 / the `fresh`
-   chain's 0.738; and the same with `STREAM_INPUTS=<ref>/session` (`ref_stitch.py
+   session with New run (~45 min single core), its run folder scored with `minime score`
+   against the batch run's F1 0.740 / the `fresh` chain's 0.738; and the same with `STREAM_INPUTS=<ref>/session` (`ref_stitch.py
    --session-inputs`, all windows) checked with `check_stitch.py --own-windows` against
    `ref_stitch_w3000`, watching the 2.9e-5 brightness tie.
 1b. ~~`ymean`/`sn` for a browser-only run, window loop chained into the streaming pass~~
