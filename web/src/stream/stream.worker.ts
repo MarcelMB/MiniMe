@@ -30,6 +30,8 @@ import init, {
   time_windows,
   window_inputs,
 } from "./pkg/minime_core.js";
+import { Pool, workerCount } from "./pool";
+import { pass1Pooled, pass2Pooled, streamPooled, tileCrcs } from "./poolStages";
 import type { FromWorker, Stage, ToWorker } from "./protocol";
 import { DEFAULTS, MOTION_PARAMS, sessionFor } from "./session";
 
@@ -47,7 +49,9 @@ const scratchDir = async () => (await scratchParent()).getDirectoryHandle(scratc
 const DRAIN = 4096; // frames of traces held in wasm before they go to C.npy in OPFS
 
 let wasmMemory: WebAssembly.Memory | null = null;
-const heapMb = () => (wasmMemory?.buffer.byteLength ?? 0) / 2 ** 20;
+/** The run's frame workers (`pool.ts`) when it has more than one worker. */
+let pool: Pool | undefined;
+const heapMb = () => (wasmMemory?.buffer.byteLength ?? 0) / 2 ** 20 + (pool?.heapMb() ?? 0);
 let heapPeakMb = 0;
 /** Where the running stage sits in the run ("window 2/3"); shown with every stage start. */
 let stageLabel = "";
@@ -177,7 +181,19 @@ async function streamPass(
     written = t;
   };
   let lastPost = 0;
-  for (const file of orderAvis(avis)) {
+  // with a pool the workers solve the frames and this thread folds them in, in frame order
+  if (pool)
+    await streamPooled(
+      pool,
+      engine,
+      files,
+      (n) => {
+        t = n;
+        if (t - written >= DRAIN) drain();
+      },
+      { progress, log },
+    );
+  for (const file of pool ? [] : orderAvis(avis)) {
     if (t === T) break;
     const read = (off: number, len: number) => new Uint8Array(reader.readAsArrayBuffer(file.slice(off, off + len)));
     const avi = AviFile.parse(read, file.size);
@@ -351,12 +367,19 @@ const FLUSH = 100; // frames buffered before they are appended to the tile files
 async function keepTiles(root: FileSystemDirectoryHandle, to: HandleDir, i: number): Promise<void> {
   const from = await root.getDirectoryHandle(TILE_DIR);
   const dest = (await walk(to, `tiles/${windowDir(i)}`, { create: true })) as HandleDir;
+  const names = new Map<string, FileSystemFileHandle[]>();
   // biome-ignore lint/suspicious/noExplicitAny: entries() is missing from TS 5.6's DOM lib
   for await (const [name, h] of (from as any).entries() as AsyncIterable<[string, FileSystemHandle]>) {
-    if (h.kind !== "file" || !name.endsWith(".part00")) continue;
-    const file = await (h as FileSystemFileHandle).getFile();
-    const out = await (await dest.handle.getFileHandle(name, { create: true })).createWritable();
-    await file.stream().pipeTo(out); // closes `out` when the file is through
+    const m = /^(.*)\.part(\d+)$/.exec(name);
+    if (h.kind !== "file" || !m) continue;
+    const parts = names.get(m[1]) ?? [];
+    parts[Number(m[2])] = h as FileSystemFileHandle; // the pool's parts of a tile, in frame order
+    names.set(m[1], parts);
+  }
+  for (const [tile, parts] of names) {
+    const out = await (await dest.handle.getFileHandle(`${tile}.part00`, { create: true })).createWritable();
+    for (const h of parts) await (await h.getFile()).stream().pipeTo(out, { preventClose: true });
+    await out.close();
   }
 }
 
@@ -395,6 +418,31 @@ type RunOpts = {
  * pass on the stitched footprints. `omega_<t0>_<k>.npy` files replay numpy's draws in the
  * window starting at t0. With `opts.out` the outputs are written there as a run folder. */
 async function runWindows(
+  avis: File[],
+  files: Map<string, Uint8Array>,
+  log: (what: string) => void,
+  memory: WebAssembly.Memory,
+  tl: number,
+  opts: RunOpts,
+): Promise<void> {
+  const n = workerCount(opts.params);
+  if (n > 1) {
+    try {
+      pool = await Pool.create(n, avis, scratchId);
+      log(`${n} frame workers`);
+    } catch (e) {
+      log(`no frame workers (${e instanceof Error ? e.message : String(e)}), one worker`);
+    }
+  }
+  try {
+    return await runSession(avis, files, log, memory, tl, opts);
+  } finally {
+    pool?.close();
+    pool = undefined;
+  }
+}
+
+async function runSession(
   avis: File[],
   files: Map<string, Uint8Array>,
   log: (what: string) => void,
@@ -454,7 +502,7 @@ async function runWindows(
     stageLabel = `window ${i + 1}/${n}`;
     log(`window ${i + 1}/${n}: frames ${t0}-${t1}`);
     const w = await windowPass1(segs, wf, log, memory, {
-      crc: false,
+      crc: Boolean(opts.params.tile_crc), // the tile store's checksums (the e2e check), read back at some cost
       onPass2: (engine) => stitch.add_pass2(engine, t0, t1),
       onCnmf: (engine) => stitch.add_cnmf(engine, t0, t1),
     });
@@ -464,7 +512,8 @@ async function runWindows(
       ownQuality.push(readNpy(w.files.get("quality.npy")!).data as Float32Array);
     }
     const tag = `win_${String(i).padStart(2, "0")}_`;
-    for (const [name, bytes] of w.files) if (name.startsWith("summary")) out.set(tag + name, bytes);
+    for (const [name, bytes] of w.files)
+      if (name.startsWith("summary") || (opts.params.tile_crc && name === "tile_crc.npy")) out.set(tag + name, bytes);
     windows.push(windowReport(t0, t1, w.files, before));
     if (to) {
       await writeWindow(to, i, w.files);
@@ -668,10 +717,10 @@ function report(
     H,
     W,
     windows,
-    pass1_cpu_seconds: stageSeconds.get("pass1") ?? null, // one thread: the wall time
+    pass1_cpu_seconds: pool ? pool.busyMs.p1 / 1e3 : (stageSeconds.get("pass1") ?? null), // one thread: the wall time
     wasm_heap_peak_mb: heapPeakMb,
     wall_total: wallTotal,
-    workers: 1,
+    workers: pool?.size ?? 1,
     where: "browser",
   };
 }
@@ -728,7 +777,8 @@ async function windowPass1(
   await root.removeEntry(TILE_DIR, { recursive: true }).catch(() => undefined);
   const dir = await root.getDirectoryHandle(TILE_DIR, { create: true });
   const handles: FileSystemSyncAccessHandle[] = [];
-  for (let k = 0; k < nTiles; k++) {
+  // with a pool each worker writes its own parts of the tile files, so none is open here
+  for (let k = 0; k < (pool ? 0 : nTiles); k++) {
     const name = `tile_${String(k).padStart(3, "0")}.part00`;
     handles.push(await (await dir.getFileHandle(name, { create: true })).createSyncAccessHandle());
   }
@@ -750,27 +800,31 @@ async function windowPass1(
     tWrite += performance.now() - s;
   };
   let lastPost = 0;
-  forFrames(
-    segs,
-    t0,
-    t1,
-    (s) => engine.set_stride(s),
-    (c) => {
-      engine.push_raw(c);
-      if (engine.buffered() === FLUSH) flush();
-      const now = performance.now();
-      if (now - lastPost > 500) {
-        lastPost = now;
-        progress(engine.done(), t1 - t0, (now - began) / 1e3);
-      }
-    },
-  );
-  flush();
+  let pooled = { parts: 1, bytes: 0 };
+  if (pool) pooled = await pass1Pooled(pool, engine, files, t1 - t0, { progress, log });
+  else {
+    forFrames(
+      segs,
+      t0,
+      t1,
+      (s) => engine.set_stride(s),
+      (c) => {
+        engine.push_raw(c);
+        if (engine.buffered() === FLUSH) flush();
+        const now = performance.now();
+        if (now - lastPost > 500) {
+          lastPost = now;
+          progress(engine.done(), t1 - t0, (now - began) / 1e3);
+        }
+      },
+    );
+    flush();
+  }
   const passSeconds = (performance.now() - began) / 1e3;
   const s = performance.now();
   const crc = new Uint32Array(opts.crc ? nTiles : 0);
   let storeBytes = 0;
-  for (let k = 0; k < nTiles; k++) {
+  for (let k = 0; k < handles.length; k++) {
     const h = handles[k];
     storeBytes += h.getSize();
     if (!opts.crc) continue;
@@ -778,13 +832,17 @@ async function windowPass1(
     h.read(buf, { at: 0 });
     crc[k] = crc32(buf, 0);
   }
+  if (pool) {
+    storeBytes = pooled.bytes;
+    if (opts.crc) crc.set(await tileCrcs(dir, nTiles, pooled.parts, crc32));
+  }
   const tCrc = (performance.now() - s) / 1e3;
   const mb = memory.buffer.byteLength / 2 ** 20;
   log(`pass 1 done, ${(storeBytes / 2 ** 20).toFixed(0)} MB in OPFS, wasm heap ${mb.toFixed(0)} MB`);
   end(
     `${t1 - t0} frames, ${((t1 - t0) / passSeconds).toFixed(0)} fps; ${(storeBytes / 2 ** 20).toFixed(0)} MB of tiles`,
   );
-  const p2 = files.has("pass2.json") ? runPass2(handles, files, log, memory, engine, opts) : null;
+  const p2 = files.has("pass2.json") ? await runPass2(handles, files, log, memory, engine, opts, pooled.parts) : null;
   for (const h of handles) h.close();
   const timing = {
     where: "browser",
@@ -802,29 +860,34 @@ async function windowPass1(
 
 /** Pass 2 (`minime-core pass2`) on pass 1's open tile files, one tile at a time; then the
  * seed stage when the inputs hold `seeds.json` (and init when they hold `init.json`). */
-function runPass2(
+async function runPass2(
   handles: FileSystemSyncAccessHandle[],
   files: Map<string, Uint8Array>,
   log: (what: string) => void,
   memory: WebAssembly.Memory,
   pass1: Pass1Engine,
   opts: WindowOpts,
-): Out {
+  parts: number,
+): Promise<Out> {
   const engine = new Pass2Engine(files);
   const n = engine.n_tiles();
-  if (n !== handles.length) throw new Error(`pass2.json has ${n} tiles, the tile store ${handles.length}`);
+  if (!pool && n !== handles.length) throw new Error(`pass2.json has ${n} tiles, the tile store ${handles.length}`);
   log(`pass 2 on ${n} tiles, ${engine.replayed() ? "replaying numpy's draws" : "own draws"}`);
   start("pass2", n, 0, 0, 0);
   const began = performance.now();
   let [tRead, rankTotal] = [0, 0];
-  for (let k = 0; k < n; k++) {
-    const s = performance.now();
-    const buf = new Uint8Array(handles[k].getSize());
-    handles[k].read(buf, { at: 0 });
-    tRead += performance.now() - s;
-    rankTotal += engine.compress(buf);
-    progress(k + 1, n, (performance.now() - began) / 1e3);
-  }
+  if (pool) {
+    const r = await pass2Pooled(pool, engine, files, parts, { progress, log });
+    [tRead, rankTotal] = [r.readMs, r.rankTotal];
+  } else
+    for (let k = 0; k < n; k++) {
+      const s = performance.now();
+      const buf = new Uint8Array(handles[k].getSize());
+      handles[k].read(buf, { at: 0 });
+      tRead += performance.now() - s;
+      rankTotal += engine.compress(buf);
+      progress(k + 1, n, (performance.now() - began) / 1e3);
+    }
   const seconds = (performance.now() - began) / 1e3;
   const mb = memory.buffer.byteLength / 2 ** 20;
   log(`pass 2 done, ${rankTotal} components, wasm heap ${mb.toFixed(0)} MB`);
