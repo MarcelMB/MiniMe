@@ -8,9 +8,10 @@ import pytest
 import scipy.sparse as sps
 from typer.testing import CliRunner
 
-from minime import cli, pipeline, report
+from minime import cli, motion, pipeline, report
 from minime.params import Params
 from minime.testing import synth
+from tests.conftest import TINY_PARAMS
 
 
 def test_pipeline_end_to_end_tiny(tiny_session):
@@ -266,3 +267,41 @@ def test_a_failed_run_removes_the_tile_store(tiny_session, tmp_path, monkeypatch
     with pytest.raises(RuntimeError, match="pass 2"):
         pipeline.run(tiny_session["raw_dir"], p, run_name="f", out_root=tmp_path)
     assert (tmp_path / "f" / "motion").is_dir() and not (tmp_path / "f" / "tiles").exists()
+
+
+def test_border_mask_zeroes_rarely_filled_pixels():
+    """Frames shifted by dx = -3 most of the time leave columns 0-2 zero-filled: masked."""
+    from minime import pass1
+
+    shifts = np.zeros((10, 2), np.float32)
+    shifts[1:, 1] = -3
+    p1 = pass1.Pass1Result(
+        shifts=shifts,
+        quality=np.ones(10, np.float32),
+        max_proj=np.full((6, 8), 9, np.uint8),
+        block_max=np.full((2, 6, 8), 9, np.uint8),
+        block_edges=np.array([0, 5, 10]),
+        frames=10,
+        seconds={},
+    )
+    assert pipeline.border_mask(p1, 6, 8, 0.0) is None
+    valid = pipeline.border_mask(p1, 6, 8, 0.5)
+    assert valid is not None and not valid[:, :3].any() and valid[:, 3:].all()
+    assert (p1.max_proj[:, :3] == 0).all() and (p1.block_max[:, :, :3] == 0).all()
+    assert (p1.max_proj[:, 3:] == 9).all()
+
+
+def test_border_coverage_run_zeroes_masked_pixels_in_factors(tiny_session, tmp_path):
+    """With border_coverage the masked pixels hold 0 in every tile pass 2 compresses."""
+    from minime import factors as fmod
+
+    p = Params(**{**TINY_PARAMS, "border_coverage": 0.99})
+    out = pipeline.run(tiny_session["raw_dir"], p, run_name="m", out_root=tmp_path)
+    fac = fmod.Factors.load(out / "factors")
+    sh = np.load(out / "motion" / "arrays.npz")["shifts"]
+    bad = motion.coverage(sh, 64, 64) < 0.99
+    assert bad.any() and (fac.max_proj[bad] == 0).all()
+    for tf in fac.tiles:  # zeroed pixels must not turn into NaN (zero noise) in pass 2
+        assert all(
+            np.isfinite(np.asarray(v)).all() for v in vars(tf).values() if hasattr(v, "dtype")
+        )

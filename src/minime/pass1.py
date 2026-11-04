@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import multiprocessing
 import os
 import time
@@ -15,7 +16,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from minime import motion, preprocess
+from minime import io, motion, preprocess
 from minime.io import RawInfo, iter_avi, read_avi
 from minime.motion import Template
 from minime.params import Params
@@ -64,12 +65,72 @@ def registration_image(denoised: np.ndarray, params: Params) -> np.ndarray:
     return preprocess.tophat(denoised, params.tophat_wnd)
 
 
-def build_template(info: RawInfo, params: Params) -> Template:
-    """Motion template from the first ``template_frames`` frames of segment 0."""
-    frames = read_avi(info.segments[0], max_frames=params.template_frames, bgr=info.bgr)
+def spread_starts(T: int, chunks: int, length: int) -> np.ndarray:
+    """First frames of ``chunks`` runs of ``length`` frames spread evenly over ``[0, T)``."""
+    length = min(length, T)
+    return np.linspace(0, T - length, max(1, chunks)).round().astype(np.int64)
+
+
+def read_range(info: RawInfo, t0: int, n: int) -> np.ndarray:
+    """Session frames ``t0 .. t0 + n`` as (n, h, w) uint8, across segment ends."""
+    starts = np.concatenate([[0], np.cumsum(info.segment_frames)])
+    out, t, end = [], int(t0), min(int(t0) + n, info.frames)
+    while t < end:
+        seg = int(np.searchsorted(starts, t, "right")) - 1
+        k = min(end, int(starts[seg + 1])) - t
+        out.append(io.read_frames(info.segments[seg], t - int(starts[seg]), k, info.bgr))
+        t += k
+    return np.concatenate(out)
+
+
+def sample_frames(info: RawInfo, chunks: int, length: int) -> np.ndarray:
+    """(chunks * length, h, w) uint8: ``chunks`` runs of ``length`` consecutive frames spread
+    evenly over the session."""
+    return np.concatenate(
+        [read_range(info, int(t), length) for t in spread_starts(info.frames, chunks, length)]
+    )
+
+
+def _reg(frames: np.ndarray, params: Params) -> np.ndarray:
+    return registration_image(preprocess.denoise(frames, params.median_ksize), params)
+
+
+def with_fill(tmpl: Template, frames: np.ndarray, params: Params) -> Template:
+    """``tmpl`` carrying the fill image of ``frames`` (raw template frames): the mean of
+    their tophat images (what pass 1 hands to pass 2) at the template's position."""
     den = preprocess.denoise(frames, params.median_ksize)
     reg = registration_image(den, params)
-    return motion.make_template(reg, params.motion_down, params.motion_max_shift)
+    sh = motion.estimate(reg, tmpl, params.motion_max_shift)
+    top = preprocess.tophat(motion.apply_shifts(den, sh, "replicate"), params.tophat_wnd)
+    if not params.motion_before_tophat:
+        top = motion.apply_shifts(preprocess.tophat(den, params.tophat_wnd), sh, "replicate")
+    return dataclasses.replace(tmpl, fill=motion.fill_image(top, np.zeros_like(sh)))
+
+
+def build_template(info: RawInfo, params: Params) -> Template:
+    """Motion template from the first ``template_frames`` frames of segment 0 (moved to the
+    session's median position with ``template_recentre``), or with ``template_source =
+    "spread"`` from frames spread over the session."""
+    p = params
+    chunks = max(1, p.template_chunks)
+    if p.template_source == "spread":
+        frames = sample_frames(info, chunks, max(1, p.template_frames // chunks))
+        tmpl = motion.make_template(
+            _reg(frames, p),
+            p.motion_down,
+            p.motion_max_shift,
+            iters=2,
+            chunks=chunks,
+            centre="median",
+        )
+    else:
+        frames = read_avi(info.segments[0], max_frames=p.template_frames, bgr=info.bgr)
+        reg = _reg(frames, p)
+        tmpl = motion.make_template(reg, p.motion_down, p.motion_max_shift)
+        if p.template_recentre:
+            probe = _reg(sample_frames(info, chunks, max(1, p.template_frames // chunks)), p)
+            tmpl = motion.recentre(reg, tmpl, probe, p.motion_max_shift)[0]
+    return with_fill(tmpl, frames, p) if p.motion_fill == "template" else tmpl
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +180,20 @@ class Pass1:
             if part.size:
                 np.maximum(self.block_max[bi], part.max(axis=0), out=self.block_max[bi])
 
+    def _estimate(self, reg: np.ndarray) -> np.ndarray:
+        """Shifts of one sub-batch: vs the template, optionally outlier-fixed and refined
+        against the sub-batch's own mean (``motion_outlier``, ``motion_refine``)."""
+        p, t = self.params, self.template
+        if p.motion_outlier <= 0 and not p.motion_refine:
+            return motion.estimate(reg, t, p.motion_max_shift)
+        sh, peak = motion.estimate_peak(reg, t, p.motion_max_shift)
+        sh = motion.fix_outliers(sh, peak, p.motion_outlier)
+        if p.motion_refine:
+            sh = motion.fix_outliers(
+                motion.refine(reg, sh, t, p.motion_max_shift), peak, p.motion_outlier
+            )
+        return sh
+
     def process(self, frames: np.ndarray) -> np.ndarray:
         """Corrected, tile-packed uint8 buffer for this batch (see ``pack_tiles``)."""
         p, s = self.params, self.seconds
@@ -138,7 +213,7 @@ class Pass1:
             reg = registration_image(blk, p)
             lap("bandpass" if p.motion_before_tophat else "tophat")
             if self.given_shifts is None:
-                sh = motion.estimate(reg, self.template, p.motion_max_shift)
+                sh = self._estimate(reg)
             else:
                 a = self.t_start + self.frames + b0
                 sh = self.given_shifts[a : a + blk.shape[0]]
@@ -148,15 +223,18 @@ class Pass1:
                         f"{self.given_shifts.shape[0]} shifts given"
                     )
             lap("motion_estimate")
+            fill = "replicate" if p.motion_fill == "template" else p.motion_fill
             if p.motion_before_tophat:
-                blk = motion.apply_shifts(blk, sh)
+                blk = motion.apply_shifts(blk, sh, fill)
                 reg = motion.apply_shifts(reg, sh)
                 lap("motion_apply")
                 blk = preprocess.tophat(blk, p.tophat_wnd)
                 lap("tophat")
             else:
-                blk = reg = motion.apply_shifts(reg, sh)
+                blk = reg = motion.apply_shifts(reg, sh, fill)
                 lap("motion_apply")
+            if p.motion_fill == "template":
+                blk = motion.fill_outside(blk, sh, self.template.fill)
             np.maximum(self.max_proj, blk.max(axis=0), out=self.max_proj)
             lap("max_proj")
             self._update_block_max(blk, self.t_start + self.frames + b0)
