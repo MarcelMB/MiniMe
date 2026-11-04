@@ -190,7 +190,9 @@ async function run({
   if (files.has("stitch.json")) return runStitch(files, log, wasm.memory);
   if (files.has("template.npy")) return runPass1(avis, files, log, wasm.memory);
   if (!files.has("A_data.npy")) return runMotion(avis, files, log, wasm.memory);
-  const { files: out, seconds } = await streamPass(avis, files, log, wasm.memory);
+  const { files: out, seconds } = await withPool(avis, params ?? {}, log, () =>
+    streamPass(avis, files, log, wasm.memory),
+  );
   post({ type: "done", files: out, seconds }, transferable(out));
 }
 
@@ -493,7 +495,18 @@ async function runWindows(
   tl: number,
   opts: RunOpts,
 ): Promise<void> {
-  const n = workerCount(opts.params);
+  return withPool(avis, opts.params, log, () => runSession(avis, files, log, memory, tl, opts));
+}
+
+/** Run `f` with the run's frame workers (`params.workers`, or the default count) when there are more
+ * than one; with one worker, or when they cannot start, `f` runs alone. */
+async function withPool<T>(
+  avis: File[],
+  params: Record<string, unknown>,
+  log: (what: string) => void,
+  f: () => Promise<T>,
+): Promise<T> {
+  const n = workerCount(params);
   if (n > 1) {
     try {
       pool = await Pool.create(n, avis, scratchId);
@@ -503,7 +516,7 @@ async function runWindows(
     }
   }
   try {
-    return await runSession(avis, files, log, memory, tl, opts);
+    return await f();
   } finally {
     pool?.close();
     pool = undefined;
