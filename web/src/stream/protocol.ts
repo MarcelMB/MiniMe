@@ -12,6 +12,11 @@ export type ToWorker = {
   keepStore?: boolean;
   rawDir?: string;
   fps?: number | null;
+  /** The run's own folder for its working files, OPFS `scratch/<scratch>/` (a job's id); a new
+   * one when not given. */
+  scratch?: string;
+  /** The run folder is in Browser storage (OPFS): the traces take that room twice. */
+  browserStorage?: boolean;
 };
 
 export type Stage = "stream" | "motion" | "pass1" | "pass2" | "seeds" | "init" | "cnmf" | "stitch";

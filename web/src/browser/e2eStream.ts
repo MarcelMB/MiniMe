@@ -3,7 +3,8 @@
 // the spec reads by slices (the traces of a long session are far too big for one message).
 // Only the browser build opened with `?e2e` loads this (`e2e.ts`).
 import { defaultRunName } from "../launch/params";
-import type { FromWorker } from "../stream/protocol";
+import type { FromWorker, ToWorker } from "../stream/protocol";
+import { RUN_LOCK } from "./support";
 
 export type StreamOptions = { keepStore?: boolean };
 export type StreamResult = {
@@ -18,8 +19,13 @@ const outputs = new Map<string, Blob>();
 const PROGRESS_EVERY_S = 30;
 
 /** Run the pipeline on `avis` (disk-backed `File`s) with, optionally, a reference-inputs folder.
- * From the AVIs alone the whole pipeline writes its run folder to browser storage. */
-export async function runStream(avis: File[], inputs: File[], opts: StreamOptions = {}): Promise<StreamResult> {
+ * From the AVIs alone the whole pipeline writes its run folder to browser storage. The run holds
+ * the run lock, as a job does, so a tab opened meanwhile leaves its scratch folder alone. */
+export function runStream(avis: File[], inputs: File[], opts: StreamOptions = {}): Promise<StreamResult> {
+  return navigator.locks.request(RUN_LOCK, () => stream(avis, inputs, opts));
+}
+
+async function stream(avis: File[], inputs: File[], opts: StreamOptions): Promise<StreamResult> {
   let out: FileSystemDirectoryHandle | undefined;
   let folder = "";
   if (!inputs.length) {
@@ -50,7 +56,10 @@ export async function runStream(avis: File[], inputs: File[], opts: StreamOption
         } else if (m.type === "error") reject(new Error(m.message));
       };
       worker.onerror = (e) => reject(new Error(`worker failed: ${e.message || "could not start"}`));
-      worker.postMessage({ avis, inputs, out, keepStore: opts.keepStore });
+      // one scratch folder for these runs, cleared by the next one (reference runs return their
+      // traces from it, so it stays until then)
+      const msg: ToWorker = { avis, inputs, out, keepStore: opts.keepStore, scratch: "e2e-stream" };
+      worker.postMessage(msg);
     });
   } finally {
     worker.terminate();

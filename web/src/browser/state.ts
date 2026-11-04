@@ -5,7 +5,8 @@ import { idbKV } from "./kv";
 import { HttpError } from "./router";
 import { Registry } from "./runs";
 
-const opfsDir = async (name: string): Promise<Dir | null> => {
+/** OPFS folder `name` (made if missing), or null in a browser without OPFS. */
+export const opfsDir = async (name: string): Promise<Dir | null> => {
   if (!navigator.storage?.getDirectory) return null;
   const root = await navigator.storage.getDirectory();
   return new HandleDir(await root.getDirectoryHandle(name, { create: true }));
