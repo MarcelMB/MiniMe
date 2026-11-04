@@ -1,13 +1,15 @@
+import { fmtBytes } from "../format";
 import { isFinal, type ProgressEvent } from "../launch/params";
 import type { FromWorker, ToWorker } from "../stream/protocol";
-import { unusedParams } from "../stream/session";
+import { DEFAULTS, unusedParams, WINDOW_FRAMES } from "../stream/session";
 import type { Job } from "../types";
-import { listSegments, RawVideo } from "./avi";
-import { type Dir, exists, readJSON, writeJSON } from "./dir";
-import type { Folders } from "./folders";
+import { type Indexer, listSegments, RawVideo } from "./avi";
+import { type Dir, exists, HandleDir, readJSON, writeJSON } from "./dir";
+import { type Folders, OPFS_NAME } from "./folders";
 import type { KV } from "./kv";
 import { pyFloat, pyRepr } from "./num";
 import { HttpError } from "./router";
+import { ASSUMED_UNITS, estimateRunBytes, pickDirectory, support } from "./support";
 import { joinVpath, parentVpath, splitVpath } from "./vpath";
 
 export type JobBody = {
@@ -45,6 +47,17 @@ function checkOutDir(raw: string, out: string): void {
     throw new HttpError(400, `output dir ${out} would contain the raw dir ${raw}; choose another`);
   if (out.startsWith(`${raw}/`))
     throw new HttpError(400, `output dir ${out} lies inside the raw dir ${raw}; choose another`);
+}
+
+/** The motion steps halve the frame (`motion_down` 2) and the band-pass registration image
+ * (`motion_before_tophat`) needs an even size too; the preview refuses an odd one in the same
+ * words (`preview.rs`), so New run says so before a run starts and fails at its first stage. */
+function checkFrameSize(h: number, w: number, params: Record<string, unknown>): void {
+  if (h % 2 === 0 && w % 2 === 0) return;
+  const p = { ...DEFAULTS, ...params };
+  if (p.motion_before_tophat)
+    throw new HttpError(400, `${h} x ${w} frames: the band-pass registration image needs an even size`);
+  if (p.motion_down === 2) throw new HttpError(400, `${h} x ${w} frames: 2x downsampling needs an even size`);
 }
 
 /** `runs.is_run`: a `params.json` and a `report.json`. */
@@ -102,7 +115,19 @@ export class JobManager {
   private wake: WakeLockSentinel | null = null;
   private asking = false;
   private onVisible: (() => void) | null = null;
-  constructor(private o: { kv: KV; folders: Folders; makeWorker: () => Worker; now?: () => number }) {}
+  private persisted = false;
+  /** `pickOutput` is the folder dialog (the system's where the browser has one) and `index` how
+   * the raw videos are indexed; both are replaced in tests. */
+  constructor(
+    private o: {
+      kv: KV;
+      folders: Folders;
+      makeWorker: () => Worker;
+      now?: () => number;
+      pickOutput?: () => Promise<Dir>;
+      index?: Indexer;
+    },
+  ) {}
 
   private now(): number {
     return (this.o.now ?? (() => Date.now() / 1e3))();
@@ -133,10 +158,76 @@ export class JobManager {
     return j;
   }
 
+  /** The output-folder dialog: the injected one, else the system's where the browser has it. */
+  private outputDialog(): (() => Promise<Dir>) | null {
+    if (this.o.pickOutput) return this.o.pickOutput;
+    return support().fsAccess ? async () => new HandleDir(await pickDirectory("minime-out")) : null;
+  }
+
+  /** The folder that will hold the run folder `<name>` (spec section 3) and how to open it for
+   * writing: `<raw parent>/processed` when the raw folder has a parent. A raw folder picked on
+   * its own has none, and the run is never written inside it: it goes into the folder `picked` in
+   * the dialog, else (a browser without the dialog) into Browser storage, else 400. */
+  private async holder(
+    rawDir: string,
+    picked: Dir | null,
+    hasDialog: boolean,
+  ): Promise<{ vpath: string; open: () => Promise<Dir> }> {
+    const { folders } = this.o;
+    const parent = parentVpath(rawDir);
+    if (parent !== null)
+      return {
+        vpath: joinVpath(parent, "processed"),
+        open: async () => (await folders.resolve(parent, "readwrite")).dir("processed", { create: true }),
+      };
+    if (picked) {
+      const root = await folders.pick(picked);
+      return { vpath: root, open: () => folders.resolve(root, "readwrite") };
+    }
+    if (!hasDialog && (await folders.list()).some((r) => r.name === OPFS_NAME))
+      return { vpath: OPFS_NAME, open: () => folders.resolve(OPFS_NAME, "readwrite") };
+    throw new HttpError(
+      400,
+      `${rawDir} has no parent folder the app can write to: start the run again and, in the dialog, pick the folder the run should be written to (it goes into a new folder there; the raw folder is never written to)`,
+    );
+  }
+
+  /** A run into Browser storage has to fit in what the browser lets this site keep; the browser is
+   * also asked, once, not to clear that storage by itself. Nothing is checked where the browser
+   * cannot say how much room there is. */
+  private async checkStorage(v: RawVideo, keepStore: boolean): Promise<void> {
+    const storage = globalThis.navigator?.storage;
+    if (!storage) return;
+    const { quota, usage } = (await storage.estimate?.().catch(() => undefined)) ?? {};
+    if (quota !== undefined && usage !== undefined) {
+      const need = estimateRunBytes(
+        ASSUMED_UNITS,
+        v.frames,
+        v.height * v.width,
+        Math.ceil(v.frames / WINDOW_FRAMES),
+        keepStore,
+      );
+      if (need > quota - usage)
+        throw new HttpError(
+          400,
+          `this run needs about ${fmtBytes(need)} of browser storage, ${fmtBytes(Math.max(0, quota - usage))} are free; pick a folder on disk under Runs → Change folder`,
+        );
+    }
+    if (!this.persisted) {
+      this.persisted = true;
+      void storage.persist?.().catch(() => undefined);
+    }
+  }
+
   /** Start a run (main's `JobManager.submit` checks, in its order, then the browser's own). */
   async submit(b: JobBody): Promise<JobRecord> {
     if (b.tune) throw new HttpError(400, "auto-tune is not part of the browser app");
     const rawDir = b.raw_dir.split("/").filter(Boolean).join("/"); // "a/raw/" is the folder "a/raw"
+    // A raw folder picked on its own asks for the folder to write to. The dialog needs the user
+    // activation of the Start click, which lasts a few seconds and not past an await: it comes
+    // before the first one, and the folder is only remembered once the request is accepted.
+    const dialog = this.outputDialog();
+    const picked = dialog && parentVpath(rawDir) === null ? await dialog().catch(() => null) : null;
     const raw = await this.o.folders.resolve(rawDir);
     const { files } = await listSegments(raw);
     if (!files.length) throw new HttpError(400, `no videos in ${rawDir}: ${RawVideo.NAMING_RULE}`);
@@ -146,16 +237,13 @@ export class JobManager {
     if (bad.length) throw new HttpError(400, `${bad.join(", ")}: not used by the browser app`);
     if ([...this.jobs.values()].some((j) => !isFinal(j.status)))
       throw new HttpError(400, "a run is already going in this tab; wait for it or cancel it");
-    const parent = parentVpath(rawDir);
-    if (parent === null)
-      throw new HttpError(
-        400,
-        `${rawDir} has no parent folder the app can write to: under Runs → Change folder pick the folder that holds ${splitVpath(rawDir).root}, then choose the videos inside it`,
-      );
-    const outDir = joinVpath(parent, "processed", b.name);
+    const video = await RawVideo.open(raw, this.o.index);
+    checkFrameSize(video.height, video.width, b.params);
+    const holder = await this.holder(rawDir, picked, dialog !== null);
+    const outDir = joinVpath(holder.vpath, b.name);
     checkOutDir(rawDir, outDir);
-    const processed = await (await this.o.folders.resolve(parent, "readwrite")).dir("processed", { create: true });
-    const out = await resetOutDir(processed, b.name, outDir, b.overwrite);
+    if (splitVpath(outDir).root === OPFS_NAME) await this.checkStorage(video, b.keep_store);
+    const out = await resetOutDir(await holder.open(), b.name, outDir, b.overwrite);
     // first, as main's `_write_params` does: it marks the folder as a MiniMe run, so an interrupted
     // run (no `report.json` yet, so not listed) can be started again under its name
     await writeJSON(out, "params.json", { source: "browser", raw_dir: rawDir, fps: b.fps });
@@ -181,7 +269,7 @@ export class JobManager {
     };
     this.jobs.set(job.id, job);
     await this.o.kv.set(job.id, job);
-    await this.o.folders.touch(splitVpath(parent).root, rawDir);
+    await this.o.folders.touch(splitVpath(holder.vpath).root, rawDir);
     this.record(job.id, "status", { ...job });
     this.start(job, files, out, { ...b, raw_dir: rawDir });
     return job;
