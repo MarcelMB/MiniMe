@@ -2,14 +2,25 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { fileAt, readBytes, readJSON } from "./dir";
+import { type Dir, type Entry, fileAt, readBytes, readJSON } from "./dir";
 import { Folders } from "./folders";
 import { memoryKV } from "./kv";
 import { readNpy, writeNpy } from "./npy";
 import { readCsr } from "./npz";
 import { Registry } from "./runs";
 import { NodeDir } from "./testing/nodeDir";
-import { type RunParts, sessionInit, sessionSeeds, unitsCsv, type WindowParts, writeRun } from "./writer";
+import {
+  foldMaxProj,
+  keepForSession,
+  type RunParts,
+  sessionInit,
+  sessionSeeds,
+  unitsCsv,
+  type WindowParts,
+  windowDir,
+  writeRun,
+  writeWindow,
+} from "./writer";
 
 const win = (t0: number, files: Record<string, Uint8Array>): WindowParts => ({
   t0,
@@ -147,29 +158,32 @@ function csrFiles(prefix: string, data: number[], indices: number[], indptr: num
   ];
 }
 
-/** One window of a 4 x 4 frame, two tiles, two units (pixels 0-1 and 14-15). */
+/** What one window's stages give: a 4 x 4 frame, two tiles, two units (pixels 0-1 and 14-15). */
+function windowFiles(): Map<string, Uint8Array> {
+  return new Map<string, Uint8Array>([
+    ["max_proj.npy", f32([H, W], ...Array.from({ length: H * W }, (_, i) => i))],
+    ["block_max.npy", f32([1, H, W], ...new Array(H * W).fill(1))],
+    ["rank.npy", i64(3, 5)],
+    ["W.npy", f32([4], 1, 2, 3, 4)],
+    ["V.npy", f32([4], 1, 2, 3, 4)],
+    ["s.npy", f32([2], 1, 2)],
+    ["mean.npy", f32([2], 1, 2)],
+    ["k.npy", i64(1, 1)],
+    ["sigma.npy", f32([2], 1, 2)],
+    ["energy.npy", f32([2], 1, 2)],
+    ["seeds_init.npy", writeNpy([2, 3], BigInt64Array.from([0, 0, 0, 3, 3, 1].map(BigInt)))],
+    ["mask_pnr.npy", mask(1, 1)],
+    ["mask_gmm.npy", mask(1, 1)],
+    ["seeds_merged.npy", writeNpy([2, 2], BigInt64Array.from([0, 0, 3, 3].map(BigInt)))],
+    ...csrFiles("A_merge", [1, 1, 1, 1], [0, 1, 14, 15], [0, 2, 4]),
+  ]);
+}
+
+/** The run's parts as the worker hands them over: a window keeps only what the session-wide
+ * steps need and its factors have gone to `writeWindow` already. */
 function runParts(traces: Blob = new Blob([f32([2, T], ...Array.from({ length: 2 * T }, (_, i) => i))])): RunParts {
-  const unitA = csrFiles("A_merge", [1, 1, 1, 1], [0, 1, 14, 15], [0, 2, 4]);
-  const w: WindowParts = {
-    t0: 0,
-    t1: T,
-    files: new Map<string, Uint8Array>([
-      ["max_proj.npy", f32([H, W], ...Array.from({ length: H * W }, (_, i) => i))],
-      ["block_max.npy", f32([1, H, W], ...new Array(H * W).fill(1))],
-      ["rank.npy", i64(3, 5)],
-      ["W.npy", f32([4], 1, 2, 3, 4)],
-      ["V.npy", f32([4], 1, 2, 3, 4)],
-      ["s.npy", f32([2], 1, 2)],
-      ["mean.npy", f32([2], 1, 2)],
-      ["k.npy", i64(1, 1)],
-      ["sigma.npy", f32([2], 1, 2)],
-      ["seeds_init.npy", writeNpy([2, 3], BigInt64Array.from([0, 0, 0, 3, 3, 1].map(BigInt)))],
-      ["mask_pnr.npy", mask(1, 1)],
-      ["mask_gmm.npy", mask(1, 1)],
-      ["seeds_merged.npy", writeNpy([2, 2], BigInt64Array.from([0, 0, 3, 3].map(BigInt)))],
-      ...unitA,
-    ]),
-  };
+  const files = windowFiles();
+  const w: WindowParts = { t0: 0, t1: T, files: keepForSession(files) };
   return {
     session: { window_frames: 3000, stitch: { cos_thres: 0.7 } },
     params: { tile: 2, raw_dir: "picked/raw" },
@@ -179,6 +193,7 @@ function runParts(traces: Blob = new Blob([f32([2, T], ...Array.from({ length: 2
     T,
     tile: 2,
     windows: [w],
+    maxProj: foldMaxProj(null, files),
     motion: {
       shifts: writeNpy([T, 2], new Float64Array(2 * T)),
       template: f32([H, W], ...new Array(H * W).fill(0)),
@@ -219,6 +234,46 @@ async function listAll(d: NodeDir, prefix = ""): Promise<string[]> {
   return out.sort();
 }
 
+/** What the worker does: each window's factors as it finishes, then the session-level files. */
+async function writeAll(out: Dir, r: RunParts): Promise<void> {
+  await writeWindow(out, 0, windowFiles());
+  await writeRun(out, r);
+}
+
+/** A `Dir` that logs the path of every write and, with `failAt`, fails the write with that index. */
+class RecordingDir implements Dir {
+  readonly writable = true;
+  constructor(
+    private inner: Dir,
+    readonly log: string[] = [],
+    private failAt = -1,
+    private prefix = "",
+  ) {}
+  get name() {
+    return this.inner.name;
+  }
+  entries(): Promise<Entry[]> {
+    return this.inner.entries();
+  }
+  async dir(name: string, opts?: { create?: boolean }): Promise<Dir> {
+    return new RecordingDir(await this.inner.dir(name, opts), this.log, this.failAt, `${this.prefix}${name}/`);
+  }
+  file(name: string): Promise<File> {
+    return this.inner.file(name);
+  }
+  async write(name: string, data: Blob | Uint8Array | string): Promise<void> {
+    if (this.log.length === this.failAt) throw new Error("disk full");
+    this.log.push(`${this.prefix}${name}`);
+    await this.inner.write(name, data);
+  }
+  remove(name: string, opts?: { recursive?: boolean }): Promise<void> {
+    return this.inner.remove(name, opts);
+  }
+  permission(mode: "read" | "readwrite", ask: boolean): Promise<boolean> {
+    return this.inner.permission(mode, ask);
+  }
+}
+
 const SPEC_FILES = [
   "params.json",
   "report.json",
@@ -240,13 +295,51 @@ const SPEC_FILES = [
   "init/A.npz",
 ].sort();
 
+describe("window folders", () => {
+  it("names a window's folder with two digits or more, in one place", () => {
+    expect([0, 1, 9, 10, 99, 100, 575].map(windowDir)).toEqual(["w00", "w01", "w09", "w10", "w99", "w100", "w575"]);
+  });
+
+  it("keeps in memory only what the session-wide steps read", () => {
+    const kept = keepForSession(windowFiles());
+    expect([...kept.keys()].sort()).toEqual(
+      [
+        "A_merge_data.npy",
+        "A_merge_indices.npy",
+        "A_merge_indptr.npy",
+        "mask_pnr.npy",
+        "rank.npy",
+        "seeds_init.npy",
+        "seeds_merged.npy",
+      ].sort(),
+    );
+  });
+
+  it("folds each window's max projection into a running per-pixel maximum", () => {
+    const m = (...v: number[]) => new Map([["max_proj.npy", f32([2, 2], ...v)]]);
+    const a = foldMaxProj(null, m(1, 5, 3, 0));
+    expect(Array.from(foldMaxProj(a, m(2, 4, 3, 9)))).toEqual([2, 5, 3, 9]);
+    expect(() => foldMaxProj(a, new Map())).toThrow(/max_proj\.npy/);
+    expect(() => foldMaxProj(a, new Map([["max_proj.npy", f32([3], 1, 2, 3)]]))).toThrow(/3 values/);
+  });
+
+  it("writes a window's factors into factors/wNN as it finishes", async () => {
+    const out = await new NodeDir(mkdtempSync(join(tmpdir(), "writer-"))).dir("run", { create: true });
+    await writeWindow(out, 7, windowFiles());
+    expect(await listAll(out as NodeDir)).toEqual(
+      ["W", "V", "s", "mean", "k", "rank", "block_max", "max_proj"].map((k) => `factors/w07/${k}.npy`).sort(),
+    );
+    await expect(writeWindow(out, 8, new Map())).rejects.toThrow(/W\.npy/);
+  });
+});
+
 describe("writeRun", () => {
   const newDir = () => new NodeDir(mkdtempSync(join(tmpdir(), "writer-")));
 
   it("writes the run folder of spec section 3, and a Registry opens it", async () => {
     const top = newDir();
     const out = await top.dir("run", { create: true });
-    await writeRun(out, runParts());
+    await writeAll(out, runParts());
     expect(await listAll(out as NodeDir)).toEqual(SPEC_FILES);
 
     const meta = await readJSON<Record<string, unknown>>(out, "factors/meta.json");
@@ -293,13 +386,35 @@ describe("writeRun", () => {
         return Promise.reject(new Error("the OPFS file is gone"));
       }
     })(["x"]);
-    await expect(writeRun(out, runParts(failing))).rejects.toThrow(/gone/);
+    await expect(writeAll(out, runParts(failing))).rejects.toThrow(/gone/);
     const files = await listAll(out as NodeDir);
     expect(files).not.toContain("report.json");
     expect(files).toContain("params.json"); // the rest was written before the failure
     const folders = new Folders(memoryKV(), async () => null);
     const name = await folders.add(top, "picked");
     expect(await new Registry(folders, memoryKV()).find(name)).toEqual([]);
+  });
+
+  it("report.json is the final write of the whole run, and a failure at any earlier write leaves none", async () => {
+    const whole = await newDir().dir("run", { create: true });
+    const rec = new RecordingDir(whole);
+    await writeAll(rec, runParts());
+    expect(rec.log.at(-1)).toBe("report.json");
+    expect(rec.log.filter((p) => p === "report.json")).toHaveLength(1);
+    expect([...rec.log].sort()).toEqual(SPEC_FILES);
+
+    const n = rec.log.length;
+    for (let k = 0; k < n - 1; k++) {
+      const top = newDir();
+      const out = new RecordingDir(await top.dir("run", { create: true }), [], k);
+      await expect(writeAll(out, runParts()), `write ${k} (${rec.log[k]}) fails`).rejects.toThrow(/disk full/);
+      expect(await listAll((await top.dir("run")) as NodeDir), `after write ${k} (${rec.log[k]})`).not.toContain(
+        "report.json",
+      );
+      const folders = new Folders(memoryKV(), async () => null);
+      const name = await folders.add(top, "picked");
+      expect(await new Registry(folders, memoryKV()).find(name), `listed after write ${k}`).toEqual([]);
+    }
   });
 
   it("names the missing output of a stage that gave none", async () => {
