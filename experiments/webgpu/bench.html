@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>webgpu harness</title>
+<pre id="log"></pre>
+<script type="module">
+// runs a suite inside a dedicated Worker (the pipeline runs there) and relays its log lines
+const params = new URLSearchParams(location.search);
+const suite = params.get("suite") ?? "check";
+const w = new Worker(`suite.worker.js?suite=${suite}&${params}`, { type: "module" });
+w.onmessage = (e) => {
+  if (e.data.log !== undefined) { console.log(e.data.log); document.getElementById("log").textContent += `${e.data.log}\n`; }
+  if (e.data.done) { window.__done = e.data.done; }
+};
+w.onerror = (e) => { console.log(`WORKER ERROR ${e.message} ${e.filename}:${e.lineno}`); window.__done = { error: e.message }; };
+</script>
