@@ -269,6 +269,26 @@ describe("a unit without pixels", () => {
   });
 });
 
+describe("a units.csv written on Windows", () => {
+  it("reads the peaks of CRLF lines (pandas' to_csv there)", async () => {
+    const a = await csrNpz({
+      shape: [2, 64 * 64],
+      data: Float32Array.of(1, 1),
+      indices: Int32Array.of(65, 130),
+      indptr: Int32Array.of(0, 1, 2),
+    });
+    const bytes = new Uint8Array(await a.arrayBuffer());
+    const { rid } = await setupE2eRun(
+      variant((d) => {
+        writeFileSync(join(d, "cnmf/A.npz"), bytes);
+        writeFileSync(join(d, "cnmf/units.csv"), "unit_id,size_px,peak\r\n0,1,1.5\r\n1,1,2.5\r\n");
+      }),
+    );
+    const { units } = await getJSON<Units>(`/runs/${rid}/units`);
+    expect(units.map((u) => u.peak)).toEqual([1.5, 2.5]);
+  });
+});
+
 /** The e2e run as a browser run writes it: `factors/meta.json` with its windows and `factors/w00/`
  * (constant factors, W = 1, V[t] = t, mean = 10; the Python run's block maxima) and the Python
  * run's tile files moved to `tiles/w00/`. */
