@@ -1,3 +1,4 @@
+import "./e2e";
 import { browserFetch } from "./fetch";
 
 export type { EventHandlers } from "../transport";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pyFloat, pyRound, roundHalfEven } from "./num";
+import { pyFloat, pyRepr, pyRound, roundHalfEven } from "./num";
 
 // [x, digits, Python round(x, digits), numpy np.round(x, digits)], expected values from:
 //   python -c "import numpy as np; c=[(0.05,1),(0.15,1),(0.35,1),(0.45,1),(0.95,1),(2.675,2),(1.005,2),(0.5,0),(1.5,0),
@@ -42,5 +42,23 @@ describe("pyFloat", () => {
     expect(
       [-1, 0, -0, 2000, 2.5, 0.1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY].map(pyFloat),
     ).toEqual(["-1.0", "0.0", "-0.0", "2000.0", "2.5", "0.1", "nan", "inf", "-inf"]);
+  });
+});
+
+describe("pyRepr", () => {
+  it("writes strings as Python's repr() does", () => {
+    // [text, repr(text) in Python 3]
+    const cases: [string, string][] = [
+      ["../x", "'../x'"],
+      ["a\\b", "'a\\\\b'"],
+      ["it's", '"it\'s"'],
+      ['say "hi"', "'say \"hi\"'"],
+      ['it\'s "x"', "'it\\'s \"x\"'"],
+      ["a\nb", "'a\\nb'"],
+      ["", "''"],
+      ["ü", "'ü'"],
+      ["a\x01", "'a\\x01'"],
+    ];
+    for (const [s, py] of cases) expect(pyRepr(s), s).toBe(py);
   });
 });

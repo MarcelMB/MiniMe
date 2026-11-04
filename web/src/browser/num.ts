@@ -35,3 +35,21 @@ export function pyFloat(x: number): string {
   if (Object.is(x, -0)) return "-0.0";
   return Number.isInteger(x) && Math.abs(x) < 1e16 ? `${x}.0` : String(x);
 }
+
+/** Python's `repr(s)` for a string, as `{name!r}` writes it in main's messages: single quotes
+ * unless the text holds a single quote and no double quote, backslash and control characters
+ * escaped. */
+export function pyRepr(s: string): string {
+  const quote = s.includes("'") && !s.includes('"') ? '"' : "'";
+  let out = "";
+  for (const ch of s) {
+    const c = ch.codePointAt(0) as number;
+    if (ch === quote || ch === "\\") out += `\\${ch}`;
+    else if (ch === "\n") out += "\\n";
+    else if (ch === "\r") out += "\\r";
+    else if (ch === "\t") out += "\\t";
+    else if (c < 0x20 || c === 0x7f) out += `\\x${c.toString(16).padStart(2, "0")}`;
+    else out += ch;
+  }
+  return quote + out + quote;
+}

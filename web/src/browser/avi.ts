@@ -38,6 +38,30 @@ const defaultIndexer: Indexer = (files) => (typeof Worker === "undefined" ? whol
 const NAMING_RULE =
   "each video's file name must start with a number (0.avi, 1.avi, ... or 0_session.avi); the videos are read in the order of that number, so 2.avi comes before 10.avi, and .avi files whose name does not start with a number are ignored";
 
+/** `io.list_segments` and `io.skipped_videos`: the `.avi` files of `dir` whose name starts with a
+ * number, in the order of that number, and the other `.avi` names (hidden `.` files left out).
+ * Two files with the same number answer 400: their order would be a guess. */
+export async function listSegments(dir: Dir): Promise<{ files: File[]; skipped: string[] }> {
+  const avis: File[] = [];
+  for (const e of await dir.entries())
+    if (e.kind === "file" && e.name.toLowerCase().endsWith(".avi") && !e.name.startsWith("."))
+      avis.push(await dir.file(e.name));
+  const files = orderAvis(avis);
+  const skipped = avis
+    .filter((f) => !files.includes(f))
+    .map((f) => f.name)
+    .sort();
+  const num = (f: File) => Number(/^(\d+)/.exec(f.name)?.[1]);
+  files.forEach((f, i) => {
+    if (i > 0 && num(f) === num(files[i - 1]))
+      throw new HttpError(
+        400,
+        `${files[i - 1].name} and ${f.name} in ${dir.name} both start with ${num(f)}; rename one: ${NAMING_RULE}`,
+      );
+  });
+  return { files, skipped };
+}
+
 type Seg = { file: File; n: number; offsets: number[]; sizes: number[] };
 
 /** The raw videos of a folder: uncompressed 8-bit AVIs in name-number order (io.list_segments). */
@@ -58,24 +82,8 @@ export class RawVideo {
   }
 
   static async open(dir: Dir, index: Indexer = defaultIndexer): Promise<RawVideo> {
-    const avis: File[] = [];
-    for (const e of await dir.entries())
-      if (e.kind === "file" && e.name.toLowerCase().endsWith(".avi") && !e.name.startsWith("."))
-        avis.push(await dir.file(e.name));
-    const ordered = orderAvis(avis);
-    const skipped = avis
-      .filter((f) => !ordered.includes(f))
-      .map((f) => f.name)
-      .sort();
+    const { files: ordered, skipped } = await listSegments(dir);
     if (!ordered.length) throw new HttpError(404, `no videos in ${dir.name}: ${NAMING_RULE}`);
-    const num = (f: File) => Number(/^(\d+)/.exec(f.name)?.[1]);
-    ordered.forEach((f, i) => {
-      if (i > 0 && num(f) === num(ordered[i - 1]))
-        throw new HttpError(
-          400,
-          `${ordered[i - 1].name} and ${f.name} in ${dir.name} both start with ${num(f)}; rename one: ${NAMING_RULE}`,
-        );
-    });
     const idx = await index(ordered);
     const [H, W] = [idx[0].height, idx[0].width];
     idx.forEach((s, i) => {
