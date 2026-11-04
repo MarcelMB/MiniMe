@@ -18,7 +18,7 @@
 
 use crate::motion::{registration_image, Correlator, Motion, MotionParams};
 use crate::npy;
-use crate::stream::TraceModel;
+use crate::stream::{lane_ranges, FoldLane, LaneRange, Support, TraceModel};
 use crate::wasm::{map_bytes, unpad, Engine, MotionEngine, Pass1Engine, Pass2Engine};
 use crate::{compress::TileFactors, Inputs};
 use js_sys::Map;
@@ -285,5 +285,96 @@ impl TemplateWorker {
         Ok(self
             .corr
             .prep(&reg.shifted(self.p.h, self.p.w, dy as f32, dx as f32)))
+    }
+}
+
+/// One lane of the streaming pass's fold on a pool worker (`stream::FoldLane`): lane `lane` of
+/// `lanes`, built from the pass's inputs. `fold` the solved frames in frame order, then hand the
+/// sums to the pass (`Engine::put_lane`).
+#[wasm_bindgen]
+pub struct StreamLane {
+    lane: FoldLane,
+    all: Vec<LaneRange>,
+}
+
+#[wasm_bindgen]
+impl StreamLane {
+    #[wasm_bindgen(constructor)]
+    pub fn new(files: &Map, lane: usize, lanes: usize) -> Result<StreamLane, JsError> {
+        let inp = Inputs::load(&mut |name| map_bytes(files, name)).map_err(|e| JsError::new(&e))?;
+        let (h, w) = (inp.params.h, inp.params.w);
+        let sup = Support::build(&inp.a, h, w, inp.params.dl_wnd);
+        let all = lane_ranges(inp.a.nrows, h * w, &sup, lanes);
+        let r = *all.get(lane).ok_or_else(|| JsError::new("no such lane"))?;
+        Ok(StreamLane {
+            lane: FoldLane::new(&inp.params, &sup, inp.a.nrows, r),
+            all,
+        })
+    }
+    /// Every lane's first pixel, and the end (`lanes + 1` values): how to cut a frame for them.
+    pub fn pixel_bounds(&self) -> Vec<u32> {
+        let mut b: Vec<u32> = self.all.iter().map(|r| r.pix[0] as u32).collect();
+        b.push(self.all.last().map_or(0, |r| r.pix[1]) as u32);
+        b
+    }
+    /// Fold `n` frames: `y8` their pixels of this lane (`n * npix`), `cc` all their traces (`n * K`).
+    pub fn fold(&mut self, n: usize, y8: &[u8], cc: &[f64]) -> Result<(), JsError> {
+        let np = self.lane.range.pix[1] - self.lane.range.pix[0];
+        if n == 0 || y8.len() != n * np || cc.len() % n != 0 {
+            return Err(JsError::new("a fold chunk's pixels and traces do not match"));
+        }
+        let k = cc.len() / n;
+        let mut y = vec![0f32; np];
+        for f in 0..n {
+            for (d, &v) in y.iter_mut().zip(&y8[f * np..(f + 1) * np]) {
+                *d = f32::from(v);
+            }
+            self.lane.fold(&y, &cc[f * k..(f + 1) * k]);
+        }
+        Ok(())
+    }
+    /// `[rows, pix, pairs]` as six numbers.
+    pub fn range(&self) -> Vec<u32> {
+        let r = self.lane.range;
+        [r.rows, r.pix, r.pairs]
+            .iter()
+            .flatten()
+            .map(|&v| v as u32)
+            .collect()
+    }
+    pub fn done_flat(&self) -> Vec<f64> {
+        self.lane.done.to_flat()
+    }
+    pub fn seg_flat(&self) -> Vec<f64> {
+        self.lane.seg.to_flat()
+    }
+}
+
+#[wasm_bindgen]
+impl Engine {
+    /// Store solved frames' traces without folding them (the pool's lanes fold them): `cc`
+    /// `n * K` clipped traces, `f` the `n` background traces.
+    pub fn push_traces(&mut self, cc: &[f64], f: &[f32]) -> Result<(), JsError> {
+        let k = self.pass.model.k;
+        if cc.len() != f.len() * k || self.pass.t + f.len() > self.inp.params.t {
+            return Err(JsError::new("solved traces do not match the pass"));
+        }
+        for (i, &fi) in f.iter().enumerate() {
+            self.pass.push_traces(&cc[i * k..(i + 1) * k], fi);
+        }
+        Ok(())
+    }
+    /// Put a fold lane's sums in place (`StreamLane::range`, `done_flat`, `seg_flat`).
+    pub fn put_lane(&mut self, range: &[u32], done: &[f64], seg: &[f64]) -> Result<(), JsError> {
+        let v: Vec<usize> = range.iter().map(|&x| x as usize).collect();
+        if v.len() != 6 {
+            return Err(JsError::new("a lane range has six numbers"));
+        }
+        let r = LaneRange {
+            rows: [v[0], v[1]],
+            pix: [v[2], v[3]],
+            pairs: [v[4], v[5]],
+        };
+        self.pass.put_lane(r, done, seg).map_err(|e| JsError::new(&e))
     }
 }

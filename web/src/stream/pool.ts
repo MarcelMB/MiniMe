@@ -10,7 +10,7 @@
 import type { FromFrameWorker, ToFrameWorker } from "./poolProtocol";
 
 type Task = Extract<ToFrameWorker, { id: number }>;
-type TaskKind = "p1" | "s1" | "p2" | "t1" | "t2";
+type TaskKind = "p1" | "s1" | "p2" | "t1" | "t2" | "f0" | "f1" | "f2";
 type Done<K extends TaskKind> = Extract<FromFrameWorker, { type: "done"; kind: K }>;
 type Without<T, K extends string> = T extends unknown ? Omit<T, K> : never;
 
@@ -34,6 +34,12 @@ export type RunOptions<K extends TaskKind> = {
    * order) instead of handing one out whenever a worker is idle: the work then goes on while the
    * caller's thread is busy elsewhere and cannot hand anything out. */
   deal?: boolean;
+  /** Hand out no more tasks while this holds (results of other kinds, `onSide`, end the hold). */
+  hold?: () => boolean;
+  /** A result of another kind (a task posted with `post` while this run goes). */
+  onSide?: (r: Extract<FromFrameWorker, { type: "done" }>) => void;
+  /** Resolve only once this holds too (after the last result: the side tasks' end). */
+  until?: () => boolean;
 };
 
 /** Frame workers to use: `params.workers` when it is a whole number >= 1, else the machine's
@@ -46,7 +52,7 @@ export function workerCount(params: Record<string, unknown>): number {
 
 export class Pool {
   /** Milliseconds all tasks of each kind kept a worker busy, for the stage's utilisation. */
-  readonly busyMs: Record<TaskKind, number> = { p1: 0, s1: 0, p2: 0, t1: 0, t2: 0 };
+  readonly busyMs: Record<TaskKind, number> = { p1: 0, s1: 0, p2: 0, t1: 0, t2: 0, f0: 0, f1: 0, f2: 0 };
   private constructor(private readonly slots: Slot[]) {}
 
   /** `n` workers, each with the session's AVIs indexed; rejects (and stops them) when one fails to start in `timeoutMs`. */
@@ -127,7 +133,7 @@ export class Pool {
         reject(e);
       };
       const pump = () => {
-        if (opts.deal) return;
+        if (opts.deal || opts.hold?.()) return;
         for (const s of this.slots) {
           if (over || next >= count || (opts.ordered && next - given >= maxAhead)) return;
           if (s.busy) continue;
@@ -148,18 +154,23 @@ export class Pool {
             if (m.type === "error") return fail(new Error(m.message));
             if (m.type === "progress") return opts.onProgress?.(m.id, m.done);
             if (m.type !== "done") return;
-            if (m.kind !== kind) throw new Error(`a ${m.kind} result came back for a ${kind} task`);
-            s.busy = false;
             s.heapMb = m.heapMb;
-            const r = m as Done<K>;
-            if (opts.ordered) {
-              waiting.set(r.id, r);
-              for (let r2 = waiting.get(given); r2; r2 = waiting.get(given)) {
-                waiting.delete(given);
-                give(r2.id, r2);
-              }
-            } else give(r.id, r);
-            if (given === count && !over) {
+            if (m.kind !== kind) {
+              if (!opts.onSide) throw new Error(`a ${m.kind} result came back for a ${kind} task`);
+              this.busyMs[m.kind] += m.ms;
+              opts.onSide(m);
+            } else {
+              s.busy = false;
+              const r = m as Done<K>;
+              if (opts.ordered) {
+                waiting.set(r.id, r);
+                for (let r2 = waiting.get(given); r2; r2 = waiting.get(given)) {
+                  waiting.delete(given);
+                  give(r2.id, r2);
+                }
+              } else give(r.id, r);
+            }
+            if (given === count && (opts.until?.() ?? true) && !over) {
               over = true;
               for (const t of this.slots) t.handler = t.fail = null;
               resolve();
@@ -176,6 +187,11 @@ export class Pool {
       }
       pump();
     });
+  }
+
+  /** Post a message to worker `slot` (a side task of the run going, see `RunOptions.onSide`). */
+  post(slot: number, msg: ToFrameWorker, transfer: Transferable[] = []): void {
+    this.slots[slot].w.postMessage(msg, transfer);
   }
 
   /** Stop every worker (their OPFS handles go with them). */

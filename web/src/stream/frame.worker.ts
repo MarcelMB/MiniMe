@@ -3,7 +3,7 @@
 // a time from the run's worker. It never holds more than a chunk of frames or one tile.
 
 import { forFrames, indexSegments, type Segment } from "./frames";
-import init, { Pass1Engine, Pass2Engine, StreamSolver, TemplateWorker } from "./pkg/minime_core.js";
+import init, { Pass1Engine, Pass2Engine, StreamLane, StreamSolver, TemplateWorker } from "./pkg/minime_core.js";
 import type { FromFrameWorker, ToFrameWorker } from "./poolProtocol";
 import { FLUSH, readTile, slabName } from "./slabs";
 
@@ -13,6 +13,9 @@ let memory: WebAssembly.Memory | null = null;
 let segs: Segment[] = [];
 let scratch = "";
 let solver: StreamSolver | null = null;
+/** This worker's lane of the streaming pass's fold, and where every lane's pixels begin (and end). */
+let lane: StreamLane | null = null;
+let laneBounds: Uint32Array | null = null;
 let pass2: Pass2Engine | null = null;
 let template: TemplateWorker | null = null;
 /** Pass 2's tile store: the slab snapshots, frames per chunk and the tiles' sizes. */
@@ -57,11 +60,37 @@ async function handle(m: ToFrameWorker): Promise<void> {
       template.set_first(m.image);
       return post({ type: "ack", heapMb: heapMb() });
     }
+    case "f0": {
+      const began = performance.now();
+      solver?.free();
+      lane?.free();
+      solver = new StreamSolver(m.files);
+      lane = new StreamLane(m.files, m.lane, m.lanes);
+      laneBounds = lane.pixel_bounds();
+      return post({ type: "done", kind: "f0", id: m.id, ms: performance.now() - began, heapMb: heapMb() });
+    }
+    case "f1": {
+      const began = performance.now();
+      if (!lane) throw new Error("the fold lane is not built");
+      lane.fold(m.n, m.y8, m.cc);
+      return post({ type: "done", kind: "f1", id: m.id, ms: performance.now() - began, heapMb: heapMb() });
+    }
+    case "f2": {
+      if (!lane) throw new Error("the fold lane is not built");
+      const r = { range: lane.range(), done: lane.done_flat(), seg: lane.seg_flat() };
+      return post({ type: "done", kind: "f2", id: m.id, ms: 0, heapMb: heapMb(), ...r }, [
+        r.range.buffer,
+        r.done.buffer,
+        r.seg.buffer,
+      ]);
+    }
     case "free": {
       solver?.free();
       pass2?.free();
       template?.free();
-      solver = pass2 = template = null;
+      lane?.free();
+      solver = pass2 = template = lane = null;
+      laneBounds = null;
       store = null;
       return post({ type: "ack", heapMb: heapMb() });
     }
@@ -163,12 +192,27 @@ function streamChunk(m: Extract<ToFrameWorker, { type: "s1" }>): void {
       }
     },
   );
-  const r = { y8: s.take_y8(), cc: s.take_cc(), f: s.take_f() };
+  const y8 = s.take_y8();
+  const r = { parts: cutForLanes(y8, m.b - m.a), cc: s.take_cc(), f: s.take_f() };
   post({ type: "done", kind: "s1", id: m.id, ms: performance.now() - began, heapMb: heapMb(), ...r }, [
-    r.y8.buffer,
+    ...r.parts.map((p) => p.buffer),
     r.cc.buffer,
     r.f.buffer,
   ]);
+}
+
+/** `n` frames of pixels cut into the fold lanes' pixel ranges, each frame after frame (one part, the
+ * whole frames, before the lanes are built). */
+function cutForLanes(y8: Uint8Array, n: number): Uint8Array[] {
+  if (!laneBounds) return [y8];
+  const b = laneBounds;
+  const p = b[b.length - 1];
+  return Array.from({ length: b.length - 1 }, (_, j) => {
+    const np = b[j + 1] - b[j];
+    const part = new Uint8Array(n * np);
+    for (let f = 0; f < n; f++) part.set(y8.subarray(f * p + b[j], f * p + b[j + 1]), f * np);
+    return part;
+  });
 }
 
 /** Compress tile `k`: read its pieces of every slab in order, then `compress_at`. */

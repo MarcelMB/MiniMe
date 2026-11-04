@@ -140,6 +140,43 @@ pub fn sym_eig(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
     (evals, evecs)
 }
 
+/// How far below `COND_MAX` a bound must be for `NormalSolver::certified` to skip the eigensolve.
+pub const CERTIFY_MARGIN: f64 = 100.0;
+
+/// An upper bound on the 2-norm condition number of the symmetric positive definite `g` from its
+/// Cholesky factor `l`: for a symmetric matrix the 2-norm is at most the infinity norm, and
+/// `G^-1 = L^-T L^-1`, so `cond(G) <= |G|_inf |L^-1|_1 |L^-1|_inf` (rounding in `L^-1` is
+/// `cond * eps` relative, far inside the margin it is used with).
+pub fn cond_bound(g: &[f64], l: &[f64], n: usize) -> f64 {
+    let g_inf = (0..n)
+        .map(|i| g[i * n..(i + 1) * n].iter().map(|v| v.abs()).sum::<f64>())
+        .fold(0.0f64, f64::max);
+    // L^-1, lower triangular, column by column (forward substitution on e_j)
+    let mut inv = vec![0.0; n * n];
+    for j in 0..n {
+        inv[j * n + j] = 1.0 / l[j * n + j];
+        for i in j + 1..n {
+            let mut s = 0.0;
+            for k in j..i {
+                s += l[i * n + k] * inv[k * n + j];
+            }
+            inv[i * n + j] = -s / l[i * n + i];
+        }
+    }
+    let row_inf = (0..n)
+        .map(|i| inv[i * n..i * n + i + 1].iter().map(|v| v.abs()).sum::<f64>())
+        .fold(0.0f64, f64::max);
+    let col_1 = (0..n)
+        .map(|j| (j..n).map(|i| inv[i * n + j].abs()).sum::<f64>())
+        .fold(0.0f64, f64::max);
+    let b = g_inf * row_inf * col_1;
+    if b.is_finite() {
+        b
+    } else {
+        f64::INFINITY
+    }
+}
+
 /// `B -> G^-1 B` from one factorisation of the symmetric `G` (`init._solve_normal`).
 pub enum NormalSolver {
     Chol { l: Vec<f64>, n: usize, cond: f64 },
@@ -171,6 +208,22 @@ impl NormalSolver {
             }
         }
         Self::Pinv { gi, n, cond }
+    }
+
+    /// `new`'s solver without its eigensolve when that cannot change the outcome: if `G` has a
+    /// Cholesky factor `L` and the rigorous bound `cond_bound` on `cond(G)` is at most
+    /// `COND_MAX / CERTIFY_MARGIN`, `new` would also take Cholesky (its `cond` is `cond(G)` to
+    /// rounding) and returns the same `L`, so the solver is the same bit for bit; otherwise this
+    /// is `new`. The Jacobi eigensolve is O(n^3) per sweep (16 s at n = 827 natively); the bound is
+    /// one triangular inverse (n^3 / 6). The stored `cond` is then the bound, not `cond(G)`.
+    pub fn certified(g: &[f64], n: usize) -> Self {
+        if let Some(l) = cholesky(g, n) {
+            let bound = cond_bound(g, &l, n);
+            if bound <= COND_MAX / CERTIFY_MARGIN {
+                return Self::Chol { l, n, cond: bound };
+            }
+        }
+        Self::new(g, n)
     }
 
     /// `np.linalg.cond(G)`: largest over smallest absolute eigenvalue.
@@ -220,5 +273,54 @@ mod tests {
             let gx: f64 = (0..3).map(|c| g[a * 3 + c] * b[c]).sum();
             assert!((gx - [1.0, 2.0, 3.0][a]).abs() < 1e-12);
         }
+    }
+
+    /// A random SPD matrix `B B^T + d I` (an LCG).
+    fn spd(n: usize, d: f64, seed: u32) -> Vec<f64> {
+        let mut x = seed;
+        let b: Vec<f64> = (0..n * n)
+            .map(|_| {
+                x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                f64::from(x >> 8) / f64::from(1u32 << 24) - 0.5
+            })
+            .collect();
+        let mut g = vec![0.0; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                g[i * n + j] =
+                    (0..n).map(|k| b[i * n + k] * b[j * n + k]).sum::<f64>() + if i == j { d } else { 0.0 };
+            }
+        }
+        g
+    }
+
+    #[test]
+    fn the_certified_solver_is_the_jacobi_ruled_one_bit_for_bit_or_falls_back() {
+        for (n, d, seed) in [(5, 1.0, 1), (40, 0.5, 2), (120, 0.1, 3)] {
+            let g = spd(n, d, seed);
+            let (a, b) = (NormalSolver::new(&g, n), NormalSolver::certified(&g, n));
+            assert!(a.is_cholesky() && b.is_cholesky());
+            // the bound is above the 2-norm condition number
+            assert!(b.cond() >= a.cond() * (1.0 - 1e-9), "{} < {}", b.cond(), a.cond());
+            let rhs: Vec<f64> = (0..n).map(|i| (i as f64).sin()).collect();
+            let (mut x, mut y) = (rhs.clone(), rhs.clone());
+            a.solve(&mut x);
+            b.solve(&mut y);
+            assert_eq!(
+                x.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                y.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+            );
+        }
+        // a nearly singular matrix: no certificate, so `new`'s eigensolve decides (pinv here)
+        let mut g = spd(6, 0.0, 4);
+        let v: Vec<f64> = (0..6).map(|i| g[i * 6]).collect();
+        for i in 0..6 {
+            for j in 0..6 {
+                g[i * 6 + j] = v[i] * v[j] + if i == j { 1e-15 } else { 0.0 };
+            }
+        }
+        let (a, b) = (NormalSolver::new(&g, 6), NormalSolver::certified(&g, 6));
+        assert_eq!(a.is_cholesky(), b.is_cholesky());
+        assert_eq!(a.cond().to_bits(), b.cond().to_bits());
     }
 }

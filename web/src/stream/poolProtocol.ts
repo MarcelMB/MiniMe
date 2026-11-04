@@ -28,8 +28,14 @@ export type ToFrameWorker =
   /** Pass 1 on frames `[a, b)` of the window `files` describe (`params.json`, `template.npy`,
    * optionally `shifts.npy`), its tiles written to slab `chunk`. */
   | { type: "p1"; id: number; files: FileMap; a: number; b: number; chunk: number; tiles: string }
-  /** Preprocess and solve frames `[a, b)` of the session. */
+  /** Preprocess and solve frames `[a, b)` of the session (pixels cut for the fold lanes once `f0` ran). */
   | { type: "s1"; id: number; a: number; b: number }
+  /** The streaming pass on this worker: its solver and fold lane `lane` of `lanes` (`StreamLane`). */
+  | { type: "f0"; id: number; files: FileMap; lane: number; lanes: number }
+  /** Fold `n` solved frames (in frame order, chunk `id`): this lane's pixels of them and all their traces. */
+  | { type: "f1"; id: number; n: number; y8: Uint8Array; cc: Float64Array }
+  /** This lane's sums. */
+  | { type: "f2"; id: number }
   /** Compress tile `k` of the window's tile store. */
   | { type: "p2"; id: number; k: number };
 
@@ -44,7 +50,10 @@ export type P1Result = {
   /** Bytes written to the slab. */
   bytes: number;
 };
-export type S1Result = { y8: Uint8Array; cc: Float64Array; f: Float32Array };
+/** `parts[j]`: the frames' pixels of fold lane `j`, frame after frame. */
+export type S1Result = { parts: Uint8Array[]; cc: Float64Array; f: Float32Array };
+/** A fold lane's range (`StreamLane.range`) and sums (`done_flat`, `seg_flat`). */
+export type F2Result = { range: Uint32Array; done: Float64Array; seg: Float64Array };
 export type P2Result = { factors: Uint8Array; readMs: number };
 /** The prepared template frames `a..b`, one after the other. */
 export type TResult = { preps: Float32Array };
@@ -57,4 +66,6 @@ export type FromFrameWorker =
   | ({ type: "done"; kind: "p1" } & Meta & P1Result)
   | ({ type: "done"; kind: "s1" } & Meta & S1Result)
   | ({ type: "done"; kind: "p2" } & Meta & P2Result)
-  | ({ type: "done"; kind: "t1" | "t2" } & Meta & TResult);
+  | ({ type: "done"; kind: "t1" | "t2" } & Meta & TResult)
+  | ({ type: "done"; kind: "f0" | "f1" } & Meta)
+  | ({ type: "done"; kind: "f2" } & Meta & F2Result);
