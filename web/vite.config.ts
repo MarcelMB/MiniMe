@@ -1,9 +1,9 @@
-/// <reference types="vitest" />
 import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
-import { defineConfig, type Plugin } from "vite";
+import type { Plugin } from "vite";
+import { defineConfig } from "vitest/config";
 
-const src = resolve(__dirname, "src");
+const src = resolve(import.meta.dirname, "src");
 /** The browser build: these modules are replaced wherever they are imported. */
 const SWAP: Record<string, string> = {
   [resolve(src, "transport.ts")]: resolve(src, "browser/transport.ts"),
