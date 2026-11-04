@@ -49,6 +49,19 @@ function checkOutDir(raw: string, out: string): void {
     throw new HttpError(400, `output dir ${out} lies inside the raw dir ${raw}; choose another`);
 }
 
+/** `checkOutDir` for a folder picked in the dialog. It is a root of its own, so the vpaths say
+ * nothing about it being the raw folder or lying inside it; the handles do (`resolve` gives `[]`
+ * for the same folder, the names down to it for one inside, else null). Done before the folder is
+ * remembered as a root, so a refused one is not. */
+async function checkPickedOutsideRaw(raw: Dir, picked: Dir | null, rawDir: string, name: string): Promise<void> {
+  if (!(raw instanceof HandleDir && picked instanceof HandleDir)) return;
+  if ((await raw.handle.resolve(picked.handle).catch(() => null)) === null) return;
+  throw new HttpError(
+    400,
+    `output dir ${joinVpath(picked.name, name)} lies inside the raw dir ${rawDir}; choose another`,
+  );
+}
+
 /** The motion steps halve the frame (`motion_down` 2) and the band-pass registration image
  * (`motion_before_tophat`) needs an even size too; the preview refuses an odd one in the same
  * words (`preview.rs`), so New run says so before a run starts and fails at its first stage. */
@@ -239,6 +252,7 @@ export class JobManager {
       throw new HttpError(400, "a run is already going in this tab; wait for it or cancel it");
     const video = await RawVideo.open(raw, this.o.index);
     checkFrameSize(video.height, video.width, b.params);
+    await checkPickedOutsideRaw(raw, picked, rawDir, b.name);
     const holder = await this.holder(rawDir, picked, dialog !== null);
     const outDir = joinVpath(holder.vpath, b.name);
     checkOutDir(rawDir, outDir);
