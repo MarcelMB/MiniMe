@@ -322,6 +322,24 @@ impl TemplateBuilder {
                 self.corr.prep(&reg.shifted(h, w, dy as f32, dx as f32))
             }
         };
+        self.accumulate(&prep);
+    }
+
+    /// The first template's source image (round 1's mean): what `push` aligns round 2's frames to,
+    /// available once `n` frames are in. A pool worker rebuilds that alignment from it
+    /// (`Motion::from_image` on it) and prepares round 2's frames itself.
+    pub fn first_image(&self) -> Option<&[f32]> {
+        self.first.as_ref().map(Motion::source_image)
+    }
+
+    /// Add one prepared frame (`push` does this with what it prepares itself): round 1's
+    /// `corr.prep(reg)`, round 2's `corr.prep(reg.shifted(...))`, in frame order.
+    pub fn accumulate(&mut self, prep: &[f32]) {
+        assert!(
+            self.pushed < 2 * self.n,
+            "template already has 2 x {} frames",
+            self.n
+        );
         for (a, v) in self.acc.iter_mut().zip(prep) {
             *a += v;
         }
@@ -660,6 +678,54 @@ mod tests {
             motion_before_tophat: true,
             motion_bandpass: [1.0, 6.0],
         }
+    }
+
+    #[test]
+    fn a_template_from_frames_prepared_elsewhere_is_the_pushed_one_bit_for_bit() {
+        let p = params(7);
+        let (h, w, n) = (p.h, p.w, 6);
+        let mut seed = 99u32;
+        let raw: Vec<Vec<u8>> = (0..n)
+            .map(|t| {
+                let img = shift_f32(&blobs(h, w), h, w, (t % 3) as f32 - 1.0, 2.0 - t as f32);
+                img.iter()
+                    .map(|&v| {
+                        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                        (v + f32::from((seed >> 24) as u8 % 16)).min(255.0) as u8
+                    })
+                    .collect()
+            })
+            .collect();
+        let reg = |t: usize| registration_image(&raw[t], &p);
+        let mut one = TemplateBuilder::new(&p, n).unwrap();
+        for _round in 0..2 {
+            for t in 0..n {
+                one.push(&reg(t));
+            }
+        }
+        let one = one.finish().unwrap();
+
+        // the workers' share: prepare round 1, hand the first template over, prepare round 2
+        let corr = Correlator::new(h, w, p.motion_down).unwrap();
+        let mut two = TemplateBuilder::new(&p, n).unwrap();
+        assert!(two.first_image().is_none());
+        for t in 0..n {
+            two.accumulate(&corr.prep(&reg(t)));
+        }
+        let first = Motion::from_image(
+            Correlator::new(h, w, p.motion_down).unwrap(),
+            two.first_image().unwrap().to_vec(),
+            p.motion_max_shift,
+        );
+        for t in 0..n {
+            let r = reg(t);
+            let [dy, dx] = first.estimate(&r);
+            two.accumulate(&corr.prep(&r.shifted(h, w, dy as f32, dx as f32)));
+        }
+        let two = two.finish().unwrap();
+        let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(one.source_image()), bits(two.source_image()));
+        assert_eq!(bits(one.template_image()), bits(two.template_image()));
     }
 
     #[test]

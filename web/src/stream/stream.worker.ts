@@ -31,7 +31,15 @@ import init, {
   window_inputs,
 } from "./pkg/minime_core.js";
 import { Pool, workerCount } from "./pool";
-import { pass1Pooled, pass2Pooled, type Store, streamPooled, tileCrcs, tilesAsFiles } from "./poolStages";
+import {
+  pass1Pooled,
+  pass2Pooled,
+  type Store,
+  streamPooled,
+  templatePooled,
+  tileCrcs,
+  tilesAsFiles,
+} from "./poolStages";
 import type { FromWorker, Stage, ToWorker } from "./protocol";
 import { DEFAULTS, MOTION_PARAMS, sessionFor } from "./session";
 
@@ -288,14 +296,14 @@ function forFrames(
 
 /** Motion stage (`minime-core motion`, `ref_motion.py`'s inputs): session template, then
  * shift and quality of `[t0, t1)`. */
-function runMotion(
+async function runMotion(
   avis: File[],
   files: Map<string, Uint8Array>,
   log: (what: string) => void,
   memory: WebAssembly.Memory,
-): void {
+): Promise<void> {
   const segs = indexSegments(avis);
-  const { files: out, seconds } = motionStage(segs, files, log, memory);
+  const { files: out, seconds } = await motionStage(segs, files, log, memory);
   for (const s of segs) s.avi.free();
   post(
     { type: "done", files: out, seconds },
@@ -306,12 +314,12 @@ function runMotion(
 /** The template from the first `template_frames` frames of segment 0 (read twice), then the
  * shift and quality of every frame of `params.json`'s `[t0, t1)`. Returns the engine's
  * outputs (`template.npy`, `shifts.npy` ((n, 2) float64), `quality.npy`, `summary.json`). */
-function motionStage(
+async function motionStage(
   segs: Segment[],
   files: Map<string, Uint8Array>,
   log: (what: string) => void,
   memory: WebAssembly.Memory,
-): Out {
+): Promise<Out> {
   if (!segs.length) throw new Error("no AVIs");
   const engine = new MotionEngine(files, segs[0].avi.n_frames());
   const [H, W, t0, t1, n] = [engine.height(), engine.width(), engine.t0(), engine.t1(), engine.template_n()];
@@ -333,11 +341,15 @@ function motionStage(
     }
   };
   const setStride = (s: number) => engine.set_stride(s);
-  for (let round = 0; round < 2; round++)
-    forFrames(segs, 0, n, setStride, (c) => {
-      engine.push_template_raw(c);
-      tick();
-    });
+  // with a pool its workers prepare the template frames and the engine adds them in frame order
+  if (pool)
+    await templatePooled(pool, engine, files.get("params.json") as Uint8Array, n, total, began, { progress, log });
+  else
+    for (let round = 0; round < 2; round++)
+      forFrames(segs, 0, n, setStride, (c) => {
+        engine.push_template_raw(c);
+        tick();
+      });
   engine.build_template();
   const tTemplate = (performance.now() - began) / 1e3;
   log("template built");
@@ -472,7 +484,7 @@ async function runSession(
   if (ownMotion) {
     stageLabel = "motion";
     const mp = encode({ ...(sessionObj.pass1 as Record<string, unknown>), t0: 0, t1: 0 });
-    const m = motionStage(segs, new Map([["params.json", mp]]), log, memory);
+    const m = await motionStage(segs, new Map([["params.json", mp]]), log, memory);
     total += m.seconds;
     const template = m.files.get("template.npy");
     const source = m.files.get("template_src.npy");

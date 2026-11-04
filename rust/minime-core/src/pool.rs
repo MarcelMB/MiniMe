@@ -10,12 +10,16 @@
 //!   `prep().frame` and `TraceModel::solve` as `Engine::push_raw`); the accumulating engine folds
 //!   the solved frames in frame order (`Engine::push_solved`), so every sum, the low-pass state
 //!   and the traces are the one-worker pass's, bit for bit;
+//! - the motion template: workers prepare the template frames (`TemplateWorker`: median, band-pass,
+//!   and in round 2 the alignment to round 1's template), the motion engine adds the prepared
+//!   frames in frame order (`push_template_prepped`);
 //! - pass 2: a worker compresses any tile of the window's tile store (`compress_at`), the
 //!   window's engine takes the factors in tile order (`set_tile`).
 
+use crate::motion::{registration_image, Correlator, Motion, MotionParams};
 use crate::npy;
 use crate::stream::TraceModel;
-use crate::wasm::{map_bytes, unpad, Engine, Pass1Engine, Pass2Engine};
+use crate::wasm::{map_bytes, unpad, Engine, MotionEngine, Pass1Engine, Pass2Engine};
 use crate::{compress::TileFactors, Inputs};
 use js_sys::Map;
 use wasm_bindgen::prelude::*;
@@ -204,4 +208,82 @@ pub fn npy_shifts(shifts: &[f64]) -> Vec<u8> {
 #[wasm_bindgen]
 pub fn npy_f32(data: &[f32]) -> Vec<u8> {
     npy::write(&[data.len()], data)
+}
+
+#[wasm_bindgen]
+impl MotionEngine {
+    /// Add the next template frame prepared by a `TemplateWorker` (round 1 or 2, in the order
+    /// `push_template_raw` takes them).
+    pub fn push_template_prepped(&mut self, prep: &[f32]) -> Result<(), JsError> {
+        let b = self
+            .builder
+            .as_mut()
+            .ok_or(JsError::new("template already built"))?;
+        b.accumulate(prep);
+        Ok(())
+    }
+
+    /// Round 1's mean image once the first round is in (what round 2 aligns to), else empty.
+    pub fn first_image(&self) -> Vec<f32> {
+        self.builder
+            .as_ref()
+            .and_then(|b| b.first_image())
+            .map(<[f32]>::to_vec)
+            .unwrap_or_default()
+    }
+}
+
+/// A pool worker's share of the motion template: `round1` prepares a frame as the first round
+/// averages it, `round2` (after `set_first`) as the second does, aligned to the first template.
+#[wasm_bindgen]
+pub struct TemplateWorker {
+    p: MotionParams,
+    corr: Correlator,
+    first: Option<Motion>,
+    stride: usize,
+}
+
+#[wasm_bindgen]
+impl TemplateWorker {
+    /// `params_json`: the stage's `params.json` (the motion parameters; extra keys are ignored).
+    #[wasm_bindgen(constructor)]
+    pub fn new(params_json: &[u8]) -> Result<TemplateWorker, JsError> {
+        let p: MotionParams =
+            serde_json::from_slice(params_json).map_err(|e| JsError::new(&format!("params.json: {e}")))?;
+        crate::preprocess::check_median_ksize(p.median_ksize).map_err(|e| JsError::new(&e))?;
+        let corr = Correlator::new(p.h, p.w, p.motion_down).map_err(|e| JsError::new(&e))?;
+        Ok(TemplateWorker {
+            stride: p.w,
+            p,
+            corr,
+            first: None,
+        })
+    }
+    pub fn set_stride(&mut self, stride: usize) {
+        self.stride = stride;
+    }
+    /// The first template's source image (`MotionEngine::first_image`).
+    pub fn set_first(&mut self, image: &[f32]) -> Result<(), JsError> {
+        let corr = Correlator::new(self.p.h, self.p.w, self.p.motion_down).map_err(|e| JsError::new(&e))?;
+        if image.len() != corr.prep_shape().0 * corr.prep_shape().1 {
+            return Err(JsError::new("the first template has the wrong size"));
+        }
+        self.first = Some(Motion::from_image(corr, image.to_vec(), self.p.motion_max_shift));
+        Ok(())
+    }
+    /// Round 1: the frame's registration image, prepared.
+    pub fn round1(&self, chunk: &[u8]) -> Vec<f32> {
+        let raw = unpad(chunk, self.p.h, self.p.w, self.stride);
+        self.corr.prep(&registration_image(&raw, &self.p))
+    }
+    /// Round 2: the frame's registration image aligned to the first template, prepared.
+    pub fn round2(&self, chunk: &[u8]) -> Result<Vec<f32>, JsError> {
+        let first = self.first.as_ref().ok_or(JsError::new("set_first first"))?;
+        let raw = unpad(chunk, self.p.h, self.p.w, self.stride);
+        let reg = registration_image(&raw, &self.p);
+        let [dy, dx] = first.estimate(&reg);
+        Ok(self
+            .corr
+            .prep(&reg.shifted(self.p.h, self.p.w, dy as f32, dx as f32)))
+    }
 }

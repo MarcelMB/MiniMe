@@ -10,7 +10,7 @@
 import type { FromFrameWorker, ToFrameWorker } from "./poolProtocol";
 
 type Task = Extract<ToFrameWorker, { id: number }>;
-type TaskKind = "p1" | "s1" | "p2";
+type TaskKind = "p1" | "s1" | "p2" | "t1" | "t2";
 type Done<K extends TaskKind> = Extract<FromFrameWorker, { type: "done"; kind: K }>;
 type Without<T, K extends string> = T extends unknown ? Omit<T, K> : never;
 
@@ -42,7 +42,7 @@ export function workerCount(params: Record<string, unknown>): number {
 
 export class Pool {
   /** Milliseconds all tasks of each kind kept a worker busy, for the stage's utilisation. */
-  readonly busyMs = { p1: 0, s1: 0, p2: 0 };
+  readonly busyMs: Record<TaskKind, number> = { p1: 0, s1: 0, p2: 0, t1: 0, t2: 0 };
   private constructor(private readonly slots: Slot[]) {}
 
   /** `n` workers, each with the session's AVIs indexed; rejects (and stops them) when one fails to start in `timeoutMs`. */
