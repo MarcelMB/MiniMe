@@ -2,6 +2,8 @@
 //! browser (wasm) build. Python (`src/minime`, `experiments/streaming/`) is the reference.
 
 pub mod avi;
+#[cfg(all(target_arch = "wasm32", feature = "bench"))]
+pub mod bench_wasm;
 pub mod butter;
 pub mod cnmf;
 pub mod compress;
@@ -11,6 +13,9 @@ pub mod filters;
 pub mod gmm;
 pub mod init;
 pub mod linalg;
+pub mod median;
+pub mod median_net;
+pub mod morph;
 pub mod motion;
 pub mod nnqp;
 pub mod npy;
@@ -18,6 +23,7 @@ pub mod pass1;
 pub mod preprocess;
 pub mod preview;
 pub mod seeds;
+pub mod simd;
 pub mod stitch;
 pub mod stream;
 #[cfg(target_arch = "wasm32")]
