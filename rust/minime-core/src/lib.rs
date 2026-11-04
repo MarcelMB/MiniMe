@@ -15,6 +15,9 @@ pub mod motion;
 pub mod nnqp;
 pub mod npy;
 pub mod pass1;
+#[cfg(target_arch = "wasm32")]
+pub mod pool;
+pub mod poolio;
 pub mod preprocess;
 pub mod preview;
 pub mod seeds;
