@@ -128,6 +128,9 @@ test("New run → job page → Open run → every page", async ({ page }) => {
     window.location.hash = `#/job/${id}`;
   }, job.id);
   await expect(page.getByText("Run · done")).toBeVisible();
+  // its stage rows come back from the run folder's progress.jsonl, as main replays them
+  await expect(page.getByRole("region", { name: "Stages" })).toContainText("Streaming pass");
+  await expect(page.getByText("Starting…")).toHaveCount(0);
   await page.getByRole("button", { name: "Open run" }).click();
   await expect(page.getByRole("heading", { name: "e2e", exact: true })).toBeVisible();
   expect(errors).toEqual([]);
@@ -321,11 +324,24 @@ test("a run in Browser storage downloads as a zip that minime score reads and th
   await openRun.click();
   await expect(page.getByRole("heading", { name: "dl", exact: true })).toBeVisible();
 
+  // the zip is put together before the download starts: the button says so and takes no second click
+  await page.evaluate(() => {
+    const seen: string[] = [];
+    // biome-ignore lint/suspicious/noExplicitAny: test hook
+    (window as any).__downloadButton = seen;
+    new MutationObserver(() => {
+      for (const b of document.querySelectorAll("button"))
+        if (b.textContent === "Preparing…") seen.push(`${b.textContent}${b.disabled ? " disabled" : ""}`);
+    }).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
+  });
   const [download] = await Promise.all([
     page.waitForEvent("download"),
     page.getByRole("button", { name: "Download run (.zip)" }).click(),
   ]);
   expect(download.suggestedFilename()).toBe("dl.zip");
+  await expect(page.getByRole("button", { name: "Download run (.zip)" })).toBeEnabled();
+  // biome-ignore lint/suspicious/noExplicitAny: test hook
+  expect(await page.evaluate(() => (window as any).__downloadButton)).toContain("Preparing… disabled");
   const unzipped = "e2e/.data/download";
   rmSync(unzipped, { recursive: true, force: true });
   mkdirSync(unzipped, { recursive: true });
