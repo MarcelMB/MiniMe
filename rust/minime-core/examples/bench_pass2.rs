@@ -118,8 +118,15 @@ fn main() {
                     worst.3 += 1;
                     eprintln!("tile {k}: mean/energy differ");
                 }
-                for (x, y) in a.sigma.iter().zip(&b.sigma) {
-                    sigma_rel = sigma_rel.max(f64::from((x - y).abs() / x.abs()));
+                for (i, (x, y)) in a.sigma.iter().zip(&b.sigma).enumerate() {
+                    let d = f64::from((x - y).abs() / x.abs());
+                    if d > 2e-5 {
+                        eprintln!(
+                            "tile {k} px {i}: sigma {x} vs {y} (rel {d:.2e}), energy {}",
+                            a.energy[i]
+                        );
+                    }
+                    sigma_rel = sigma_rel.max(d);
                 }
                 if a.rank == b.rank {
                     let ra = recon(a, px, p.t);

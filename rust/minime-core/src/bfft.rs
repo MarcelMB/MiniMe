@@ -234,9 +234,6 @@ pub struct NoisePlan {
     post: Vec<(f32, f32)>, // exp(-2 pi i k / t) for k in lo..hi
 }
 
-/// Bins whose mantissas are multiplied before one logarithm is taken.
-const MANT_BINS: usize = 64;
-
 /// Working memory of `NoisePlan::sums`.
 pub struct Work {
     a: Vec<C>,
@@ -317,8 +314,8 @@ impl NoisePlan {
     }
 
     /// For the four pixels whose frames are `frames` (`(t, 4)` row-major float32, one lane
-    /// per pixel): per pixel the sum of `ln(|X_k|^2 / t + eps)` over `lo..hi`.
-    pub fn sums(&self, frames: &[f32], w: &mut Work) -> [f64; 4] {
+    /// per pixel): per pixel the in-order float32 sum of `ln(|X_k|^2 / t + eps)` over `lo..hi`.
+    pub fn sums(&self, frames: &[f32], w: &mut Work) -> [f32; 4] {
         debug_assert_eq!(frames.len(), self.t * 4);
         for (z, pair) in w.a.iter_mut().zip(frames.chunks_exact(8)) {
             z.re = V([pair[0], pair[1], pair[2], pair[3]]);
@@ -329,7 +326,7 @@ impl NoisePlan {
 
     /// `sums` for four pixels stored as bytes: lane `l` of frame `i` is `rows[i * stride + off + l]`
     /// (`rows` holds `t` rows), converted to float32 on the way in.
-    pub fn sums_u8(&self, rows: &[u8], stride: usize, off: usize, w: &mut Work) -> [f64; 4] {
+    pub fn sums_u8(&self, rows: &[u8], stride: usize, off: usize, w: &mut Work) -> [f32; 4] {
         let row = |i: usize| {
             let r = &rows[i * stride + off..i * stride + off + 4];
             V([f32::from(r[0]), f32::from(r[1]), f32::from(r[2]), f32::from(r[3])])
@@ -342,7 +339,7 @@ impl NoisePlan {
     }
 
     /// The transform of the first `t / 2` points of `w.a` and the noise sums over its bins.
-    fn finish(&self, w: &mut Work) -> [f64; 4] {
+    fn finish(&self, w: &mut Work) -> [f32; 4] {
         let Work { a, b, terms } = w;
         let m = self.m;
         let zs = {
@@ -367,25 +364,14 @@ impl NoisePlan {
             let xi = ei + (wr * oi + wi * or);
             out.copy_from_slice(&((xr * xr + xi * xi) * inv_t + eps).0);
         }
-        // sum of ln v = ln 2 sum e + ln prod m per lane, v = m 2^e with m in [1, 2): the
-        // mantissas of up to MANT_BINS bins are multiplied (below 2^MANT_BINS, in range) and
-        // one logarithm is taken of the product, instead of one per bin
-        let mut acc = [0f64; 4];
-        for chunk in terms.chunks(MANT_BINS * 4) {
-            let mut prod = V::splat(1.0);
-            let mut exp = [0i32; 4];
-            for t in chunk.chunks_exact(4) {
-                for l in 0..4 {
-                    let bits = t[l].to_bits();
-                    exp[l] += (bits >> 23) as i32 - 127;
-                    prod.0[l] *= f32::from_bits((bits & 0x007f_ffff) | 0x3f80_0000);
-                }
-            }
-            for l in 0..4 {
-                acc[l] += f64::from(ln_f32(prod.0[l])) + f64::from(exp[l]) * std::f64::consts::LN_2;
-            }
+        for x in terms.iter_mut() {
+            *x = ln_f32(*x);
         }
-        acc
+        let mut acc = V::ZERO;
+        for t in terms.chunks_exact(4) {
+            acc = acc + V([t[0], t[1], t[2], t[3]]);
+        }
+        acc.0
     }
 }
 
@@ -431,7 +417,7 @@ mod tests {
                     .iter()
                     .map(|c| f64::from(((c.re * c.re + c.im * c.im) / t as f32 + f32::EPSILON).ln()))
                     .sum();
-                let rel = (got[l] - want).abs() / want.abs().max(1.0);
+                let rel = (f64::from(got[l]) - want).abs() / want.abs().max(1.0);
                 assert!(rel < 2e-5, "t {t} lane {l}: {} vs {want} ({rel})", got[l]);
             }
         }
