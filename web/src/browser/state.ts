@@ -23,7 +23,7 @@ const lazy = <T>(make: () => T) => {
   return () => (v ??= make());
 };
 const folders = lazy(() => new Folders(idbKV("folders"), () => opfsDir("runs")));
-const registry = lazy(() => new Registry(state.folders, idbKV("runs")));
+const registry = lazy(() => new Registry(state.folders, idbKV("runs"), () => cacheRoot()));
 
 /** The back end's singletons; tests replace them with `configure`. */
 export const state = {

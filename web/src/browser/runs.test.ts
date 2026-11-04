@@ -1,8 +1,10 @@
-import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { getJSON, postJSON } from "../api";
+import { RunCache } from "./cache";
+import type { Dir } from "./dir";
 import { Folders } from "./folders";
 import { memoryKV } from "./kv";
 import { Registry } from "./runs";
@@ -38,6 +40,63 @@ describe("Registry", () => {
     expect(b.id).toBe(a.id);
     expect((await reg.get(a.id)).vpath).toBe(`${name}/s1/processed/t`);
     await expect(reg.get("000000000000")).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+/** Records what is removed from it, to count the drops of a run's cache. */
+class CountingDir extends NodeDir {
+  removed: string[] = [];
+  async remove(name: string, opts?: { recursive?: boolean }): Promise<void> {
+    this.removed.push(name);
+    return super.remove(name, opts);
+  }
+}
+
+describe("stale run cache", () => {
+  const cached = async (cache: Dir, id: string) => (await cache.entries()).some((e) => e.name === id);
+
+  it("drops a run's cache when report.json is rewritten, and only then", async () => {
+    const { name, top, folders } = await setup();
+    const cache = new CountingDir(mkdtempSync(join(tmpdir(), "cache-")));
+    const reg = new Registry(folders, memoryKV(), async () => cache);
+    const vpath = `${name}/s1/processed/t`;
+    const report = join(top, "s1/processed/t/report.json");
+
+    const first = await reg.open(vpath);
+    expect(first.stamp).toMatch(/^[\d.]+-\d+$/);
+    const views = new RunCache(await cache.dir(first.id, { create: true }));
+    await views.saveJSON("units.json", { units: 15 });
+    await reg.setFps(first, 25);
+    expect(cache.removed).toEqual([]); // first sight only stores the stamp
+
+    // nothing changed: the same stamp, the cache stays
+    expect((await reg.open(vpath)).stamp).toBe(first.stamp);
+    expect((await reg.get(first.id)).stamp).toBe(first.stamp);
+    expect(await views.has("units.json")).toBe(true);
+
+    // a rewrite that changes the size: the cache goes (three requests at once drop it once), the id and
+    // the frame rate set in the viewer stay
+    writeFileSync(report, `${readFileSync(report, "utf8")} `);
+    const [again] = await Promise.all([reg.open(vpath), reg.get(first.id), reg.open(vpath)]);
+    expect(again.stamp).not.toBe(first.stamp);
+    expect(again.id).toBe(first.id);
+    expect(await cached(cache, first.id)).toBe(false);
+    expect(cache.removed).toEqual([first.id]);
+    expect(await reg.fps(again)).toBe(25);
+
+    // new views are kept again until the next rewrite
+    const fresh = new RunCache(await cache.dir(first.id, { create: true }));
+    await fresh.saveJSON("units.json", { units: 15 });
+    expect((await reg.open(vpath)).stamp).toBe(again.stamp);
+    expect(await fresh.has("units.json")).toBe(true);
+
+    // same size, newer modification time: also a rewrite
+    const t = new Date(Date.now() + 60_000);
+    utimesSync(report, t, t);
+    const touched = await reg.open(vpath);
+    expect(touched.stamp).not.toBe(again.stamp);
+    expect(await cached(cache, first.id)).toBe(false);
+    expect(cache.removed).toEqual([first.id, first.id]);
   });
 });
 

@@ -21,7 +21,8 @@ export async function setupE2eRun(
   const name = await folders.add(new NodeDir(top), "picked");
   const pj = join(top, "processed/t/params.json");
   writeFileSync(pj, JSON.stringify({ ...JSON.parse(readFileSync(pj, "utf8")), raw_dir: `${name}/raw` }));
-  const registry = new Registry(folders, memoryKV());
-  configure({ folders, registry, cacheRoot: new NodeDir(mkdtempSync(join(tmpdir(), "cache-"))) });
+  const cacheRoot = new NodeDir(mkdtempSync(join(tmpdir(), "cache-")));
+  const registry = new Registry(folders, memoryKV(), async () => cacheRoot);
+  configure({ folders, registry, cacheRoot });
   return { rid: (await registry.open(`${name}/processed/t`)).id, name, raw: `${name}/raw` };
 }

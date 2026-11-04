@@ -19,6 +19,9 @@ export type RunInfo = {
   report: Record<string, any>;
   meta: { H: number; W: number; T: number; tile: number; ranks: number[]; windows?: { t0: number; t1: number }[] };
   mtime: number;
+  /** Version of the run folder (`report.json` lastModified and size, like main's `RunView.stamp`),
+   * for computing keys: `${id}:${stamp}:<what>`. */
+  stamp: string;
 };
 
 const isRun = async (d: Dir) => (await Promise.all(MARKERS.map((m) => exists(d, m)))).every(Boolean);
@@ -26,11 +29,16 @@ const norm = (v: unknown) => JSON.stringify(v);
 /** A raw folder written by a browser run is a vpath; a Python run stores a disk path. */
 const isDiskPath = (p: string) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
 
-/** Runs by vpath and id; ids are random and kept in `ids` (vpath → id). */
+/** Runs by vpath and id; ids are random and kept in `ids` (vpath → id), with the run's stamp
+ * (`stamp:<id>`) and frame rate (`fps:<id>`). `cacheRoot` holds the runs' derived views, one
+ * folder per id; without it there is nothing to drop when a run is rewritten. */
 export class Registry {
+  private stamping = new Map<string, Promise<void>>();
+
   constructor(
     private folders: Folders,
     private ids: KV,
+    private cacheRoot?: () => Promise<Dir>,
   ) {}
 
   /** Run folders at or below `root` (never inside a run), newest report first. */
@@ -59,16 +67,38 @@ export class Registry {
       await this.ids.set(vpath, id);
       await this.ids.set(`id:${id}`, vpath);
     }
+    const rf = await fileAt(dir, "report.json");
+    const stamp = `${rf.lastModified}-${rf.size}`;
+    await this.invalidateStale(id, stamp);
     const meta = await readJSON<RunInfo["meta"]>(dir, "factors/meta.json");
     return {
       id,
       vpath,
       dir,
       params: await readJSON(dir, "params.json"),
-      report: await readJSON(dir, "report.json"),
+      report: JSON.parse(await rf.text()),
       meta: { ...meta, H: +meta.H, W: +meta.W, T: +meta.T, tile: +meta.tile, ranks: meta.ranks.map(Number) },
-      mtime: (await fileAt(dir, "report.json")).lastModified / 1e3,
+      mtime: rf.lastModified / 1e3,
+      stamp,
     };
+  }
+
+  /** `RunView._invalidate_stale_cache`: a run folder that was rewritten loses its derived views
+   * (the frame rate set in the viewer lives in `ids`, so it stays). The first sight of a run only
+   * stores the stamp. One check per run at a time: requests open the run together, and a second
+   * one must not delete what the first has begun to compute. */
+  private invalidateStale(id: string, stamp: string): Promise<void> {
+    const check = (this.stamping.get(id) ?? Promise.resolve()).then(async () => {
+      const old = await this.ids.get<string>(`stamp:${id}`);
+      if (old === stamp) return;
+      if (old !== undefined && this.cacheRoot) await (await this.cacheRoot()).remove(id, { recursive: true });
+      await this.ids.set(`stamp:${id}`, stamp);
+    });
+    this.stamping.set(
+      id,
+      check.catch(() => undefined),
+    );
+    return check;
   }
 
   async get(id: string): Promise<RunInfo> {
