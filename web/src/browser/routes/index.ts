@@ -5,3 +5,4 @@ import "./traces";
 import "./view";
 import "./jobs";
 import "./raw";
+import "./preview";

@@ -13,6 +13,7 @@ use crate::init::{self, InitParams, InitResult};
 use crate::motion::{self, Motion, MotionParams, Reg, TemplateBuilder};
 use crate::npy;
 use crate::pass1::{self, Pass1, Pass1Params};
+use crate::preview;
 use crate::seeds::{self, SeedParams, SeedsResult};
 use crate::stitch::{self, StitchParams, Window};
 use crate::stream::StreamPass;
@@ -738,6 +739,32 @@ impl CnmfEngine {
             .collect();
         Ok(npy_map(files))
     }
+}
+
+/// The launcher's frame preview (`preview.frame_panels`): one raw frame (`h * w` uint8) as
+/// `(4, h, w)` uint8, raw, denoised, registration image and tophat, with the motion parameters
+/// of `params_json` (a `session.json` `pass1` object).
+#[wasm_bindgen]
+pub fn preview_panels(frame: &[u8], h: usize, w: usize, params_json: &str) -> Result<Vec<u8>, JsError> {
+    let p = preview::motion_params(params_json, h, w).map_err(|e| JsError::new(&e))?;
+    preview::frame_panels(frame, &p).map_err(|e| JsError::new(&e))
+}
+
+/// The launcher's motion check (`preview.motion_check`) of `n` consecutive raw frames from frame
+/// `t0` (`clip`, `n * h * w` uint8), as the JSON of Python's answer.
+#[wasm_bindgen]
+pub fn motion_check(
+    clip: &[u8],
+    n: usize,
+    h: usize,
+    w: usize,
+    t0: usize,
+    params_json: &str,
+) -> Result<String, JsError> {
+    let err = |e: String| JsError::new(&e);
+    let p = preview::motion_params(params_json, h, w).map_err(err)?;
+    let r = preview::motion_check(clip, n, t0, &p).map_err(err)?;
+    serde_json::to_string(&r).map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// `stream.time_windows` on the segment starts `edges` (with the end `t`): `[t0, t1)` pairs,
