@@ -198,4 +198,25 @@ describe("LocalSearch", () => {
     expect(two.trials.length).toBeLessThanOrEqual(two.nTrials());
     expect(two.final?.score?.score).toBeGreaterThanOrEqual(one.final?.score?.score ?? 0);
   });
+
+  it("lets a crash propagate instead of recording it as a search error", async () => {
+    const { r } = runner();
+    let n = 0;
+    const crashing: TrialRunner = {
+      ...r,
+      async trial(params, reference) {
+        if (++n === 3) throw new Error("worker crashed");
+        return r.trial(params, reference);
+      },
+    };
+    const s = new LocalSearch(crashing, {
+      base,
+      runParams: DEFAULTS,
+      runValues: pick(DEFAULTS),
+      integerDiff: true,
+      segment: false,
+    });
+    await expect(s.run()).rejects.toThrow("worker crashed");
+    expect(s.searchError).toBeNull();
+  });
 });
