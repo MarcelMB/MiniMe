@@ -80,6 +80,9 @@ pub struct StreamSolver {
     sol: Vec<f64>,
     y8: Vec<u8>,
     cc: Vec<f64>,
+    rhs: Vec<f64>,
+    yr: Vec<f64>,
+    yra: Vec<f64>,
     f: Vec<f32>,
 }
 
@@ -98,6 +101,9 @@ impl StreamSolver {
             sol: Vec::new(),
             y8: Vec::new(),
             cc: Vec::new(),
+            rhs: Vec::new(),
+            yr: Vec::new(),
+            yra: Vec::new(),
             f: Vec::new(),
         })
     }
@@ -148,9 +154,14 @@ impl StreamSolver {
     /// Least squares of one preprocessed frame, its traces and pixels kept for `take_*`.
     fn solve_y8(&mut self, y8: &[u8]) {
         let y: Vec<f32> = y8.iter().map(|&v| f32::from(v)).collect();
-        self.model.solve(&y, &mut self.sol);
+        self.model.solve_rhs(&y, &mut self.sol, &mut self.rhs);
         let k = self.model.k;
+        let from = self.cc.len();
         self.cc.extend(self.sol[..k].iter().map(|v| v.max(0.0)));
+        self.yr.resize(k, 0.0);
+        self.model
+            .yra(&self.rhs, &self.cc[from..], self.sol[k], &mut self.yr);
+        self.yra.extend_from_slice(&self.yr);
         self.f.push(self.sol[k] as f32);
         self.y8.extend_from_slice(y8);
     }
@@ -166,6 +177,10 @@ impl StreamSolver {
     pub fn take_cc(&mut self) -> Vec<f64> {
         std::mem::take(&mut self.cc)
     }
+    /// Their YrA, `(n, K)` float64 frame-major, next to `take_cc`.
+    pub fn take_yra(&mut self) -> Vec<f64> {
+        std::mem::take(&mut self.yra)
+    }
     /// Their background traces (float32).
     pub fn take_f(&mut self) -> Vec<f32> {
         std::mem::take(&mut self.f)
@@ -175,16 +190,18 @@ impl StreamSolver {
 #[wasm_bindgen]
 impl Engine {
     /// Fold in frames a `StreamSolver` solved, in frame order: their preprocessed pixels `y8`
-    /// (`n * H * W`), clipped traces `cc` (`n * K` float64) and background traces `f`.
-    pub fn push_solved(&mut self, y8: &[u8], cc: &[f64], f: &[f32]) -> Result<(), JsError> {
+    /// (`n * H * W`), clipped traces `cc` and their YrA `yra` (`n * K` float64 each) and
+    /// background traces `f`.
+    pub fn push_solved(&mut self, y8: &[u8], cc: &[f64], yra: &[f64], f: &[f32]) -> Result<(), JsError> {
         let p = self.inp.params.h * self.inp.params.w;
         let k = self.pass.model.k;
         let n = f.len();
-        if y8.len() != n * p || cc.len() != n * k {
+        if y8.len() != n * p || cc.len() != n * k || yra.len() != n * k {
             return Err(JsError::new(&format!(
-                "{n} solved frames come with {} pixels and {} traces, expected {} and {}",
+                "{n} solved frames come with {} pixels and {} traces ({} YrA), expected {} and {}",
                 y8.len(),
                 cc.len(),
+                yra.len(),
                 n * p,
                 n * k
             )));
@@ -197,7 +214,8 @@ impl Engine {
             for (d, &s) in y.iter_mut().zip(&y8[i * p..(i + 1) * p]) {
                 *d = f32::from(s);
             }
-            self.pass.push_solved(&y, &cc[i * k..(i + 1) * k], f[i]);
+            self.pass
+                .push_solved(&y, &cc[i * k..(i + 1) * k], &yra[i * k..(i + 1) * k], f[i]);
         }
         Ok(())
     }
@@ -386,14 +404,15 @@ impl StreamLane {
 #[wasm_bindgen]
 impl Engine {
     /// Store solved frames' traces without folding them (the pool's lanes fold them): `cc`
-    /// `n * K` clipped traces, `f` the `n` background traces.
-    pub fn push_traces(&mut self, cc: &[f64], f: &[f32]) -> Result<(), JsError> {
+    /// `n * K` clipped traces, `yra` their `n * K` YrA, `f` the `n` background traces.
+    pub fn push_traces(&mut self, cc: &[f64], yra: &[f64], f: &[f32]) -> Result<(), JsError> {
         let k = self.pass.model.k;
-        if cc.len() != f.len() * k || self.pass.t + f.len() > self.inp.params.t {
+        if cc.len() != f.len() * k || yra.len() != f.len() * k || self.pass.t + f.len() > self.inp.params.t {
             return Err(JsError::new("solved traces do not match the pass"));
         }
         for (i, &fi) in f.iter().enumerate() {
-            self.pass.push_traces(&cc[i * k..(i + 1) * k], fi);
+            self.pass
+                .push_traces(&cc[i * k..(i + 1) * k], &yra[i * k..(i + 1) * k], fi);
         }
         Ok(())
     }

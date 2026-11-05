@@ -173,6 +173,10 @@ impl Engine {
     pub fn take_traces(&mut self) -> Vec<f32> {
         crate::unit_major(&self.pass.take_c(), self.pass.model.k)
     }
+    /// The YrA pushed since the last call, (K, n) unit-major, as `take_traces`.
+    pub fn take_yra(&mut self) -> Vec<f32> {
+        crate::unit_major(&self.pass.take_yra(), self.pass.model.k)
+    }
 
     /// Footprint update and merge; returns output name -> `.npy`/`.json` bytes (all but
     /// `C.npy`, which the worker writes from `take_traces`).

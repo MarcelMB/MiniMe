@@ -139,16 +139,22 @@ fn main() {
     let t = Instant::now();
     let mut sol = Vec::new();
     let mut ccs = Vec::with_capacity(n);
+    let mut rhs = Vec::new();
+    let mut yras: Vec<Vec<f64>> = Vec::with_capacity(n);
     let mut fs = Vec::with_capacity(n);
     for y in &ys {
-        model.solve(y, &mut sol);
-        ccs.push(sol[..k].iter().map(|v| v.max(0.0)).collect::<Vec<f64>>());
+        model.solve_rhs(y, &mut sol, &mut rhs);
+        let cc: Vec<f64> = sol[..k].iter().map(|v| v.max(0.0)).collect();
+        let mut yr = vec![0.0; k];
+        model.yra(&rhs, &cc, sol[k], &mut yr);
+        yras.push(yr);
+        ccs.push(cc);
         fs.push(sol[k] as f32);
     }
     let t_solve = ms(t) / n as f64;
     let t = Instant::now();
     for i in 0..n {
-        pass.push_solved(&ys[i], &ccs[i], fs[i]);
+        pass.push_solved(&ys[i], &ccs[i], &yras[i], fs[i]);
     }
     let t_fold = ms(t) / n as f64;
     let nz = ccs
