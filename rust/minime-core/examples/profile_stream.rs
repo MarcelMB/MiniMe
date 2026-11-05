@@ -93,7 +93,7 @@ fn main() {
     let t = Instant::now();
     let model = TraceModel::build(&inp.a, &inp.ymean);
     println!(
-        "TraceModel::build (two certified solvers): {:.0} ms, cholesky {}, [A; b] bound {:.3e}",
+        "TraceModel::build (one certified solver): {:.0} ms, cholesky {}, [A; b] bound {:.3e}",
         ms(t),
         model.solver.is_cholesky(),
         model.solver.cond()

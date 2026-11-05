@@ -425,12 +425,13 @@ class TraceModel:
     solve_normal: Callable[[np.ndarray], np.ndarray]
 
     @classmethod
-    def build(cls, A: sps.csr_matrix, ymean: np.ndarray, background: str = "fit") -> TraceModel:
+    def build(cls, A: sps.csr_matrix, ymean: np.ndarray, background: str = "mean") -> TraceModel:
         """``background="fit"``: ``b = clip(ymean - A^T cbar, 0)``, ``cbar`` the least-squares
         fit of the mean image (``cnmf``'s default background from the mean image alone). The
         fit gives every unit the whole local mean, so ``b`` has a hole at each cell and the
         background's fluctuations under a cell go into its trace. ``background="mean"``:
-        ``b = ymean``, the cells' resting levels stay in ``b`` and follow ``f``."""
+        ``b = ymean``, the cells' resting levels stay in ``b`` and follow ``f``; the default and
+        what the Rust core's ``TraceModel::build`` does."""
         A64 = sps.csr_matrix(A, dtype=np.float64)
         ymean = np.asarray(ymean, dtype=np.float64)
         if background == "mean":

@@ -579,6 +579,15 @@ the truth (q25 in brackets):
   changes. The tile projection is not needed; if wanted later it is one `(P_b, r_b)` basis
   per tile in the streaming state and two GEMVs per tile per frame; on top of `b = mean`
   it adds 0.003 to the median and 0.03 to the lower quartile.
+- Ported 2026-11-05 (until then the Rust core still carved `b`, so the app scored 0.75):
+  `TraceModel::build` uses `b = clip(ymean, 0)`, and `stream.py`'s default is `"mean"` so
+  `ref_dump.py` and `check_rust.py` check it (2000 frames: PASS, C 7e-13). App on the 30-min
+  GRIN synth, Python auto-tune parameters (`params_tuned/grin.json`), 8 CPU workers, scored
+  by `compare.py` against main's `minime run` with the same parameters: traces (C) 0.761 →
+  **0.904** (q25 0.54 → 0.76; on the 244 truth cells both runs find 0.823 → 0.930, Python
+  C 0.801, YrA 0.837); F1 0.773, recall 0.679, precision 0.897 and the 349 units unchanged
+  (the background only changes traces). Trace agreement with Python's C on matched units
+  drops from 0.994 to 0.907 by design: the two now fit different backgrounds.
 
 ## Run from the AVIs alone (2026-11-03): no Python involved
 The worker runs the whole pipeline from the raw AVIs: pick the files, press Run (first on a

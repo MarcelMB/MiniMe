@@ -97,29 +97,17 @@ fn symmetrize(g: &mut [f64], n: usize) {
 }
 
 impl TraceModel {
-    /// `b = clip(ymean - A^T cbar, 0)` with `cbar` the least-squares fit of the mean image.
+    /// `b = clip(ymean, 0)`: the session mean image itself (the prototype's
+    /// `background="mean"`), so the cells' resting levels stay in `b` and follow `f`. The
+    /// earlier `b = clip(ymean - A^T cbar, 0)` gave every unit its whole local mean and left
+    /// the background's fluctuations under a cell in its trace (traces 0.75 -> 0.90 against
+    /// the truth on the 30-min GRIN synth).
     pub fn build(a: &Csr, ymean: &[f64]) -> Self {
         let k = a.nrows;
         let mut g = a.gram();
         symmetrize(&mut g, k);
-        let aa = g.clone();
-        let mut cbar: Vec<f64> = (0..k)
-            .map(|r| {
-                let (ix, v) = a.row(r);
-                ix.iter().zip(v).map(|(&c, &x)| x * ymean[c]).sum()
-            })
-            .collect();
-        // `certified`: the same solver as `NormalSolver::new` without its O(K^3) eigensolve when
-        // a bound shows Cholesky (16 s at K = 827)
-        NormalSolver::certified(&g, k).solve(&mut cbar);
-        let mut fit = vec![0.0; a.ncols];
-        for (r, &cb) in cbar.iter().enumerate() {
-            let (ix, v) = a.row(r);
-            for (&c, &x) in ix.iter().zip(v) {
-                fit[c] += x * cb;
-            }
-        }
-        let b: Vec<f64> = ymean.iter().zip(&fit).map(|(&y, &f)| (y - f).max(0.0)).collect();
+        let aa = g;
+        let b: Vec<f64> = ymean.iter().map(|&y| y.max(0.0)).collect();
         let ab: Vec<f64> = (0..k)
             .map(|r| {
                 let (ix, v) = a.row(r);
