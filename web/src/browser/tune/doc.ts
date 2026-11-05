@@ -21,6 +21,9 @@ export type AutotuneDoc = Omit<Proposal, "curves"> & {
 const cell = (v: unknown): string =>
   v === null || v === undefined ? "" : typeof v === "number" ? pyFloat(v).replace(/\.0$/, "") : String(v);
 
+/** A CSV field as pandas writes it: quoted (inner quotes doubled) only when it needs to be. */
+const field = (v: string): string => (/[",\n\r]/.test(v) ? `"${v.replaceAll('"', '""')}"` : v);
+
 /** `autotune.run.sweep_table` as pandas writes it (`index=False`; integers without `.0`). */
 export function sweepCsv(trials: Trial[]): string {
   const head = ["step", ...SEARCHED, ...SCORE_COLS, ...COUNT_COLS, "size10_median", "seconds", "error"];
@@ -33,7 +36,7 @@ export function sweepCsv(trials: Trial[]): string {
     cell(Math.round(t.seconds * 100) / 100),
     t.error ?? "",
   ]);
-  return `${[head, ...rows].map((r) => r.join(",")).join("\n")}\n`;
+  return `${[head, ...rows].map((r) => r.map(field).join(",")).join("\n")}\n`;
 }
 
 const isNum = (v: unknown) =>
