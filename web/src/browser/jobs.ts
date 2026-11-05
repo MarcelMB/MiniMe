@@ -447,11 +447,7 @@ export class JobManager {
     void Promise.resolve()
       .then(() => go(p))
       .then(() => this.end(job, "done", ""), fail)
-      .catch(async (e) => {
-        // `finish` or the save itself failed: the job still ends, as failed
-        if (!isFinal(job.status)) await this.end(job, "failed", e instanceof Error ? e.message : String(e));
-      })
-      .catch(() => undefined);
+      .catch((e) => console.error(`job ${job.id}: could not finish the tune job`, e)); // the status stays as `end` set it
   }
 
   private async end(job: JobRecord, status: "done" | "failed" | "cancelled", error: string): Promise<void> {
