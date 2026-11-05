@@ -830,18 +830,24 @@ runs made before 2026-11-05 have none and must be run again to be tuned.
 |---|---|---|
 | run F1 (YrA) | 0.757 (C: 0.757) | 0.680 |
 | proposal F1 | 0.755 | 0.682 |
-| auto-tune wall | 64 s (rerun + stream 31 s) | 192 s |
+| auto-tune wall | 61 s (rerun + stream 28 s) | 192 s |
 | trials | 14 | 16 |
 | per-setting cost | 1.2 to 3 s (12 windows, parallel) | |
-| wasm heap peak | 173 MB | |
-| Chromium tree RSS peak | 3.89 GiB (upper bound) | |
-| run time (main run) | 116 s of 181 s click to done | 95.5 s |
+| tune-worker wasm heap peak | 173 MB | |
+| Chromium tree RSS peak | 3.9 GiB (3.58 GiB for a plain run) | |
+| click to done (run + tune) | 175 s (run 116 s) | main run 95.5 s |
+
+Memory: the tune workers' wasm heap peaks at 173 MB; the Chromium process tree peaks at 3.9 GiB against 3.58 GiB for
+a plain run, so the tune adds about 0.3 GiB. The tree RSS counts the GPU process and the renderer baseline and shared
+pages once per process, so it is not a budget for the tune alone.
 
 Result: the search kept nothing (`kept: []`, `better_than_run: false`): sparse_snr 0.714, which Python picks
-(score 209 vs 188), scores 1493 vs the run's 1674 on the summed window scores (167 low-PNR units); the proposal
-equals the run's values, and its window params are re-derived from the 11.2 px diameter (seeds_max_wnd 11 vs 15,
-merge_min_dist 4.5 vs 0), which moves F1 by -0.0015 (365 vs 366 units). Open: the RSS target, and a tie-break
-for the segment where Python saw a gain (`tune_frames` 0 explores on all windows).
+(score 209 vs 188), scores 1493 vs the run's 1674 on the summed window scores (167 low-PNR units). When nothing beats
+the run the final rerun uses the run's own parameters (no derived sizes), as Python's `Sweep.run`; its windows then
+reproduce the run's (2276 units), yet the stitch of the rerun gives 365 units against the run's 366 (F1 0.7554 vs
+0.7570). The run's stitch takes the in-memory engines (`add_pass2`/`add_cnmf`), the rerun the saved window units and
+`mean.npy`/`sigma.npy` (`add_window` + `add_mean_noise`); that path difference is the likely source and is open. Also
+open: a tie-break for the segment where Python saw a gain.
 
 ## Next
 0. Rerun the 8 h and 24 h streaming pass with the traces in OPFS (8 h scale run above);

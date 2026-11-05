@@ -239,6 +239,22 @@ describe("autotune", () => {
     expect(readFileSync(join(f.run, "reruns/auto/params.json"), "utf8")).toContain('"source_run"');
   });
 
+  it("reruns the run's own parameters when nothing beats the run", async () => {
+    const f = await fixture(64);
+    cpSync(join(DATA, "processed/t/cnmf/A.npz"), join(f.run, "cnmf/A.npz"));
+    cpSync(join(DATA, "processed/t/cnmf/YrA.npy"), join(f.run, "cnmf/YrA.npy"));
+    const run = await f.registry.open(`${f.name}/processed/t`);
+    const ctx = ctxFor(f); // a constant score: no setting is better
+    await autotune(ctx, run, { diameter: 7 }, progress().p);
+    const doc = JSON.parse(readFileSync(join(f.run, "reruns/auto/autotune.json"), "utf8"));
+    expect(doc.better_than_run).toBe(false);
+    const params = JSON.parse(readFileSync(join(f.run, "reruns/auto/params.json"), "utf8"));
+    expect(doc.derived.seeds_max_wnd).toBe(doc.run_values.seeds_max_wnd);
+    expect(doc.derived.merge_min_dist).toBe(doc.run_values.merge_min_dist);
+    expect(params.seeds_max_wnd ?? doc.run_values.seeds_max_wnd).toBe(doc.run_values.seeds_max_wnd);
+    expect(params.merge_min_dist ?? doc.run_values.merge_min_dist).toBe(doc.run_values.merge_min_dist);
+  });
+
   it("refuses a diameter the field of view cannot hold and estimates one when none is given", async () => {
     const f = await fixture();
     const run = await f.registry.open(`${f.name}/processed/t`);
