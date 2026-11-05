@@ -60,7 +60,3 @@ for (const path of ["/runs/:rid/autotune", "/runs/:rid/flags", "/runs/:rid/pairs
   router.add("GET", path, () => {
     throw new HttpError(404, "auto-tune is not part of the browser app");
   });
-for (const path of ["/jobs/rerun", "/jobs/autotune"])
-  router.add("POST", path, () => {
-    throw new HttpError(404, "auto-tune and reruns are not part of the browser app");
-  });
