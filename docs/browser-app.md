@@ -80,7 +80,8 @@ python experiments/streaming/check_rust.py <ref> <ref>/rust_browser
 ## Motion stage result (2026-11-02): native and Chrome match Python
 In the `fresh` runs every window reuses the session's motion sidecar, so the browser needs
 the session's own motion pass: template from the first `template_frames` frames of
-segment 0, then a shift per frame. Checked on frames 0–3000 of the 30-min GRIN synth
+segment 0 (since 2026-11-05 frames spread over the session, see "Spread template and template
+fill"), then a shift per frame. Checked on frames 0–3000 of the 30-min GRIN synth
 (`ref_motion.py`, which also reproduces the baseline sidecar's shifts exactly):
 
 | | Rust native vs Python | Rust → wasm, headless Chrome vs Python |
@@ -811,6 +812,60 @@ preprocessing use it. WebGPU works in nested workers in Chrome and WebKit, so ev
 
 Run it: `STREAM_DEVICE=auto|cpu|gpu|both [STREAM_GPU_TEST=...] STREAM_RAW=... STREAM_OUT=... npm run e2e:stream`;
 the speed test alone: `e2e/speed.spec.ts` with the stream config's server.
+
+## Spread template and template fill (2026-11-05): MiniMe's new motion defaults, same as Python
+MiniMe's defaults changed to `template_source = "spread"` and `motion_fill = "template"` (Python on
+`claude/motion-defaults-bc3667`, brought over here): a first-frames template sat where the field was in
+the first seconds, often px away from the rest of the session, and the warp's zero band that came and
+went with the motion became false units along the edges. `session.json` carries both keys (`pass1`;
+`motion_fill` also in `stream`); inputs without them (written before) mean `first` / `zero`.
+
+- **Template** (`motion::SpreadBuilder`, `spread.ts`): 10 runs of 20 frames spread over the session
+  (`np.linspace(0, T - 20, 10).round()`), read with `File.slice` through the AVI index. Five reads: the
+  runs' prepared means (the best-agreeing run starts), twice the shifts and correlation peaks of every frame
+  against the current template (search 2 x `motion_max_shift`) and the mean of the frames warped by their
+  shift minus `_reachable_median` (median of the frames whose peak is at least half the median, clipped so
+  they stay within 0.75 x `motion_max_shift`; numpy's percentile and float32 sums reproduced). The frame
+  workers prepare (`SpreadWorker`, CPU only: 200 frames, 1.2 s with 8 workers); the run's `MotionEngine` adds
+  prepared frames in frame order, so 1 and N workers give the same bits.
+- **Fill image**: a sixth read: each template frame's denoised image warped against the final template with
+  the edge pixels replicated, top-hat, summed (uint32) over the frames that hold data at each pixel, floor of
+  the mean; workers return partial sums in any order. In the run folder: `motion/arrays.npz` `fill`.
+- **Pass 1 and the streaming pass**: the denoised frame is warped with `BORDER_REPLICATE` (`warp.rs`
+  `replicate`; checked against `cv2.warpAffine`: 300 random cases and 600² frames, bit for bit), top-hat,
+  then `fill_outside` (`fill.rs`: rows above `y0` / from `y1`, columns left of `x0` / from `x1`,
+  `motion._valid_rects` of the float64 estimate, or of the float32 shift the streaming pass reads). The fill
+  is a CPU copy in `Pass1::fold_corrected` and `StreamSolver::solve_prepped`, so the GPU path shares it; the
+  GPU's warp of the denoised frame has a replicate variant (`kernels.ts` `shiftU8Replicate`, `Kernels.replicate`)
+  and the self-test's CPU reference uses it.
+- Checks (30-min GRIN synth, its new-defaults batch run `processed/motion_defaults_browser` as the baseline):
+
+  | check | native vs Python | Chrome vs Python |
+  |---|---|---|
+  | template (frames 0-3000 estimated against it) | ≤ 2.6e-7 of max | ≤ 3.4e-7 of max, 1 and 8 workers identical |
+  | shifts | ≤ 4.4e-6 px, same integer peak in all 3000 frames | ≤ 5.1e-6 px, same integer peak |
+  | fill image | identical | identical |
+  | pass 1 with the fill (given shifts): max projection, 11 block maxima, 100 tiles | identical (CRC) | |
+  | streaming pass with the fill (3000 frames, 228 units): preprocessed frames, `C`, sums | frames and `C` identical, sums ≤ 4.5e-15 | |
+  | 2 windows (6000 frames, `ref_stitch.py --session-inputs`): window units, supports, pairs, edges, parents, groups | | identical (193 + 181 -> 231 units); chain PASS |
+  | the same on the GPU (8 workers) | | 44 files identical to the CPU run |
+
+  5-min synth from the AVIs alone (Chrome, 8 workers): 398 units, F1 **0.967** (precision 0.995, detectable
+  recall 0.965), traces 0.995, 2 false units within 15 px of an edge; the run before (2026-11-03, first-frames
+  template, zero fill): 419 units, F1 0.962 (precision 0.964, detectable recall 0.965), 14 false edge units.
+  Python's batch run with the new defaults: F1 0.963, 393 units. GPU and CPU runs give the same 88 files.
+- Not ported: `motion_outlier` (opt-in in Python; New run lists it as a parameter the browser ignores).
+  The speed test's engines run with the zero fill (no fill image yet; the same speed).
+
+Run it (the e2e on its own port and build folder when another run uses 8796):
+```bash
+python experiments/streaming/ref_motion.py --baseline motion_defaults_browser --name ref_motion_spread --t0 0 --t1 3000
+minime-core motion --raw <raw> --params <ref>/inputs/params.json --out <ref>/rust_native --check-frames <ref>/inputs/check_frames.npy
+STREAM_PORT=8831 STREAM_DIST=dist-stream-md STREAM_WORKERS=8 STREAM_RAW=<raw> STREAM_INPUTS=<ref>/inputs STREAM_OUT=<ref>/rust_browser npm run e2e:stream
+python experiments/streaming/check_motion.py <ref> <ref>/rust_browser
+python experiments/streaming/t1_discovery.py --mode fresh --windows 3000 --baseline motion_defaults_browser --name t1_fresh_fill --n 2
+python experiments/streaming/ref_stitch.py --session-inputs --stream --n 2 --baseline motion_defaults_browser --t1 t1_fresh_fill --name ref_stitch_fill
+```
 
 ## Next
 0. Rerun the 8 h and 24 h streaming pass with the traces in OPFS (8 h scale run above);

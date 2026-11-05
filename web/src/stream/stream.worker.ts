@@ -1209,7 +1209,8 @@ function windowUnits(
   pass1: Pass1Engine,
   pass2: Pass2Engine,
 ): Promise<W1Result> {
-  const keep = (name: string) => name.endsWith(".json") || name === "template.npy" || name === "shifts.npy";
+  const keep = (name: string) =>
+    name.endsWith(".json") || name === "template.npy" || name === "shifts.npy" || name === "fill.npy";
   const msg = {
     type: "w1" as const,
     files: new Map([...files].filter(([name]) => keep(name))),
