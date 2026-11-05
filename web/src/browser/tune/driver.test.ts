@@ -1,19 +1,20 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Folders } from "../folders";
 import { memoryKV } from "../kv";
 import { writeNpy } from "../npy";
-import { npzBlob } from "../npz";
+import { csrNpz, npzBlob } from "../npz";
 import { Registry } from "../runs";
+import { DATA } from "../testing/e2eRun";
 import { FakeTuneWorker, out } from "../testing/fakeTuneWorker";
 import { NodeDir } from "../testing/nodeDir";
-import { type Ctx, RerunCancelled, rerun } from "./driver";
+import { autotune, type Ctx, RerunCancelled, rerun } from "./driver";
 
 /** A root with `raw/0.avi` (any bytes: the fake stream worker never reads them) and a browser run
  * `processed/t` with one window's factors. */
-async function fixture() {
+async function fixture(hw = 2) {
   const top = mkdtempSync(join(tmpdir(), "drv-"));
   mkdirSync(join(top, "raw"));
   writeFileSync(join(top, "raw/0.avi"), new Uint8Array(16));
@@ -24,7 +25,7 @@ async function fixture() {
     writeFileSync(join(run, `factors/w00/${n}.npy`), writeNpy([4], new Float32Array(4)));
   writeFileSync(
     join(run, "factors/meta.json"),
-    JSON.stringify({ H: 2, W: 2, T: 6, tile: 2, ranks: [1], windows: [{ t0: 0, t1: 6 }] }),
+    JSON.stringify({ H: hw, W: hw, T: 6, tile: 2, ranks: [1], windows: [{ t0: 0, t1: 6 }] }),
   );
   writeFileSync(join(run, "factors/max_proj.npy"), writeNpy([2, 2], new Float32Array(4)));
   writeFileSync(join(run, "factors/sn.npy"), writeNpy([2, 2], new Float32Array(4)));
@@ -36,9 +37,9 @@ async function fixture() {
   const folders = new Folders(memoryKV(), async () => null);
   const name = await folders.add(new NodeDir(top), "picked");
   const session = {
-    pass1: { H: 2, W: 2, tile: 2, seeds_wnd: 3, seeds_stp: 1 },
+    pass1: { H: hw, W: hw, tile: 2, seeds_wnd: 3, seeds_stp: 1 },
     stitch: { cos_thres: 0.7 },
-    stream: { H: 2, W: 2 },
+    stream: { H: hw, W: hw },
   };
   writeFileSync(
     join(run, "params.json"),
@@ -185,5 +186,71 @@ describe("rerun", () => {
     const run = await f.registry.open(`${f.name}/processed/t`);
     await expect(rerun(ctxFor(f), run, {}, "r4", progress(() => true).p)).rejects.toBeInstanceOf(RerunCancelled);
     expect(readFileSync(join(f.run, "reruns/r4/error.txt"), "utf8")).toBe("cancelled");
+  });
+});
+
+describe("autotune", () => {
+  it("searches, writes reruns/auto with sweep.csv, unit_flags.csv and autotune.json", async () => {
+    const f = await fixture(64);
+    // the e2e run's A.npz / YrA.npy stand in for the fake run's final units
+    cpSync(join(DATA, "processed/t/cnmf/A.npz"), join(f.run, "cnmf/A.npz"));
+    cpSync(join(DATA, "processed/t/cnmf/YrA.npy"), join(f.run, "cnmf/YrA.npy"));
+    const run = await f.registry.open(`${f.name}/processed/t`);
+    const ctx = ctxFor(f);
+    ctx.makeTuneWorker = () =>
+      new FakeTuneWorker((_, s) =>
+        out(10 - Math.round(10 * Math.abs(Math.log(Number(JSON.parse(s).cnmf.sparse_snr) / 0.5))), 1),
+      ) as unknown as Worker;
+    const { events, p } = progress();
+    const dir = await autotune(ctx, run, { diameter: 7 }, p);
+    expect((dir as NodeDir).path).toBe(join(f.run, "reruns/auto"));
+    expect(events[0]).toBe("tune_run:start");
+    expect(events).toContain("tune_sparse:start");
+    expect(events).toContain("tune_rerun:start");
+    expect(events.at(-1)).toBe("write_outputs:end");
+    const doc = JSON.parse(readFileSync(join(f.run, "reruns/auto/autotune.json"), "utf8"));
+    expect(doc).toMatchObject({
+      strategy: "local",
+      passes: 1,
+      diameter: 7,
+      diameter_source: "given",
+      min_dist_frac: 0.4,
+      tune_frames: 40000,
+      segment: null,
+      frames: 6,
+      better_than_run: true,
+    });
+    expect(Object.keys(doc.proposed).sort()).toEqual([
+      "init_merge_corr",
+      "inita_corr",
+      "loop_merge_corr",
+      "merge_corr",
+      "pnr_thres",
+      "seeds_diff_thres",
+      "sparse_snr",
+    ]);
+    expect(doc.proposed.sparse_snr).toBeCloseTo(0.51, 1);
+    expect(doc.kept).toEqual([]); // the fake run left every size at its default
+    expect(doc.pairs.run.n_near).toBeGreaterThanOrEqual(0);
+    const csv = readFileSync(join(f.run, "reruns/auto/sweep.csv"), "utf8").trim().split("\n");
+    expect(csv.length - 1).toBe(doc.n_trials);
+    expect(readFileSync(join(f.run, "reruns/auto/unit_flags.csv"), "utf8")).toContain("unit_id,pnr");
+    expect(readFileSync(join(f.run, "reruns/auto/params.json"), "utf8")).toContain('"source_run"');
+  });
+
+  it("refuses a diameter the field of view cannot hold and estimates one when none is given", async () => {
+    const f = await fixture();
+    const run = await f.registry.open(`${f.name}/processed/t`);
+    await expect(autotune(ctxFor(f), run, { diameter: 100 }, progress().p)).rejects.toThrow(
+      "diameter must be a finite number of px of at most 2",
+    );
+    const one = {
+      shape: [1, 4] as [number, number],
+      data: new Float32Array([1]),
+      indices: new Int32Array([0]),
+      indptr: new Int32Array([0, 1]),
+    };
+    writeFileSync(join(f.run, "cnmf/A.npz"), new Uint8Array(await (await csrNpz(one)).arrayBuffer()));
+    await expect(autotune(ctxFor(f), run, {}, progress().p)).rejects.toThrow("too few to estimate the cell diameter");
   });
 });
