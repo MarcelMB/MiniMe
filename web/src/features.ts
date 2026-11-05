@@ -19,6 +19,8 @@ export type Features = {
   SpeedPanel: ComponentType<SpeedPanelProps> | null;
   /** Home's banner on where the data goes (the browser build: it stays on this computer). */
   PrivacyNote: ComponentType | null;
+  /** Home's card that downloads the synthetic demo session (the browser build: from UCLA Dataverse). */
+  DemoCard: ComponentType | null;
 };
 
-export const FEATURES: Features = { tune: true, RunActions: null, SpeedPanel: null, PrivacyNote: null };
+export const FEATURES: Features = { tune: true, RunActions: null, SpeedPanel: null, PrivacyNote: null, DemoCard: null };
