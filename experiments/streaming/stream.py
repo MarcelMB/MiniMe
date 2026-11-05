@@ -211,6 +211,7 @@ def _seed_sidecar(
             params=params.motion_params(),
             raw_hash=io.hash_files(io.list_segments(raw)),
             meta={"source": f"baseline shifts {t0}-{t1}"},
+            fill=sc.fill,  # the session's fill image, not one from the window's frames
         ),
     )
     # marks the folder as a minime run, so pipeline.run may wipe it after reading the sidecar
@@ -322,22 +323,34 @@ def stitch(
 class FrameStream:
     """Preprocessed, motion-corrected frames ``(n, P) float32`` as pass 1 makes them, one
     ``batch`` at a time; iterating yields ``(t0, frames)``. Each iteration rereads the raw
-    files, as a browser would reread the file with ``File.slice``."""
+    files, as a browser would reread the file with ``File.slice``. With ``motion_fill =
+    "template"`` the session's ``fill`` image (the sidecar's) goes where a frame has no data."""
 
     def __init__(
-        self, info: io.RawInfo, shifts: np.ndarray, params: Params, batch: int = 100
+        self,
+        info: io.RawInfo,
+        shifts: np.ndarray,
+        params: Params,
+        batch: int = 100,
+        fill: np.ndarray | None = None,
     ) -> None:
         if shifts.shape[0] != info.frames:
             raise ValueError(f"{shifts.shape[0]} shifts for {info.frames} frames")
+        if params.motion_fill == "template" and fill is None:
+            raise ValueError("motion_fill is 'template' but no fill image was given")
         self.info, self.shifts, self.params, self.batch = info, shifts, params, batch
+        self.fill = fill if params.motion_fill == "template" else None
 
     def _prep(self, raw: np.ndarray, sh: np.ndarray) -> np.ndarray:
         p = self.params
+        rep = self.fill is not None
         blk = preprocess.denoise(raw, p.median_ksize)
         if p.motion_before_tophat:
-            blk = preprocess.tophat(motion.apply_shifts(blk, sh), p.tophat_wnd)
+            blk = preprocess.tophat(motion.apply_shifts(blk, sh, replicate=rep), p.tophat_wnd)
         else:
-            blk = motion.apply_shifts(preprocess.tophat(blk, p.tophat_wnd), sh)
+            blk = motion.apply_shifts(preprocess.tophat(blk, p.tophat_wnd), sh, replicate=rep)
+        if rep:
+            blk = motion.fill_outside(blk, sh, self.fill)
         return blk.reshape(blk.shape[0], -1).astype(np.float32)
 
     def __iter__(self) -> Iterator[tuple[int, np.ndarray]]:

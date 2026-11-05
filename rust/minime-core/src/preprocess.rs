@@ -288,22 +288,42 @@ pub fn tophat_scalar(src: &[u8], h: usize, w: usize, wnd: usize) -> Vec<u8> {
         .collect()
 }
 
-/// Settings of `stream.FrameStream._prep`.
+/// Settings of `stream.FrameStream._prep`; `fill`: the session's fill image (`h * w`) with
+/// `motion_fill = "template"` (the warp then replicates the edge pixels).
 #[derive(Debug, Clone, Copy)]
-pub struct Prep {
+pub struct Prep<'a> {
     pub median_ksize: usize,
     pub tophat_wnd: usize,
     pub motion_before_tophat: bool,
+    pub fill: Option<&'a [u8]>,
 }
 
-impl Prep {
-    /// Median, shift and tophat of one raw frame, in MiniMe's order.
+impl Prep<'_> {
+    /// Median, shift, tophat (in MiniMe's order) and the template fill of one raw frame.
     pub fn frame(&self, raw: &[u8], h: usize, w: usize, dy: f32, dx: f32) -> Vec<u8> {
         let den = median_blur(raw, h, w, self.median_ksize);
-        if self.motion_before_tophat {
-            tophat(&shift(&den, h, w, dy, dx), h, w, self.tophat_wnd)
+        let warp = |f: &[u8]| {
+            if self.fill.is_some() {
+                shift_replicate(f, h, w, dy, dx)
+            } else {
+                shift(f, h, w, dy, dx)
+            }
+        };
+        let mut out = if self.motion_before_tophat {
+            tophat(&warp(&den), h, w, self.tophat_wnd)
         } else {
-            shift(&tophat(&den, h, w, self.tophat_wnd), h, w, dy, dx)
+            warp(&tophat(&den, h, w, self.tophat_wnd))
+        };
+        self.fill_border(&mut out, h, w, dy, dx);
+        out
+    }
+
+    /// The template fill of a frame preprocessed by `frame` without it (the GPU path):
+    /// `motion.fill_outside` with the rectangle of the float32 shift (the sidecar's).
+    pub fn fill_border(&self, y8: &mut [u8], h: usize, w: usize, dy: f32, dx: f32) {
+        if let Some(fill) = self.fill {
+            let r = crate::fill::valid_rect(f64::from(dy), f64::from(dx), h, w);
+            crate::fill::fill_outside(y8, h, w, r, fill);
         }
     }
 }

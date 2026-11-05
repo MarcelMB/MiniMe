@@ -13,7 +13,16 @@
 // f32 per pixel; results are packed again (u8) or float32.
 
 /** `gpuplan::Kernels` (Rust), as the stage's engine gives it (`gpu_kernels()`). */
-export type Kernels = { H: number; W: number; median: number; tophat: number; u8taps: number[]; f32taps: number[] };
+export type Kernels = {
+  H: number;
+  W: number;
+  median: number;
+  tophat: number;
+  u8taps: number[];
+  f32taps: number[];
+  /** The denoised frame's warp replicates the edge pixels (the template fill; the CPU fills after the top-hat). */
+  replicate?: boolean;
+};
 
 const P = /* wgsl */ `
 struct P { h: u32, w: u32, n: u32, total: u32 }
@@ -107,18 +116,26 @@ fn main(@builtin(local_invocation_id) lid: vec3u, @builtin(workgroup_id) wid: ve
 }`;
 }
 
-/** `cv2.warpAffine` pure shift, INTER_LINEAR as OpenCV 5 (fused float32 lerps), zeros outside; `u8`
- * rounds half to even into 0..255, else float32 in and out. */
-function warp(u8: boolean): string {
+/** `cv2.warpAffine` pure shift, INTER_LINEAR as OpenCV 5 (fused float32 lerps), zeros outside, or with
+ * `replicate` the nearest edge pixel (`BORDER_REPLICATE`: each tap's row and column clamped into the
+ * frame); `u8` rounds half to even into 0..255, else float32 in and out. */
+function warp(u8: boolean, replicate = false): string {
   const t = u8 ? "u32" : "f32";
+  const at = replicate
+    ? `fn at(base: u32, yy: i32, xx: i32) -> f32 {
+  let cy = clamp(yy, 0, i32(p.h) - 1);
+  let cx = clamp(xx, 0, i32(p.w) - 1);
+  return f32(src[base + u32(cy) * p.w + u32(cx)]);
+}`
+    : `fn at(base: u32, yy: i32, xx: i32) -> f32 {
+  if (yy >= 0 && yy < i32(p.h) && xx >= 0 && xx < i32(p.w)) { return f32(src[base + u32(yy) * p.w + u32(xx)]); }
+  return 0.0;
+}`;
   return `${P}
 @group(0) @binding(1) var<storage, read> src: array<${t}>;
 @group(0) @binding(2) var<storage, read_write> dst: array<${t}>;
 @group(0) @binding(3) var<storage, read> shifts: array<vec2<f32>>;
-fn at(base: u32, yy: i32, xx: i32) -> f32 {
-  if (yy >= 0 && yy < i32(p.h) && xx >= 0 && xx < i32(p.w)) { return f32(src[base + u32(yy) * p.w + u32(xx)]); }
-  return 0.0;
-}
+${at}
 @compute @workgroup_size(16, 16, 1)
 fn main(@builtin(global_invocation_id) g: vec3u) {
   let x = i32(g.x);
@@ -145,6 +162,7 @@ fn main(@builtin(global_invocation_id) g: vec3u) {
 }`;
 }
 export const shiftU8 = warp(true);
+export const shiftU8Replicate = warp(true, true);
 export const shiftF32 = warp(false);
 
 /** Running min / max over `2r + 1` samples along rows (`cols`: columns), samples beyond the ends ignored. */
