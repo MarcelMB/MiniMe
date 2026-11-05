@@ -95,6 +95,11 @@ a { color: var(--accent); }
   display: flex; flex-direction: column; gap: 12px; min-width: 0;
 }
 .card.dim { opacity: 0.6; }
+.privacy { flex-direction: row; align-items: center; gap: 20px; border: 2px solid var(--ok); }
+.privacy-icon { flex: none; width: 56px; height: 56px; fill: none; stroke: var(--ok); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.privacy-text h2 { margin: 0 0 6px; font-size: 28px; font-weight: 700; letter-spacing: -0.03em; line-height: 1.15; }
+.privacy-text p { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.5; max-width: 900px; }
+@media (max-width: 600px) { .privacy { flex-direction: column; align-items: flex-start; } .privacy-text h2 { font-size: 22px; } }
 .label { font-size: 13px; color: var(--muted); font-weight: 500; }
 .big { font-size: 40px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; }
 .run-name { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.2;

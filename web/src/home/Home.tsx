@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getJSON } from "../api";
 import { Loading } from "../controls";
+import { FEATURES } from "../features";
 import { fmtDuration, fmtInt } from "../format";
 import { pollResource, type Resource, useResource } from "../poll";
 import { href } from "../router";
@@ -66,6 +67,7 @@ export function Home() {
   const active = (jobs.data?.jobs ?? []).filter((j) => j.status === "queued" || j.status === "running");
   return (
     <div className="page">
+      {FEATURES.PrivacyNote && <FEATURES.PrivacyNote />}
       <div className="row">
         <div>
           <span className="label">Runs in</span>
