@@ -828,26 +828,32 @@ runs made before 2026-11-05 have none and must be run again to be tuned.
 
 | `synth_v4_grin30` | browser | Python auto-tune |
 |---|---|---|
-| run F1 (YrA) | 0.757 (C: 0.757) | 0.680 |
-| proposal F1 | 0.755 | 0.682 |
-| auto-tune wall | 61 s (rerun + stream 28 s) | 192 s |
-| trials | 14 | 16 |
-| per-setting cost | 1.2 to 3 s (12 windows, parallel) | |
+| run F1 (YrA) | 0.757 | 0.680 |
+| proposal F1 | 0.748 (R 0.664, P 0.857, 357 units) | 0.682 |
+| proposed | merge_corr 0.7, inita_corr 0.98 (at the grid edge), rest the run's | sparse_snr 0.714, merge_corr 0.85, inita_corr 0.85, loop_merge_corr 0.75 |
+| auto-tune wall | 61 s (rerun + stream 26 s) | 192 s |
+| trials | 17 | 16 |
+| per-setting cost | 0.5 to 3 s (12 windows, parallel) | |
 | tune-worker wasm heap peak | 173 MB | |
-| Chromium tree RSS peak | 3.9 GiB (3.58 GiB for a plain run) | |
-| click to done (run + tune) | 175 s (run 116 s) | main run 95.5 s |
+| Chromium tree RSS peak | 3.7 GiB (3.58 GiB for a plain run) | |
+| click to done (run + tune) | 173 s (run 116 s) | main run 95.5 s |
 
-Memory: the tune workers' wasm heap peaks at 173 MB; the Chromium process tree peaks at 3.9 GiB against 3.58 GiB for
-a plain run, so the tune adds about 0.3 GiB. The tree RSS counts the GPU process and the renderer baseline and shared
+Memory: the tune workers' wasm heap peaks at 173 MB; the Chromium process tree peaks at 3.7 GiB against 3.58 GiB for
+a plain run, so the tune adds little. The tree RSS counts the GPU process and the renderer baseline and shared
 pages once per process, so it is not a budget for the tune alone.
 
-Result: the search kept nothing (`kept: []`, `better_than_run: false`): sparse_snr 0.714, which Python picks
-(score 209 vs 188), scores 1493 vs the run's 1674 on the summed window scores (167 low-PNR units). When nothing beats
-the run the final rerun uses the run's own parameters (no derived sizes), as Python's `Sweep.run`; its windows then
-reproduce the run's (2276 units), yet the stitch of the rerun gives 365 units against the run's 366 (F1 0.7554 vs
-0.7570). The run's stitch takes the in-memory engines (`add_pass2`/`add_cnmf`), the rerun the saved window units and
-`mean.npy`/`sigma.npy` (`add_window` + `add_mean_noise`); that path difference is the likely source and is open. Also
-open: a tie-break for the segment where Python saw a gain.
+Window trials: a window's units come out of the CNMF loop as `merge.c` = the merged YrA and `merge.extra` = the
+merged C (`cnmf::outputs`). The window engine first took `extra` as YrA, so trials were scored on C and the stitch
+brightness (max per unit) came from C; the rerun of the run's own parameters then stitched to 365 units against the
+run's 366. Fixed (`WindowSession::run` takes `merge.c`): the rerun now reproduces the run (2276 window units, 366
+stitched). When nothing beats the run the rerun uses the run's own parameters, as Python's `Sweep.run`.
+
+Result after the fix: the search finds a gain on the summed window scores (1646 vs 1608: merge_corr 0.7, inita_corr
+0.98, at the edge of its grid), but the proposal's real F1 is lower than the run's (0.748 vs 0.757, 357 vs 366 units;
+precision 0.857 vs 0.855, recall 0.664 vs 0.679): the window-score gain is flagged-unit bookkeeping (fewer duplicates
+and low-PNR units) that costs true units. Python's search on the whole-session score picked other values (sparse_snr
+0.714). Open: why the summed window score and the truth disagree here (sparse_snr 0.714 now scores 1440 vs 1608, with
+527 flagged).
 
 ## Next
 0. Rerun the 8 h and 24 h streaming pass with the traces in OPFS (8 h scale run above);
