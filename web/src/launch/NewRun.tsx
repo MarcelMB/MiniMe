@@ -90,6 +90,7 @@ export function NewRun() {
 
   return (
     <div className="page">
+      {FEATURES.PrivacyNote && <FEATURES.PrivacyNote />}
       <h1>New run</h1>
       <div className="bento">
         <section className="card span4" aria-label="1. Raw videos">
