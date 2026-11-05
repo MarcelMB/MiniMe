@@ -14,6 +14,7 @@
     "e2e": "playwright test",
     "e2e:stream": "playwright test -c playwright.stream.config.ts",
     "e2e:browser": "playwright test -c playwright.browser.config.ts",
+    "e2e:tune": "playwright test -c playwright.tune.config.ts",
     "fixtures": "node scripts/fixtures.mjs",
     "format": "biome format --write .",
     "check": "biome check ."
