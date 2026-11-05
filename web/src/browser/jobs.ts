@@ -154,6 +154,8 @@ export class JobManager {
   private starting = false;
   /** This tab holds the run lock (from a start's lock to its run's end). */
   private holding = false;
+  /** Per running tune job: what stops its workers at once, and its promise (the lock goes after it settles). */
+  private tunes = new Map<string, { abort: (() => void) | null; settled: Promise<void> }>();
   private history = new Map<string, [string, unknown][]>();
   private listeners = new Map<string, Set<Emit>>();
   /** Per job, each stage's latest counters (the page's rates for the run's time left). */
@@ -336,8 +338,8 @@ export class JobManager {
       scratch: "tune",
     };
     return {
-      rerun: (run, params, name, p) => rerun(ctx, run, params, name, p),
-      autotune: (run, args, p) => autotune(ctx, run, args, p),
+      rerun: (run, params, name, p) => rerun({ ...ctx, onWorkers: p.onWorkers }, run, params, name, p),
+      autotune: (run, args, p) => autotune({ ...ctx, onWorkers: p.onWorkers }, run, args, p),
     };
   }
 
@@ -441,13 +443,31 @@ export class JobManager {
       log: (m) => this.record(job.id, "log", m),
       cancelled: () => isFinal(job.status),
     };
+    const tune: { abort: (() => void) | null; settled: Promise<void> } = { abort: null, settled: Promise.resolve() };
+    p.onWorkers = (stop) => {
+      tune.abort = stop;
+    };
     if (awake) this.keepAwake(job);
     const fail = (e: unknown) =>
       this.end(job, e instanceof RerunCancelled ? "cancelled" : "failed", e instanceof Error ? e.message : String(e));
-    void Promise.resolve()
+    let cancelledFirst = false;
+    const settled = (end: () => Promise<void>) => {
+      cancelledFirst = isFinal(job.status); // a cancel got there first: `end` will do nothing
+      return end();
+    };
+    tune.settled = Promise.resolve()
       .then(() => go(p))
-      .then(() => this.end(job, "done", ""), fail)
+      .then(
+        () => settled(() => this.end(job, "done", "")),
+        (e) => settled(() => fail(e)),
+      )
+      .then(async () => {
+        this.tunes.delete(job.id);
+        // the cancel left the lock to the settled tune
+        if (cancelledFirst && this.own === job) await this.finish(job);
+      })
       .catch((e) => console.error(`job ${job.id}: could not finish the tune job`, e)); // the status stays as `end` set it
+    this.tunes.set(job.id, tune);
   }
 
   private async end(job: JobRecord, status: "done" | "failed" | "cancelled", error: string): Promise<void> {
@@ -647,7 +667,10 @@ export class JobManager {
     if (!isFinal(job.status)) {
       job.status = "cancelled";
       job.ended = this.now();
-      await this.finish(job);
+      const tune = this.tunes.get(job.id);
+      if (tune) {
+        tune.abort?.(); // the workers stop now; the lock goes when the tune has settled
+      } else await this.finish(job);
     }
     return job;
   }

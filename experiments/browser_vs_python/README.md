@@ -28,8 +28,7 @@ python compare.py --python SESSION/processed/main_DATE --browser SESSION/process
 
 Footprints are matched one-to-one by centroid distance (≤ 5 px, `minime score`'s rule);
 the cosine of matched footprints and the correlation of their traces (C vs C) measure how
-alike the pairs are. Browser runs keep no `YrA.npy`, so their scores use `C.npy` (the
-Python run is scored both ways).
+alike the pairs are. Browser runs now write `cnmf/YrA.npy`, and `minime score` uses it.
 
 ## Run + auto-tune (2026-11-05)
 

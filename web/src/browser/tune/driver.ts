@@ -42,6 +42,8 @@ export type Progress = {
   live(p: StageProgress): void;
   log(m: string): void;
   cancelled(): boolean;
+  /** Set by the job manager: the tune hands it what stops its workers at once. */
+  onWorkers?: (stop: () => void) => void;
 };
 export type Stitch = {
   add_window(b: Uint8Array, t0: number, t1: number): number;
@@ -58,6 +60,8 @@ export type Ctx = {
   maxWorkers: number;
   scratch: string;
   stitch?: (session: Uint8Array) => Stitch;
+  /** Called once the tune workers exist, with what stops them (and the stream worker) at once. */
+  onWorkers?: (stop: () => void) => void;
 };
 
 const now = () => Date.now() / 1e3;
@@ -164,6 +168,7 @@ async function streamPass(
   T: number,
   progress: Progress,
   stages: Stages,
+  onStop?: (stop: (() => void) | null) => void,
 ): Promise<Map<string, Uint8Array | Blob>> {
   const core = await wasm();
   // 404 "raw videos not found", also when the raw folder itself is gone
@@ -188,9 +193,11 @@ async function streamPass(
   return new Promise((ok, no) => {
     const w = ctx.makeStreamWorker();
     const stop = (e: unknown) => {
+      onStop?.(null);
       w.terminate();
       no(e instanceof Error ? e : new Error(String(e)));
     };
+    onStop?.(() => stop(new RerunCancelled()));
     w.onerror = (e: ErrorEvent) => stop(new Error(e.message || "the worker script failed"));
     w.onmessage = (e: MessageEvent<FromWorker>) => {
       const m = e.data;
@@ -205,6 +212,7 @@ async function streamPass(
       else if (m.type === "log") progress.log(m.message);
       else if (m.type === "error") stop(new Error(m.message));
       else if (m.type === "done") {
+        onStop?.(null);
         w.terminate();
         ok(m.files);
       }
@@ -271,6 +279,11 @@ export async function rerun(
     }),
   );
   const tw = workers ?? new TuneWorkers(ctx.makeTuneWorker, runSession, ctx.maxWorkers);
+  let streamStop: (() => void) | null = null;
+  ctx.onWorkers?.(() => {
+    if (own) tw.close(); // auto-tune's own workers are closed by its caller's stop
+    streamStop?.();
+  });
   try {
     const windows = windowsOf(run);
     stages.start("window2", `${windows.length} windows`);
@@ -315,7 +328,9 @@ export async function rerun(
     st.free();
     stages.end();
     checkCancel(progress);
-    const stream = await streamPass(ctx, run, sessionBytes, stitch, T, progress, stages);
+    const stream = await streamPass(ctx, run, sessionBytes, stitch, T, progress, stages, (f) => {
+      streamStop = f;
+    });
     checkCancel(progress);
     stages.start("write_outputs");
     const traces = stream.get("C.npy");
@@ -411,6 +426,8 @@ export function contrastKnee(hist: number[], ratio: number): number | null {
 /** `TrialRunner` over the tune workers: the explored windows, then all of them for `decide`. */
 export class WorkersRunner implements TrialRunner {
   private current: "segment" | "all" | null = null;
+  /** Decide's trials (all windows after a segment search) run uncapped, as Python's `_decide`. */
+  private decide = false;
   constructor(
     private tw: TuneWorkers,
     private run: RunInfo,
@@ -427,10 +444,12 @@ export class WorkersRunner implements TrialRunner {
     await this.tw.load(loads, await windowBytes(this.run));
     this.log(`${to - from} windows on the tune workers (${set})`);
     this.current = set;
+    this.decide = set === "all" && this.segment !== null;
   }
   async trial(params: Params, reference: boolean) {
     const { H, W } = this.run.meta;
     const r = await this.tw.trial(enc(sessionFor(H, W, params)), this.checks, reference);
+    if (this.decide && reference) this.tw.clearCaps();
     return { counts: r.counts, score: r.score, error: r.error, size10Median: r.size10Median, seconds: r.seconds };
   }
   async startDiffThres(params: Params) {
@@ -478,6 +497,11 @@ export async function autotune(ctx: Ctx, run: RunInfo, args: TuneArgs, progress:
   const stages = new Stages(progress, out);
   const log = new StepLog(stages);
   const tw = new TuneWorkers(ctx.makeTuneWorker, enc(sessionFor(H, W, runParams)), ctx.maxWorkers);
+  let stopRerun: (() => void) | null = null;
+  ctx.onWorkers?.(() => {
+    tw.close();
+    stopRerun?.();
+  });
   try {
     const runner = new WorkersRunner(tw, run, checks, mid, progress.log);
     const search = new LocalSearch(runner, {
@@ -495,7 +519,20 @@ export async function autotune(ctx: Ctx, run: RunInfo, args: TuneArgs, progress:
     log.stage("rerun");
     const params = search.betterThanRun ? { ...base, ...proposed } : { ...runParams }; // nothing beat the run: its own values, as Python's Sweep.run
     const changed = Object.fromEntries(Object.entries(params).filter(([k, v]) => norm(v) !== norm(runParams[k])));
-    await rerun(ctx, run, changed, AUTO, progress, tw, stages); // the workers hold every window by now
+    await rerun(
+      {
+        ...ctx,
+        onWorkers: (stop) => {
+          stopRerun = stop;
+        },
+      },
+      run,
+      changed,
+      AUTO,
+      progress,
+      tw,
+      stages,
+    ); // the workers hold every window by now
     log.close();
     const auto = await ctx.registry.open(`${run.vpath}/reruns/${AUTO}`);
     const runScored = await scoreRun(run, checks, minDistFrac, []);
@@ -522,7 +559,8 @@ export async function autotune(ctx: Ctx, run: RunInfo, args: TuneArgs, progress:
       run_values: Object.fromEntries([...SEARCHED, ...DERIVED].map((k) => [k, runParams[k]])),
       at_edge: SEARCHED.filter((k) => atEdge(proposed[k], search.grids[k] ?? [])),
       score: proposal.summary,
-      run_score: search.runTrial?.score ?? null,
+      run_score: runScored.summary,
+      window_scores: { run: search.runTrial?.score ?? null, proposal: search.final?.score ?? null },
       better_than_run: search.betterThanRun,
       search_error: search.searchError,
       n_trials: search.trials.length,

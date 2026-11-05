@@ -2,6 +2,8 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { DEFAULTS } from "../../stream/session";
+import type { ToTuneWorker } from "../../stream/tuneProtocol";
 import { Folders } from "../folders";
 import { memoryKV } from "../kv";
 import { writeNpy } from "../npy";
@@ -10,7 +12,8 @@ import { Registry } from "../runs";
 import { DATA } from "../testing/e2eRun";
 import { FakeTuneWorker, out } from "../testing/fakeTuneWorker";
 import { NodeDir } from "../testing/nodeDir";
-import { autotune, type Ctx, RerunCancelled, rerun } from "./driver";
+import { autotune, type Ctx, RerunCancelled, rerun, WorkersRunner } from "./driver";
+import { TuneWorkers } from "./windows";
 
 /** A root with `raw/0.avi` (any bytes: the fake stream worker never reads them) and a browser run
  * `processed/t` with one window's factors. */
@@ -233,6 +236,9 @@ describe("autotune", () => {
     expect(doc.proposed.sparse_snr).toBeCloseTo(0.51, 1);
     expect(doc.kept).toEqual([]); // the fake run left every size at its default
     expect(doc.pairs.run.n_near).toBeGreaterThanOrEqual(0);
+    // `run_score` is the session-level unit-check summary of the run, as Python's; the search's sums are `window_scores`
+    expect(doc.run_score.good + doc.run_score.flagged).toBe(15);
+    expect(doc.window_scores.run).not.toBeNull();
     const csv = readFileSync(join(f.run, "reruns/auto/sweep.csv"), "utf8").trim().split("\n");
     expect(csv.length - 1).toBe(doc.n_trials);
     expect(readFileSync(join(f.run, "reruns/auto/unit_flags.csv"), "utf8")).toContain("unit_id,pnr");
@@ -269,5 +275,36 @@ describe("autotune", () => {
     };
     writeFileSync(join(f.run, "cnmf/A.npz"), new Uint8Array(await (await csrNpz(one)).arrayBuffer()));
     await expect(autotune(ctxFor(f), run, {}, progress().p)).rejects.toThrow("too few to estimate the cell diameter");
+  });
+});
+
+describe("WorkersRunner", () => {
+  it("runs decide's trials uncapped, as Python's _decide", async () => {
+    const f = await fixture();
+    const run = await f.registry.open(`${f.name}/processed/t`);
+    const caps: string[] = [];
+    const tw = new TuneWorkers(
+      () => {
+        const w = new FakeTuneWorker(() => out(5, 0));
+        const post = w.postMessage.bind(w);
+        w.postMessage = (m: ToTuneWorker) => {
+          if (m.type === "trial") caps.push(m.caps);
+          post(m);
+        };
+        return w as unknown as Worker;
+      },
+      new Uint8Array(),
+      1,
+    );
+    const runner = new WorkersRunner(tw, run, { diameter: 7 } as never, { from: 0, to: 1 }, () => undefined);
+    await runner.use("segment");
+    await runner.trial({ ...DEFAULTS }, true);
+    await runner.trial({ ...DEFAULTS }, false);
+    expect(caps[1]).not.toBe(""); // the search's trials are capped
+    await runner.use("all");
+    await runner.trial({ ...DEFAULTS }, true);
+    await runner.trial({ ...DEFAULTS }, false);
+    expect(caps.slice(2)).toEqual(["", ""]);
+    tw.close();
   });
 });

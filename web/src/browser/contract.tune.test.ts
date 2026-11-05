@@ -33,6 +33,9 @@ describe("tune requests match main's", () => {
         py.find(`GET /runs/{rid}/pairs${q}`).json(),
         1e-6,
       );
+    // one computation wrote both caches: the other route answers at once, with no second scoring
+    await expect(getJSON(`/runs/${rid}/flags?rerun=r1`)).resolves.toBeDefined();
+    await expect(getJSON(`/runs/${rid}/pairs?rerun=auto`)).resolves.toBeDefined();
     await expect(getJSON(`/runs/${rid}/flags?rerun=nope`)).rejects.toMatchObject({
       status: 404,
       message: `run ${rid} has no finished rerun 'nope'`,
