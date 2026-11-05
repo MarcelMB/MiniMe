@@ -493,7 +493,7 @@ export async function autotune(ctx: Ctx, run: RunInfo, args: TuneArgs, progress:
     });
     const proposed = await search.run();
     log.stage("rerun");
-    const params = { ...base, ...proposed };
+    const params = search.betterThanRun ? { ...base, ...proposed } : { ...runParams }; // nothing beat the run: its own values, as Python's Sweep.run
     const changed = Object.fromEntries(Object.entries(params).filter(([k, v]) => norm(v) !== norm(runParams[k])));
     await rerun(ctx, run, changed, AUTO, progress, tw, stages); // the workers hold every window by now
     log.close();

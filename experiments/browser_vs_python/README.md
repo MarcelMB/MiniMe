@@ -43,7 +43,8 @@ python measure.py --out mem_browser_tune.json --match '(?i)chrom' -- node run_br
   --dest SESSION/processed/browser_tune_DATE --profile EMPTY_DIR --log job_tune.json --tune
 ```
 
-`synth_v4_grin30` (30 min, 36 AVIs; local outputs `job_tune.json`, `mem_browser_tune.json` here, not committed):
-run F1 0.757 (scored on YrA, the new baseline), proposal F1 0.755 (target >= the run's: missed by 0.0015), auto-tune
-64 s (`wall_s`; target <= 120 s: met), 14 trials, wasm heap peak 173 MB, click to done 181 s, Chromium tree RSS
-peak 3.89 GiB (target <= 2 GB: missed; RSS counts shared pages once per process, so an upper bound).
+`synth_v4_grin30` (30 min, 36 AVIs; local outputs `job_tune_b.json`, `mem_browser_tune_b.json` here, not committed;
+the first, superseded run is `job_tune.json`, `mem_browser_tune.json`): run F1 0.757 (scored on YrA, the new baseline),
+proposal F1 0.755 (same parameters as the run: nothing beat it; 365 vs 366 units after the rerun's stitch), auto-tune
+61 s (`wall_s`), 14 trials, tune-worker wasm heap peak 173 MB, click to done 175 s, Chromium tree RSS peak 3.9 GiB (3.58
+GiB for a plain run; includes the GPU and renderer baseline).
