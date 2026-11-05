@@ -182,6 +182,8 @@ def seeds_unmerged(
             fac.t0,
             fac.session_T,
         )
+    if p.border_coverage > 0:  # the border mask zeroed pixels: no seeds right next to them
+        s = seeds.drop_near_masked(s, fac.max_proj)
     n["seeds_init"] = len(s)
     st["seeds_init"] = s
     with timer("pnr_refine"):

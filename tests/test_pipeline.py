@@ -305,3 +305,15 @@ def test_border_coverage_run_zeroes_masked_pixels_in_factors(tiny_session, tmp_p
         assert all(
             np.isfinite(np.asarray(v)).all() for v in vars(tf).values() if hasattr(v, "dtype")
         )
+
+
+def test_spread_template_fill_run_and_sidecar_rerun_agree(tiny_session, tmp_path):
+    """template_source="spread" + motion_fill="template" runs; a rerun reusing the motion
+    sidecar rebuilds the fill image and gives the same units."""
+    p = Params(**{**TINY_PARAMS, "template_source": "spread", "motion_fill": "template"})
+    out = pipeline.run(tiny_session["raw_dir"], p, run_name="f", out_root=tmp_path)
+    a1 = sps.load_npz(out / "cnmf" / "A.npz").toarray()
+    out = pipeline.run(tiny_session["raw_dir"], p, run_name="f", out_root=tmp_path)
+    rep = json.loads((out / "report.json").read_text())
+    assert rep["motion"]["sidecar_reused"]
+    assert np.array_equal(sps.load_npz(out / "cnmf" / "A.npz").toarray(), a1)
