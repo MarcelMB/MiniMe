@@ -3,7 +3,7 @@ import type { CurvePoint, Proposal } from "../../types";
 import { pyFloat } from "../num";
 import { SEARCHED } from "./params";
 import { STEP_OF } from "./search";
-import type { Grids, Trial, Values } from "./types";
+import type { Grids, Score, Trial, Values } from "./types";
 
 const SCORE_COLS = ["good", "flagged", "lost", "score", "low_pnr", "in_pieces", "bad_size", "duplicate"] as const;
 const COUNT_COLS = ["seeds_init", "seeds_pnr", "seeds_merged", "units_init_merge", "units_final"] as const;
@@ -15,6 +15,8 @@ export type AutotuneDoc = Omit<Proposal, "curves"> & {
   start: Values;
   pairs: { run: PairCounts; proposal: PairCounts };
   grids: Grids;
+  /** The search's summed per-window scores (`run_score` is the session-level summary, as Python's). */
+  window_scores: { run: Score | null; proposal: Score | null };
   wasm_heap_peak_mb: number;
 };
 

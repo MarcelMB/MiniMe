@@ -14,6 +14,7 @@ import { configure } from "./state";
 import { ASSUMED_UNITS, estimateRunBytes } from "./support";
 import { diskHandle } from "./testing/diskHandle";
 import { NodeDir } from "./testing/nodeDir";
+import { RerunCancelled } from "./tune/driver";
 
 class FakeWorker {
   onmessage: ((e: MessageEvent<FromWorker>) => void) | null = null;
@@ -1236,6 +1237,35 @@ describe("rerun and auto-tune jobs", () => {
     } as unknown as TuneRunner;
     return { tune, calls, release: () => release() };
   };
+
+  it("cancelling a rerun stops its workers at once and frees the lock only when the tune has settled", async () => {
+    const order: string[] = [];
+    let stopped: () => void = () => undefined;
+    const tune = {
+      rerun: (_r: unknown, _p: unknown, _n: unknown, p: { onWorkers?: (s: () => void) => void }) =>
+        new Promise<void>((_ok, no) => {
+          p.onWorkers?.(() => {
+            order.push("abort");
+            stopped = () => no(new RerunCancelled());
+          });
+        }),
+    } as unknown as TuneRunner;
+    const { m, name } = await setup(memoryKV(), { tune });
+    await makeE2eRunUnder(name);
+    const job = await m.submitRerun(`${name}/processed/t`, "r1", { sparse_snr: 0.5 });
+    await tick();
+    expect((await m.cancel(job.id)).status).toBe("cancelled");
+    order.push("cancel returned");
+    await tick();
+    expect(order).toEqual(["abort", "cancel returned"]); // the tune has not settled: the lock is still held
+    const lock = () => (m as unknown as { holding: boolean }).holding;
+    expect(lock()).toBe(true);
+    stopped();
+    await tick();
+    await tick();
+    expect(lock()).toBe(false);
+    expect((await m.submitRerun(`${name}/processed/t`, "r2", {})).status).toBe("running");
+  });
 
   it("runs a rerun job into <run>/reruns/<name> with the source run recorded", async () => {
     const t = tuned();

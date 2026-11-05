@@ -207,7 +207,7 @@ for (const what of ["flags", "pairs"] as const) {
     const pairsName = await hashKey("pairs", ch.checks, ch.minDistFrac);
     const name = what === "flags" ? flagsName : pairsName;
     if (await cache.has(name)) return { json: await cache.loadJSON(name, null) };
-    return computing(`${r.id}:${r.stamp}:${name}`, async () => {
+    return computing(`${r.id}:${r.stamp}:score_${await hashKey("score", ch.checks, ch.minDistFrac)}`, async () => {
       const s = await scoreRun(r, ch.checks, ch.minDistFrac, []);
       await cache.saveJSON(flagsName, s.flags);
       await cache.saveJSON(pairsName, s.pairs);
