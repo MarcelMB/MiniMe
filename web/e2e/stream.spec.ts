@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 
@@ -115,13 +115,22 @@ test("streams raw AVIs in the browser and saves the outputs", async ({ page }) =
   // STREAM_DEVICE: auto (default), cpu, gpu or both; STREAM_GPU_TEST: the GPU test hooks (nogpu, mismatch, lost)
   const device = (process.env.STREAM_DEVICE || undefined) as "auto" | "cpu" | "gpu" | "both" | undefined;
   const gpuTest = process.env.STREAM_GPU_TEST || undefined;
+  // STREAM_PARAMS: a JSON file of run parameters over the defaults (e.g. an auto-tune proposal)
+  const params = process.env.STREAM_PARAMS ? JSON.parse(readFileSync(process.env.STREAM_PARAMS, "utf8")) : undefined;
   // resolves when the run is done (hours on a long session); a failed run rejects with its message
   const done = await page.evaluate(
-    ({ keepStore, workers, tileCrc, device, gpuTest }) => {
+    ({ keepStore, workers, tileCrc, device, gpuTest, params }) => {
       const files = (id: string) => [...((document.getElementById(id) as HTMLInputElement | null)?.files ?? [])];
-      return window.__minimeStream!(files("avis"), files("inputs"), { keepStore, workers, tileCrc, device, gpuTest });
+      return window.__minimeStream!(files("avis"), files("inputs"), {
+        keepStore,
+        workers,
+        tileCrc,
+        device,
+        gpuTest,
+        params,
+      });
     },
-    { keepStore, workers, tileCrc, device, gpuTest },
+    { keepStore, workers, tileCrc, device, gpuTest, params },
   );
   await saveOutputs(page, done.files, out!);
   console.log(`done in ${done.seconds.toFixed(0)} s: ${done.files.length} output files -> ${out}`);
