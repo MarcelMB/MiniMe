@@ -558,8 +558,9 @@ def local_n_trials(
     max_steps: int = LOCAL_MAX_STEPS, passes: int = LOCAL_PASSES, n_decide: int = 1
 ) -> int:
     """Upper bound on the settings ``LocalSearch.run`` tries: the run, two starts, each pass's
-    lines (one step back plus ``max_steps`` on), the decide reruns (the run's and the best)."""
-    return 3 + passes * len(LOCAL_ORDER) * (max_steps + 1) + 1 + n_decide
+    lines (up to ``max_steps`` down, then, when going down gained nothing, as many up: ties
+    are crossed), the decide reruns (the run's and the best)."""
+    return 3 + passes * len(LOCAL_ORDER) * 2 * max_steps + 1 + n_decide
 
 
 def step_value(key: str, value: Any, up: bool, integer: bool = False) -> Any:
