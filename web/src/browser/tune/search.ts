@@ -123,6 +123,9 @@ export function unique(values: (number | string)[]): (number | string)[] {
   return [...strs, ...nums];
 }
 
+/** The search's own failures (Python's `RuntimeError`); anything else is a crash and propagates. */
+export class SearchFailed extends Error {}
+
 export class LocalSearch {
   trials: Trial[] = [];
   runTrial: Trial | null = null;
@@ -214,7 +217,7 @@ export class LocalSearch {
       const other = await this.try("start", runValues);
       if (better(other, cur)) cur = other;
     }
-    if (cur.score === null) throw new Error(`auto-tune: the start setting failed (${cur.error})`);
+    if (cur.score === null) throw new SearchFailed(`auto-tune: the start setting failed (${cur.error})`);
     const tried: Record<string, (number | string)[]> = Object.fromEntries(SEARCHED.map((k) => [k, [cur.values[k]]]));
     for (let pass = 0; pass < this.passes; pass++) {
       const from = cur;
@@ -241,7 +244,7 @@ export class LocalSearch {
     this.runTrial = run;
     const r = ranked(others, this.o.base);
     if (run.score === null && !r.length) {
-      throw new Error(`auto-tune: the run's parameters failed on the whole session (${run.error})`);
+      throw new SearchFailed(`auto-tune: the run's parameters failed on the whole session (${run.error})`);
     }
     return r[0] ?? null;
   }
@@ -255,8 +258,8 @@ export class LocalSearch {
     try {
       top = await this.search(runValues);
     } catch (e) {
-      if (this.runTrial.score === null) throw e;
-      this.searchError = e instanceof Error ? e.message : String(e);
+      if (!(e instanceof SearchFailed) || this.runTrial.score === null) throw e;
+      this.searchError = e.message;
     }
     const found = this.o.segment ? await this.decide(runValues, top) : (top[0] ?? null);
     const run = this.runTrial as Trial;
