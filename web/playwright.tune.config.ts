@@ -9,7 +9,7 @@ export default defineConfig({
   use: { baseURL: "http://127.0.0.1:8798", browserName: "chromium" },
   webServer: {
     command:
-      "npx vite build --mode browser && npx vite preview --mode browser --outDir dist-browser --port 8798 --host 127.0.0.1 --strictPort",
+      "VITE_TUNE=1 npx vite build --mode browser && npx vite preview --mode browser --outDir dist-browser --port 8798 --host 127.0.0.1 --strictPort",
     url: "http://127.0.0.1:8798/",
     timeout: 300_000,
     reuseExistingServer: false,

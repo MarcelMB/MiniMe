@@ -17,6 +17,8 @@ export type Features = {
   tune: boolean;
   RunActions: ComponentType<{ runId: string }> | null;
   SpeedPanel: ComponentType<SpeedPanelProps> | null;
+  /** Home's banner on where the data goes (the browser build: it stays on this computer). */
+  PrivacyNote: ComponentType | null;
 };
 
-export const FEATURES: Features = { tune: true, RunActions: null, SpeedPanel: null };
+export const FEATURES: Features = { tune: true, RunActions: null, SpeedPanel: null, PrivacyNote: null };
