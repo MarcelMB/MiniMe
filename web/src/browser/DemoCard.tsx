@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { Segmented } from "../controls";
 import { fmtBytes } from "../format";
+import { offerPreset } from "../launch/preset";
 import { go } from "../router";
 import { approxBytes, DEMO_PAGE, DEMOS, type DemoKind } from "./demo";
+import { DEMO_PRESET } from "./demoPreset";
 import { FileListDir, HandleDir } from "./dir";
 import { state } from "./state";
 import { pickDirectory, support } from "./support";
@@ -12,10 +14,16 @@ const KINDS: DemoKind[] = ["short", "full"];
 const label = (k: DemoKind) => `${DEMOS[k].minutes} min · ${DEMOS[k].segments} videos · ${fmtBytes(approxBytes(k))}`;
 const last = (k: DemoKind) => DEMOS[k].segments - 1;
 
-/** Open New run on the folder `vpath` (a root or a folder in one). */
+/** Open New run with the demo settings (on the folder last used). */
+function openWithDemoSettings(): void {
+  offerPreset(DEMO_PRESET);
+  go({ name: "new" });
+}
+
+/** Open New run on the folder `vpath` (a root or a folder in one), with the demo settings. */
 async function openNewRun(vpath: string): Promise<void> {
   await state.folders.touch(splitVpath(vpath).root, vpath);
-  go({ name: "new" });
+  openWithDemoSettings();
 }
 
 /** Home's demo card (browser build): what to download of the synthetic demo session on UCLA
@@ -77,7 +85,10 @@ export function DemoCard() {
           rate, put the dataset's <span className="mono">meta.json</span> in the folder above, or type 20 fps in New
           run.
         </li>
-        <li>Choose that folder: New run opens on it.</li>
+        <li>
+          Choose that folder: New run opens on it with the demo settings, the parameters Python's auto-tune found for
+          this session (Reset to defaults there to go back).
+        </li>
       </ol>
       <div className="row" style={{ flexWrap: "wrap" }}>
         {can.fsAccess ? (
@@ -90,6 +101,9 @@ export function DemoCard() {
             <input type="file" hidden onChange={(e) => upload(e.target.files)} {...{ webkitdirectory: "" }} />
           </label>
         )}
+        <button className="btn" type="button" onClick={openWithDemoSettings}>
+          Use the demo settings
+        </button>
       </div>
       {err && <p className="error">{err}</p>}
     </section>

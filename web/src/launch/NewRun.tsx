@@ -13,6 +13,7 @@ import { fpsOverride } from "./fps";
 import { ParamsForm } from "./ParamsForm";
 import { Preview } from "./Preview";
 import { changedOnly, defaultRunName, failingCount, offersOverwrite, overwriteAfterError } from "./params";
+import { clearPreset, readPreset } from "./preset";
 
 export function NewRun() {
   const defaults = useResource("params", () => getJSON<{ groups: string[]; params: ParamMeta[] }>("/params/defaults"));
@@ -39,7 +40,10 @@ export function NewRun() {
   const fps = fpsOverride(fpsText, info.data?.fps ?? null);
   const shownFps = fps.fps ?? info.data?.fps ?? null;
   const [name, setName] = useState(() => defaultRunName(new Date()));
-  const [values, setValues] = useState<Record<string, unknown>>({});
+  // a preset handed over by another page (the browser build's demo card), for this New run only
+  const [preset, setPreset] = useState(readPreset);
+  useEffect(clearPreset, []);
+  const [values, setValues] = useState<Record<string, unknown>>(() => ({ ...(preset?.values ?? {}) }));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [keep, setKeep] = useState(false);
   const [tune, setTune] = useState(true); // the run is meant to end with estimates; off = tune by hand
@@ -206,6 +210,25 @@ export function NewRun() {
         )}
         <section className="card span4" aria-label="4. Parameters">
           <span className="label">4 · Parameters</span>
+          {preset && (
+            <div className="row" role="status" aria-label="Preset" style={{ flexWrap: "wrap" }}>
+              <span>
+                <strong>{preset.name} applied.</strong> <span className="muted">{preset.note}</span>
+              </span>
+              <span className="spacer" />
+              <button
+                className="btn"
+                type="button"
+                onClick={() => {
+                  setValues({});
+                  setErrors({});
+                  setPreset(null);
+                }}
+              >
+                Reset to defaults
+              </button>
+            </div>
+          )}
           {FEATURES.tune && (
             <Toggle
               label={`Auto-tune the seed, init and CNMF parameters after the run (a few more minutes; the proposal opens on the run's Tune page${
