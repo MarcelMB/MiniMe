@@ -71,7 +71,14 @@ export class TuneWorkers {
       s.pending.get(m.id)?.ok(m);
       s.pending.delete(m.id);
     };
-    w.onerror = (e: ErrorEvent) => s.fail?.(new Error(e.message || "a tune worker failed"));
+    const crash = (message: string) => {
+      const err = new Error(message);
+      for (const p of s.pending.values()) p.no(err);
+      s.pending.clear();
+      s.fail?.(err);
+    };
+    w.onerror = (e: ErrorEvent) => crash(e.message || "a tune worker failed");
+    w.onmessageerror = () => crash("a tune worker sent a message that could not be read");
     return s;
   }
 
@@ -85,8 +92,18 @@ export class TuneWorkers {
         const mine = windows.filter((_, k) => k % n === j);
         s.windows = mine.map((w) => w.i);
         return new Promise<void>((ok, no) => {
-          s.ack = ok;
-          s.fail = no;
+          const done = () => {
+            s.ack = null;
+            s.fail = null;
+          };
+          s.ack = () => {
+            done();
+            ok();
+          };
+          s.fail = (e) => {
+            done();
+            no(e);
+          };
           s.w.postMessage({
             type: "load",
             runSession: this.runSession,
@@ -190,7 +207,13 @@ export class TuneWorkers {
   }
 
   close(): void {
-    for (const s of this.slots) s.w.terminate();
+    const err = new Error("the tune workers were closed");
+    for (const s of this.slots) {
+      for (const p of s.pending.values()) p.no(err);
+      s.pending.clear();
+      s.fail?.(err);
+      s.w.terminate();
+    }
     this.slots = [];
   }
 }

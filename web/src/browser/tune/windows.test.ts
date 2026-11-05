@@ -74,4 +74,25 @@ describe("TuneWorkers", () => {
     await tw.trial(new Uint8Array(), { diameter: 7 } as never, false);
     expect(seen).toEqual(["", JSON.stringify({ "0": { seeds_pnr: 10, seeds_merged: 5 } })]);
   });
+
+  it("rejects a pending trial when a worker crashes, and when the workers are closed", async () => {
+    const made: FakeTuneWorker[] = [];
+    const mk = () => {
+      const w = new FakeTuneWorker(() => out(5, 0));
+      w.postMessage = (m: ToTuneWorker) => {
+        if (m.type === "load")
+          setTimeout(() => w.onmessage?.({ data: { type: "ack", heapMb: 1, bytes: 0 } } as never), 0);
+      };
+      made.push(w);
+      return w as unknown as Worker;
+    };
+    const tw = new TuneWorkers(mk, new Uint8Array(), 1);
+    await tw.load(windows(1), 1e6);
+    const t = tw.trial(new Uint8Array(), { diameter: 7 } as never, true);
+    made[0].onerror?.({ message: "RuntimeError: unreachable" } as ErrorEvent);
+    await expect(t).rejects.toThrow("RuntimeError: unreachable");
+    const u = tw.units();
+    tw.close();
+    await expect(u).rejects.toThrow("the tune workers were closed");
+  });
 });
