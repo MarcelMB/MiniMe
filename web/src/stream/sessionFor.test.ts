@@ -6,6 +6,8 @@ function changed(v: unknown): unknown {
   if (typeof v === "boolean") return !v;
   if (typeof v === "number") return v + 1;
   if (v === "auto") return 7;
+  if (v === "spread") return "first";
+  if (v === "template") return "zero";
   if (Array.isArray(v)) return v.map((x) => (typeof x === "number" ? x + 1 : 9));
   throw new Error(`no change for ${String(v)}`);
 }

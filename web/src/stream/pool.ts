@@ -10,7 +10,7 @@
 import type { FromFrameWorker, ToFrameWorker } from "./poolProtocol";
 
 type Task = Extract<ToFrameWorker, { id: number }>;
-type TaskKind = "p1" | "s1" | "p2" | "t1" | "t2" | "f0" | "f1" | "f2" | "w1" | "g0" | "gt" | "gb";
+type TaskKind = "p1" | "s1" | "p2" | "t1" | "t2" | "u1" | "f0" | "f1" | "f2" | "w1" | "g0" | "gt" | "gb";
 type Done<K extends TaskKind> = Extract<FromFrameWorker, { type: "done"; kind: K }>;
 type Without<T, K extends string> = T extends unknown ? Omit<T, K> : never;
 
@@ -58,6 +58,7 @@ export class Pool {
     p1: 0,
     s1: 0,
     p2: 0,
+    u1: 0,
     t1: 0,
     t2: 0,
     f0: 0,

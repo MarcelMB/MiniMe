@@ -25,6 +25,9 @@ fn params(h: usize, w: usize) -> MotionParams {
         template_frames: 200,
         motion_before_tophat: true,
         motion_bandpass: [1.0, 6.0],
+        template_source: "spread".into(),
+        template_chunks: 10,
+        motion_fill: "template".into(),
     }
 }
 

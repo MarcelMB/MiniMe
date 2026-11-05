@@ -110,7 +110,7 @@ def main() -> None:
         fac = s.factors()  # mean image and noise only (see the module docstring)
         ymean, sn_fft = fac.mean_flat(), fac.sigma_flat()
         del fac
-    frames = st.FrameStream(io.probe(s.raw), sc.shifts, params, a.batch)
+    frames = st.FrameStream(io.probe(s.raw), sc.shifts, params, a.batch, fill=sc.fill)
     merge_corr = params.loop_merge_corr if a.merge_corr is None else a.merge_corr
     # the first runs merged on raw traces and keep their folder names
     suffix = "" if a.merge_on == "raw" or a.n_updates == 0 else "_lp"

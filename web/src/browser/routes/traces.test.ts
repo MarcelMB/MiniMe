@@ -24,15 +24,15 @@ describe("trace routes on the e2e run", () => {
 
   it("answers the overview of a run's traces after computing it once", async () => {
     const a = await settled(() => getArray(`/runs/${rid}/traces/overview?bins=10`));
-    expect(a.shape).toEqual([15, 2, 10]);
-    expect(a.data.length).toBe(15 * 2 * 10);
+    expect(a.shape).toEqual([7, 2, 10]); // the e2e run's 7 units (15 before the Nov 2026 motion defaults)
+    expect(a.data.length).toBe(7 * 2 * 10);
     // cached: the same request now answers at once
     expect((await getArray(`/runs/${rid}/traces/overview?bins=10`)).data).toEqual(a.data);
   });
 
   it("keeps a bin count above the frame count at one bin per frame", async () => {
     const a = await settled(() => getArray(`/runs/${rid}/traces/overview?bins=20000`));
-    expect(a.shape).toEqual([15, 2, 300]);
+    expect(a.shape).toEqual([7, 2, 300]);
   });
 
   it("checks kind, bins, unit and window like main", async () => {
@@ -43,8 +43,8 @@ describe("trace routes on the e2e run", () => {
     await bad("/traces/overview?bins=0", 400, "bins must be in 1..20000");
     await bad("/traces/overview?bins=20001", 400, "bins must be in 1..20000");
     await bad("/traces/overview?bins=abc", 422, "bins must be an integer");
-    await bad("/traces/15", 400, "unit 15 out of range 0..14");
-    await bad("/traces/-1", 400, "unit -1 out of range 0..14");
+    await bad("/traces/7", 400, "unit 7 out of range 0..6");
+    await bad("/traces/-1", 400, "unit -1 out of range 0..6");
     await bad("/traces/x", 422, "unit must be an integer");
     await bad("/traces/0?start=200&stop=100", 400, "window 200:100 outside 0:300");
     await bad("/traces/0?stop=301", 400, "window 0:301 outside 0:300");

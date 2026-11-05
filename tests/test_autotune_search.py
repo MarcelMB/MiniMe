@@ -204,7 +204,7 @@ def test_settings_far_beyond_the_runs_seed_count_fail_fast(tiny_w2_run):
     assert sw.final is sw.run_trial or sw.final.score is not None
 
 
-def test_estimate_diameter_from_footprints(tiny_w2_run, tmp_path):
+def test_estimate_diameter_from_footprints(tiny_w2_run, tmp_path, estimate_from_few_units):
     d = at.estimate_diameter(tiny_w2_run)
     assert 5.0 <= d <= 15.0  # synthetic cells: Gaussian sigma 3 px
     (tmp_path / "cnmf").mkdir()
@@ -214,7 +214,9 @@ def test_estimate_diameter_from_footprints(tiny_w2_run, tmp_path):
         at.estimate_diameter(tmp_path)
 
 
-def test_autotune_without_diameter_uses_the_estimate_and_records_the_thresholds(tiny_w2_run):
+def test_autotune_without_diameter_uses_the_estimate_and_records_the_thresholds(
+    tiny_w2_run, estimate_from_few_units
+):
     out = at.autotune(tiny_w2_run, grids=SMALL, name="auto_est", dup_corr=0.7, min_dist_frac=0.3)
     doc = at.load_doc(out)
     assert doc["diameter_source"] == "footprints"

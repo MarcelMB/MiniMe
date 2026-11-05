@@ -13,6 +13,7 @@ pub mod compress_ref;
 pub mod corr;
 pub mod factors;
 pub mod fastmath;
+pub mod fill;
 pub mod filters;
 pub mod fsimd;
 pub mod gmm;
@@ -53,6 +54,8 @@ pub struct Inputs {
     pub shifts: Vec<f32>, // (T, 2) dy, dx
     pub ymean: Vec<f64>,
     pub sn: Vec<f64>,
+    /// The session's fill image (`fill.npy`, `h * w` uint8) with `motion_fill = "template"`.
+    pub fill: Option<Vec<u8>>,
 }
 
 impl Inputs {
@@ -93,20 +96,36 @@ impl Inputs {
         if shifts.len() < 2 * params.t {
             return Err(format!("{} shifts for {} frames", shifts.len() / 2, params.t));
         }
+        let fill = match params.motion_fill.as_str() {
+            "zero" => None,
+            "template" => {
+                let f = npy::read_u8(&get("fill.npy").map_err(|_| {
+                    "motion_fill is \"template\" but the inputs hold no fill.npy".to_string()
+                })?)?
+                .data;
+                if f.len() != p {
+                    return Err(format!("fill.npy holds {} pixels, expected {p}", f.len()));
+                }
+                Some(f)
+            }
+            other => return Err(format!("motion_fill must be 'zero' or 'template', not {other:?}")),
+        };
         Ok(Self {
             params,
             a,
             shifts,
             ymean,
             sn,
+            fill,
         })
     }
 
-    pub fn prep(&self) -> preprocess::Prep {
+    pub fn prep(&self) -> preprocess::Prep<'_> {
         preprocess::Prep {
             median_ksize: self.params.median_ksize,
             tophat_wnd: self.params.tophat_wnd,
             motion_before_tophat: self.params.motion_before_tophat,
+            fill: self.fill.as_deref(),
         }
     }
 }

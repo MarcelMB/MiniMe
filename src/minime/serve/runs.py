@@ -15,7 +15,7 @@ import scipy.sparse as sps
 
 from minime import io, motion, pipeline
 from minime.factors import Factors
-from minime.params import Params
+from minime.params import Params, with_legacy
 from minime.serve.cache import RunCache, cache_root
 from minime.window2 import RERUNS
 
@@ -70,7 +70,9 @@ def _norm(v: Any) -> Any:
 
 
 def changed_params(pj: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Parameters of a run's params.json that differ from today's defaults."""
+    """Parameters of a run's params.json that differ from today's defaults (a run that
+    predates a parameter used its legacy value, ``params.with_legacy``)."""
+    pj = with_legacy(pj)
     out = {}
     for k, d in Params().asdict().items():
         if k in pj and _norm(pj[k]) != _norm(d):

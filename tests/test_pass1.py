@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pytest
 
-from minime import io, pass1, tiles
+from minime import io, motion, pass1, tiles
 from minime.params import Params
 
 
@@ -24,7 +24,7 @@ def test_params_json_roundtrip(tmp_path):
     p.to_json(tmp_path / "p.json")
     q = Params.from_json(tmp_path / "p.json")
     assert q == p and q.size_thres == (25, None) and isinstance(q.size_thres, tuple)
-    assert set(p.motion_params()) == {
+    legacy = {
         "median_ksize",
         "tophat_wnd",
         "motion_max_shift",
@@ -33,7 +33,48 @@ def test_params_json_roundtrip(tmp_path):
         "motion_before_tophat",
         "motion_bandpass",
     }
+    # the shifts depend on the template's source, not on the fill; first-frames parameters
+    # give the keys sidecars written before Nov 2026 hold, so those stay valid
+    assert set(p.motion_params()) == legacy | {"template_source", "template_chunks"}
+    assert set(Params(template_source="first", motion_fill="zero").motion_params()) == legacy
+    assert Params(motion_fill="zero").motion_params() == p.motion_params()
+    assert Params(motion_outlier=3.0).motion_params()["motion_outlier"] == 3.0
     assert p.asdict()["tile"] == 32
+
+
+def test_run_params_json_without_new_motion_keys_reads_as_legacy(tmp_path):
+    """A run made before template_source / motion_fill existed used the first-frames template
+    and zero fill; a partial parameter file takes today's defaults."""
+    old = {"tile": 32, "raw_dir": "/x", "raw_hash": "h", "minime_version": "0.0.1"}
+    p = Params.from_dict(old)
+    assert (p.template_source, p.motion_fill) == ("first", "zero")
+    q = Params.from_dict({"tile": 32})
+    assert (q.template_source, q.motion_fill) == ("spread", "template")
+    r = Params.from_dict({**old, "template_source": "spread"})
+    assert (r.template_source, r.motion_fill) == ("spread", "zero")
+
+
+def test_template_fill_fills_the_uncovered_border(tiny_session, tmp_path):
+    """Frames shifted by (4, -6) read rows 60-63 and columns 0-5 from outside the frame:
+    with the template fill those hold the fill image in every frame, with zero fill 0."""
+    info = io.probe(tiny_session["raw_dir"])
+    frames = io.read_avi(info.segments[0])
+    sh = np.tile(np.float32([4.0, -6.0]), (300, 1))
+    edges = pass1.seed_block_edges(300, 100, 50)
+    grid = tiles.tile_grid(64, 64, 32)
+    out = {}
+    for fill in ("template", "zero"):
+        p = Params(template_frames=50, motion_fill=fill)
+        tmpl = pass1.build_template(info, p)
+        assert (tmpl.fill is not None) is (fill == "template")
+        p1 = pass1.Pass1(tmpl, grid, p, edges, 0, sh)
+        p1.process(frames)
+        out[fill] = (p1.max_proj, tmpl.fill)
+    mp, fill = out["template"]
+    assert fill.dtype == np.uint8 and fill.shape == (64, 64)
+    assert np.array_equal(mp[60:], fill[60:]) and np.array_equal(mp[:, :6], fill[:, :6])
+    assert (out["zero"][0][60:] == 0).all() and (out["zero"][0][:, :6] == 0).all()
+    assert fill[20:40, 20:40].mean() > 0  # the tophat mean, not blank
 
 
 def test_pass1_single_and_parallel_agree(tiny_session, tmp_path):
@@ -318,3 +359,30 @@ def test_run_workers_raises_when_a_worker_dies():
 
     with pytest.raises(BrokenProcessPool):
         pass1.run_workers(os._exit, [(1,)])
+
+
+def test_spread_starts_and_sample_frames(tiny_session):
+    info = io.probe(tiny_session["raw_dir"])
+    assert pass1.spread_starts(300, 4, 20).tolist() == [0, 93, 187, 280]
+    f = pass1.sample_frames(info, 4, 20)
+    assert f.shape == (80, 64, 64)
+    full = np.concatenate([io.read_avi(s) for s in info.segments])
+    assert np.array_equal(f[20:40], full[93:113]) and np.array_equal(f[60:], full[280:300])
+
+
+def test_build_template_options_land_on_median_position(tmp_path):
+    """The synthetic walk leaves the first frames' position: the spread template puts the
+    session's median shift near 0, the first-frames template does not."""
+    from minime.testing import synth
+
+    raw = tmp_path / "raw"
+    synth.write_session(raw, minutes=600 / 30 / 60, fps=30, segment=200, seed=0, side=128)
+    info = io.probe(raw)
+    base = dict(template_frames=100, template_chunks=10)
+    every = pass1._reg(pass1.read_range(info, 0, info.frames), Params(**base))
+    med = {}
+    for name, kw in {"first": {"template_source": "first"}, "spread": {}}.items():
+        p = Params(**base, **kw)
+        med[name] = np.abs(np.median(motion.estimate(every, pass1.build_template(info, p)), 0))
+    assert med["first"].max() > 4, med
+    assert med["spread"].max() < 1, med
