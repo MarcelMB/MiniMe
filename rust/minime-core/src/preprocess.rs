@@ -96,17 +96,22 @@ pub(crate) fn fma(a: f32, b: f32, c: f32) -> f32 {
 /// `cv2.warpAffine(f, [[1, 0, -dx], [0, 1, -dy]], INTER_LINEAR)` on any pixel type:
 /// `out(y, x) = f(y + dy, x + dx)` by fused bilinear lerps, zeros outside; `store`
 /// converts the float32 result to the output type.
+#[allow(clippy::too_many_arguments)]
 fn shift_with<T: Copy, O>(
     src: &[T],
     h: usize,
     w: usize,
     dy: f32,
     dx: f32,
+    replicate: bool,
     load: impl Fn(T) -> f32,
     store: impl Fn(f32) -> O,
 ) -> Vec<O> {
     let at = |yy: i64, xx: i64| -> f32 {
-        if yy >= 0 && yy < h as i64 && xx >= 0 && xx < w as i64 {
+        if replicate {
+            let (yy, xx) = (yy.clamp(0, h as i64 - 1), xx.clamp(0, w as i64 - 1));
+            load(src[yy as usize * w + xx as usize])
+        } else if yy >= 0 && yy < h as i64 && xx >= 0 && xx < w as i64 {
             load(src[yy as usize * w + xx as usize])
         } else {
             0.0
@@ -141,7 +146,13 @@ fn shift_with<T: Copy, O>(
 /// float32 lerps, round half to even), zeros outside; four pixels at a time (`warp`), the
 /// same bits as `shift_scalar`.
 pub fn shift(src: &[u8], h: usize, w: usize, dy: f32, dx: f32) -> Vec<u8> {
-    crate::warp::shift_u8(src, h, w, dy, dx)
+    crate::warp::shift_u8(src, h, w, dy, dx, false)
+}
+
+/// `cv2.warpAffine(..., borderMode=BORDER_REPLICATE)` on uint8: `shift` with the nearest edge
+/// pixel where it reads 0 (`motion.apply_shifts(..., replicate=True)`).
+pub fn shift_replicate(src: &[u8], h: usize, w: usize, dy: f32, dx: f32) -> Vec<u8> {
+    crate::warp::shift_u8(src, h, w, dy, dx, true)
 }
 
 /// The same warp on float32 frames (`motion.apply_shifts` on the registration image).
@@ -151,14 +162,21 @@ pub fn shift_f32(src: &[f32], h: usize, w: usize, dy: f32, dx: f32) -> Vec<f32> 
 
 /// `shift`, one pixel at a time: its reference.
 pub fn shift_scalar(src: &[u8], h: usize, w: usize, dy: f32, dx: f32) -> Vec<u8> {
-    shift_with(src, h, w, dy, dx, f32::from, |v| {
+    shift_with(src, h, w, dy, dx, false, f32::from, |v| {
+        v.round_ties_even().clamp(0.0, 255.0) as u8
+    })
+}
+
+/// `shift_replicate`, one pixel at a time: its reference.
+pub fn shift_replicate_scalar(src: &[u8], h: usize, w: usize, dy: f32, dx: f32) -> Vec<u8> {
+    shift_with(src, h, w, dy, dx, true, f32::from, |v| {
         v.round_ties_even().clamp(0.0, 255.0) as u8
     })
 }
 
 /// `shift_f32`, one pixel at a time: its reference.
 pub fn shift_f32_scalar(src: &[f32], h: usize, w: usize, dy: f32, dx: f32) -> Vec<f32> {
-    shift_with(src, h, w, dy, dx, |v| v, |v| v)
+    shift_with(src, h, w, dy, dx, false, |v| v, |v| v)
 }
 
 /// Running min (`is_min`) or max over windows of `2r + 1` samples along one line, samples

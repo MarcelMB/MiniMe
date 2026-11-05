@@ -57,6 +57,18 @@ def main() -> None:
             note += f" (max whole-px change {whole:g})"
         print(f"{name:10s} {'ok  ' if good else 'FAIL'} {note}")
         ok &= good
+    if (ref / "fill.npy").exists():  # template fill: uint8, from the template frames' shifts
+        r, g = np.load(ref / "fill.npy"), np.load(a.rust / "fill.npy")
+        d = np.abs(g.astype(np.int16) - r.astype(np.int16)) if r.shape == g.shape else None
+        # a shift ~5e-6 px off (the FFT) can move one warped pixel by a grey level
+        good = d is not None and d.max() <= 1 and (d > 0).sum() <= 1e-4 * d.size
+        note = (
+            "shape differs"
+            if d is None
+            else f"max |diff| {d.max()}, {int((d > 0).sum())} px differ"
+        )
+        print(f"{'fill':10s} {'ok  ' if good else 'FAIL'} {note}")
+        ok &= good
     sys.exit(0 if ok else 1)
 
 
