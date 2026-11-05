@@ -12,11 +12,16 @@
   </picture>
 </h1>
 
-Formerly CaFast / CaAnFast; runs written under the old name still load.
+Factor-first CNMF pipeline for one-photon miniscope calcium imaging.
 
-Factor-first CNMF pipeline for one-photon miniscope calcium imaging. The movie is read
-twice (pass 1: preprocess + motion correction; pass 2: per-tile low-rank compression); every
-CNMF stage after that runs on the stored factors and never rereads the movie.
+The raw video is first preprocessed and motion corrected, then compressed tile by tile with a
+truncated SVD (singular value decomposition), which splits each tile's movie into a few
+components, each a spatial pattern times a time course. Stacked, these are the factors: a
+spatial factor `W` and a temporal factor `V`. Only components that carry signal are kept, so
+what is dropped is mostly noise. CNMF-E (seeds, correlations, spatial update, background)
+then runs on these factors and never rereads the movie: the stored factors are about
+50-100 MB instead of the full recording, and parameters can be changed without another pass
+over the video.
 
 ## Install
 Released versions: `pip install minime-cnmf` (the import and the command are `minime`).
