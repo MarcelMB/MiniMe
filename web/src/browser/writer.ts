@@ -13,7 +13,17 @@ import { pyFloat } from "./num";
 export type WindowParts = { t0: number; t1: number; files: Map<string, Uint8Array> };
 
 /** The pass-2 factors of a window that go to `factors/wNN/` (`writeWindow`). */
-const FACTORS = ["W.npy", "V.npy", "s.npy", "mean.npy", "k.npy", "rank.npy", "block_max.npy", "max_proj.npy"];
+const FACTORS = [
+  "W.npy",
+  "V.npy",
+  "s.npy",
+  "mean.npy",
+  "sigma.npy",
+  "k.npy",
+  "rank.npy",
+  "block_max.npy",
+  "max_proj.npy",
+];
 
 /** The files of a window the session-wide steps read: `factors/meta.json`'s ranks, the seeds
  * (`sessionSeeds`: initial seeds, the PNR mask, merged seeds) and the init footprints
@@ -247,6 +257,8 @@ export type RunParts = {
   stream: Map<string, Uint8Array | Blob>;
   /** `C.npy`, (K, T) float32, read from where the pass wrote it. */
   traces: Blob;
+  /** YrA.npy, (K, T) float32 (cnmf.compute_trace on the streaming pass's traces). */
+  yra: Blob;
   /** `progress.jsonl`'s lines. */
   progress: string[];
 };
@@ -295,6 +307,7 @@ export async function writeRun(out: Dir, r: RunParts): Promise<void> {
   const A = csrOf({ t0: 0, t1: 0, files: r.stitch }, "A", P);
   await cnmf.write("A.npz", await csrNpz(A));
   await cnmf.write("C.npy", r.traces);
+  await cnmf.write("YrA.npy", r.yra);
   const peak = Float32Array.from(readNpy(need(r.stitch, "bright.npy")).data);
   await cnmf.write("units.csv", unitsCsv(A, r.H, r.W, peak));
   const b = r.stream.get("b.npy");
