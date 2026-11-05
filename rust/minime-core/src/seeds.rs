@@ -12,7 +12,7 @@
 
 use crate::corr::{self, FactorCorr};
 use crate::factors::Factors;
-use crate::gmm::{self, argmax, fit_gmm_1d, Gmm1D};
+use crate::gmm::{self, fit_gmm_1d, Gmm1D};
 use crate::npy;
 use serde::Deserialize;
 
@@ -278,15 +278,16 @@ pub fn seed_pnr(f: &Factors, pixels: &[usize], ptp: &[f64]) -> Vec<f64> {
         .collect()
 }
 
-/// `pnr_refine`'s mask: the upper component of a 2-GMM on log PNR (`"auto"`), or `pnr >
-/// thres`. The mixture comes back for `"auto"`.
+/// `pnr_refine`'s mask: log PNR from the `upper_cut` of its 2-GMM on (`"auto"`, one-sided:
+/// never a low-PNR seed over a higher one), or `pnr > thres`. The mixture comes back for
+/// `"auto"`.
 pub fn pnr_mask(pnr: &[f64], thres: &serde_json::Value) -> Result<(Vec<bool>, Option<Gmm1D>), String> {
     match thres {
         serde_json::Value::String(s) if s == "auto" => {
             let dat: Vec<f64> = pnr.iter().map(|&v| v.max(f64::MIN_POSITIVE).ln()).collect();
             let g = fit_gmm_1d(&dat, 2)?;
-            let top = argmax(&g.means);
-            Ok((g.predict(&dat).iter().map(|&l| l == top).collect(), Some(g)))
+            let cut = g.upper_cut()?;
+            Ok((dat.iter().map(|&v| v >= cut).collect(), Some(g)))
         }
         serde_json::Value::Number(n) => {
             let t = n.as_f64().ok_or("pnr_thres")?;
