@@ -1,0 +1,25 @@
+{
+ "rule": "attach60",
+ "rows": [
+  {
+   "windows": 6,
+   "units": 333,
+   "matched": 282,
+   "duplicate": 9,
+   "piece": 3,
+   "out_of_focus": 34,
+   "nothing": 5,
+   "single_window": 76
+  },
+  {
+   "windows": 12,
+   "units": 367,
+   "matched": 316,
+   "duplicate": 7,
+   "piece": 2,
+   "out_of_focus": 37,
+   "nothing": 5,
+   "single_window": 54
+  }
+ ]
+}

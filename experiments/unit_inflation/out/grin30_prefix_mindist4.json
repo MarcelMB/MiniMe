@@ -1,0 +1,25 @@
+{
+ "rule": "mindist4",
+ "rows": [
+  {
+   "windows": 6,
+   "units": 327,
+   "matched": 280,
+   "duplicate": 8,
+   "piece": 3,
+   "out_of_focus": 31,
+   "nothing": 5,
+   "single_window": 70
+  },
+  {
+   "windows": 12,
+   "units": 361,
+   "matched": 315,
+   "duplicate": 8,
+   "piece": 2,
+   "out_of_focus": 32,
+   "nothing": 4,
+   "single_window": 52
+  }
+ ]
+}
