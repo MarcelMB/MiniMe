@@ -442,11 +442,16 @@ export class JobManager {
       cancelled: () => isFinal(job.status),
     };
     if (awake) this.keepAwake(job);
-    void go(p).then(
-      () => this.end(job, "done", ""),
-      (e) =>
-        this.end(job, e instanceof RerunCancelled ? "cancelled" : "failed", e instanceof Error ? e.message : String(e)),
-    );
+    const fail = (e: unknown) =>
+      this.end(job, e instanceof RerunCancelled ? "cancelled" : "failed", e instanceof Error ? e.message : String(e));
+    void Promise.resolve()
+      .then(() => go(p))
+      .then(() => this.end(job, "done", ""), fail)
+      .catch(async (e) => {
+        // `finish` or the save itself failed: the job still ends, as failed
+        if (!isFinal(job.status)) await this.end(job, "failed", e instanceof Error ? e.message : String(e));
+      })
+      .catch(() => undefined);
   }
 
   private async end(job: JobRecord, status: "done" | "failed" | "cancelled", error: string): Promise<void> {
@@ -473,6 +478,7 @@ export class JobManager {
     checkRunName(b.name);
     const bad = unusedParams(b.params);
     if (bad.length) throw new HttpError(400, `${bad.join(", ")}: not used by the browser app`);
+    if (b.tune) b = { ...b, tune_args: tuneArgs(b.tune_args) as Record<string, number> }; // refused now, not hours in
     return this.withLock((unlock) => this.begin(b, rawDir, raw, listed, picked, dialog !== null, unlock));
   }
 

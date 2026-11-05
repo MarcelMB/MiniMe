@@ -1327,6 +1327,28 @@ describe("rerun and auto-tune jobs", () => {
     expect(seen).toEqual(["status", "stage pass1", "stage tune_run", "stage tune_run", "status"]);
   });
 
+  it("refuses bad auto-tune options of a run before any worker is made", async () => {
+    const t = tuned();
+    const { m, workers, body } = await setup(memoryKV(), { tune: t.tune });
+    await expect(m.submit({ ...body, tune: true, tune_args: { diameter: "seven" } as never })).rejects.toMatchObject({
+      status: 400,
+      message: "diameter: enter a number",
+    });
+    expect(workers).toEqual([]);
+  });
+
+  it("fails the job when the tune cannot even start", async () => {
+    const t = tuned();
+    t.tune.autotune = () => {
+      throw new Error("no ctx");
+    };
+    const { m, name } = await setup(memoryKV(), { tune: t.tune });
+    await makeE2eRunUnder(name);
+    const job = await m.submitAutotune(`${name}/processed/t`, {});
+    await tick();
+    expect(m.get(job.id)).toMatchObject({ status: "failed", error: "no ctx" });
+  });
+
   it("a failed run skips the chained auto-tune", async () => {
     const t = tuned();
     const { m, workers, body } = await setup(memoryKV(), { tune: t.tune });
