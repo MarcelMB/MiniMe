@@ -1,0 +1,35 @@
+{
+ "rule": "attach40",
+ "rows": [
+  {
+   "windows": 4,
+   "units": 300,
+   "matched": 267,
+   "duplicate": 3,
+   "piece": 2,
+   "out_of_focus": 25,
+   "nothing": 3,
+   "single_window": 84
+  },
+  {
+   "windows": 8,
+   "units": 330,
+   "matched": 291,
+   "duplicate": 4,
+   "piece": 2,
+   "out_of_focus": 29,
+   "nothing": 4,
+   "single_window": 56
+  },
+  {
+   "windows": 12,
+   "units": 357,
+   "matched": 315,
+   "duplicate": 3,
+   "piece": 2,
+   "out_of_focus": 33,
+   "nothing": 4,
+   "single_window": 44
+  }
+ ]
+}

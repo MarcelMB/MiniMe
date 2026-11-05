@@ -1,0 +1,65 @@
+{
+ "rule": "mindistbp5",
+ "rows": [
+  {
+   "windows": 8,
+   "units": 312,
+   "matched": 268,
+   "duplicate": 3,
+   "piece": 3,
+   "out_of_focus": 31,
+   "nothing": 7,
+   "single_window": 54
+  },
+  {
+   "windows": 16,
+   "units": 329,
+   "matched": 274,
+   "duplicate": 5,
+   "piece": 2,
+   "out_of_focus": 39,
+   "nothing": 9,
+   "single_window": 40
+  },
+  {
+   "windows": 24,
+   "units": 340,
+   "matched": 281,
+   "duplicate": 4,
+   "piece": 4,
+   "out_of_focus": 40,
+   "nothing": 11,
+   "single_window": 39
+  },
+  {
+   "windows": 32,
+   "units": 388,
+   "matched": 325,
+   "duplicate": 2,
+   "piece": 6,
+   "out_of_focus": 44,
+   "nothing": 11,
+   "single_window": 42
+  },
+  {
+   "windows": 40,
+   "units": 390,
+   "matched": 328,
+   "duplicate": 2,
+   "piece": 5,
+   "out_of_focus": 44,
+   "nothing": 11,
+   "single_window": 40
+  },
+  {
+   "windows": 48,
+   "units": 401,
+   "matched": 335,
+   "duplicate": 3,
+   "piece": 5,
+   "out_of_focus": 47,
+   "nothing": 11,
+   "single_window": 43
+  }
+ ]
+}

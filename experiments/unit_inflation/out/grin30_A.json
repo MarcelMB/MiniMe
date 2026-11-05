@@ -1,0 +1,140 @@
+{
+ "n_true": 461,
+ "n_detectable": 423,
+ "offset_px": [
+  0.1142759225554953,
+  5.268662761301332
+ ],
+ "browser": {
+  "units": 378,
+  "matched": 318,
+  "duplicate": 13,
+  "piece": 2,
+  "out_of_focus": 40,
+  "nothing": 5
+ },
+ "python": {
+  "units": 269,
+  "matched": 249,
+  "duplicate": 0,
+  "piece": 6,
+  "out_of_focus": 14,
+  "nothing": 0
+ },
+ "true_found_by_both": 243,
+ "true_only_browser": {
+  "n": 75,
+  "detectable": 63,
+  "dim": 12,
+  "edge": 0,
+  "late": 0,
+  "near_out_of_focus": 13,
+  "near_vessel": 0,
+  "overlap": 17,
+  "small": 25
+ },
+ "true_only_python": {
+  "n": 6,
+  "detectable": 4,
+  "dim": 0,
+  "edge": 0,
+  "late": 0,
+  "near_out_of_focus": 2,
+  "near_vessel": 0,
+  "overlap": 2,
+  "small": 1
+ },
+ "late_recall": {
+  "n": 20,
+  "browser": 0.85,
+  "python": 0.85
+ },
+ "stitch": {
+  "shares_window": 2,
+  "edge_above_thres": 2,
+  "best_link_below_thres": 10,
+  "no_link": 1,
+  "max_link_cos_quantiles": [
+   0.56,
+   0.575,
+   0.627,
+   0.69,
+   0.752
+  ],
+  "n_windows_matched": [
+   0,
+   28,
+   25,
+   18,
+   40,
+   17,
+   15,
+   17,
+   18,
+   16,
+   27,
+   24,
+   73
+  ],
+  "n_windows_duplicate": [
+   0,
+   11,
+   1,
+   0,
+   0,
+   0,
+   1,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0
+  ],
+  "n_windows_piece": [
+   0,
+   0,
+   0,
+   0,
+   1,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   1,
+   0
+  ],
+  "n_windows_nothing": [
+   0,
+   4,
+   0,
+   1,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0
+  ],
+  "n_windows_out_of_focus": [
+   0,
+   22,
+   8,
+   2,
+   2,
+   1,
+   0,
+   2,
+   0,
+   1,
+   1,
+   1,
+   0
+  ]
+ }
+}

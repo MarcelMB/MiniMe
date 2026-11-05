@@ -1,0 +1,68 @@
+[
+ {
+  "minutes": 15,
+  "windows": 6,
+  "rule": "base",
+  "min_dist": 0.0,
+  "units": 766,
+  "python_units": 635,
+  "matched_python": 577,
+  "single_window": 217,
+  "single_window_matched_python": 108
+ },
+ {
+  "minutes": 15,
+  "windows": 6,
+  "rule": "min_dist",
+  "min_dist": 5.6,
+  "units": 676,
+  "python_units": 635,
+  "matched_python": 556,
+  "single_window": 148,
+  "single_window_matched_python": 84
+ },
+ {
+  "minutes": 30,
+  "windows": 12,
+  "rule": "base",
+  "min_dist": 0.0,
+  "units": 768,
+  "python_units": 630,
+  "matched_python": 563,
+  "single_window": 197,
+  "single_window_matched_python": 83
+ },
+ {
+  "minutes": 30,
+  "windows": 12,
+  "rule": "min_dist",
+  "min_dist": 5.4,
+  "units": 673,
+  "python_units": 630,
+  "matched_python": 548,
+  "single_window": 125,
+  "single_window_matched_python": 66
+ },
+ {
+  "minutes": 60,
+  "windows": 24,
+  "rule": "base",
+  "min_dist": 0.0,
+  "units": 958,
+  "python_units": 592,
+  "matched_python": 520,
+  "single_window": 329,
+  "single_window_matched_python": 60
+ },
+ {
+  "minutes": 60,
+  "windows": 24,
+  "rule": "min_dist",
+  "min_dist": 5.3,
+  "units": 755,
+  "python_units": 592,
+  "matched_python": 503,
+  "single_window": 163,
+  "single_window_matched_python": 32
+ }
+]

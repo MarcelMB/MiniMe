@@ -283,7 +283,10 @@ def _row_max_one(A: sps.csr_matrix) -> sps.csr_matrix:
 
 
 def stitch(
-    units: list[WindowUnits], cos_thres: float
+    units: list[WindowUnits],
+    cos_thres: float,
+    min_dist: float = 0.0,
+    shape: tuple[int, int] | None = None,
 ) -> tuple[sps.csr_matrix, np.ndarray, np.ndarray]:
     """One footprint per cell from the units of every window.
 
@@ -293,6 +296,14 @@ def stitch(
     chain cannot climb from one cell to a neighbouring cell through dim units), and every
     tree is averaged into one footprint. Units of the same window are never linked: window 2
     already decided to keep them apart.
+
+    With ``min_dist > 0`` (``shape`` = (H, W)) groups whose mean footprints have centroids
+    closer than ``min_dist`` px are joined (each to its brightest such group brighter than
+    itself), as the batch CNMF loop's unit merge does with ``merge_min_dist``
+    (``_close_groups``): two cells cannot sit that close. Each
+    window's CNMF applies that rule inside the window; without it across windows, a cell
+    whose footprint one window estimated worse (cosine <= ``cos_thres``) stays a second unit,
+    and such units pile up with the number of windows.
 
     Returns ``(A (K, P) float32 rows with maximum 1, bright (K,), n_windows (K,))``.
     """
@@ -306,13 +317,42 @@ def stitch(
     keep = (S.data > cos_thres) & (win[S.row] != win[S.col])
     edges = np.stack([S.row[keep], S.col[keep]], axis=1).astype(np.int64)
     _, g = np.unique(_roots(corr.brightest_parent(edges, bright)), return_inverse=True)
-    n_g, N = int(g.max()) + 1, g.size
-    M = sps.csr_matrix((1.0 / np.bincount(g)[g], (g, np.arange(N))), shape=(n_g, N))
-    A_st = _row_max_one(sps.csr_matrix(M @ A)).astype(np.float32)
+    if min_dist > 0:
+        if shape is None:
+            raise ValueError("min_dist needs shape=(H, W)")
+        g = _close_groups(A, g, bright, min_dist, shape)[g]
+    n_g = int(g.max()) + 1
+    A_st = _group_means(A, g).astype(np.float32)
     bright_g = np.zeros(n_g)
     np.maximum.at(bright_g, g, bright)
     n_windows = np.bincount(np.unique(np.stack([g, win]), axis=1)[0], minlength=n_g)
     return A_st, bright_g, n_windows
+
+
+def _group_means(A: sps.csr_matrix, g: np.ndarray) -> sps.csr_matrix:
+    """Mean footprint of every group ``g`` of the rows of ``A``, rows scaled to maximum 1."""
+    n_g, N = int(g.max()) + 1, g.size
+    M = sps.csr_matrix((1.0 / np.bincount(g)[g], (g, np.arange(N))), shape=(n_g, N))
+    return _row_max_one(sps.csr_matrix(M @ A))
+
+
+def _close_groups(
+    A: sps.csr_matrix, g: np.ndarray, bright: np.ndarray, min_dist: float, shape: tuple[int, int]
+) -> np.ndarray:
+    """New label of every group: groups whose mean footprints' centroids are closer than
+    ``min_dist`` px are adjacent (``init.unit_merge``'s ``min_dist`` rule), and each group joins
+    its brightest adjacent group brighter than itself (``corr.brightest_parent`` on the groups'
+    brightest units), as the links do: in a dense field connected components percolate
+    through chains of close groups into neighbouring cells."""
+    n_g = int(g.max()) + 1
+    bg = np.zeros(n_g)
+    np.maximum.at(bg, g, bright)
+    cent = init.centroids(_group_means(A, g), *shape)
+    d = np.hypot(cent[:, None, 0] - cent[None, :, 0], cent[:, None, 1] - cent[None, :, 1])
+    with np.errstate(invalid="ignore"):
+        close = np.triu(d < min_dist, 1)  # NaN centroids never compare close
+    edges = np.stack(np.nonzero(close), axis=1).astype(np.int64)
+    return np.unique(_roots(corr.brightest_parent(edges, bg)), return_inverse=True)[1]
 
 
 # ---------------------------------------------------------------------------
