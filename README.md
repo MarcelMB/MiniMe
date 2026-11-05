@@ -86,7 +86,7 @@ decoded once more at startup to count its frames.
 | path | content |
 |---|---|
 | `params.json` | every parameter used, raw folder and content hash, frame rate given with `--fps`, package version |
-| `motion/` | shifts (T, 2), template (the prepared half-resolution image, about H/2 x W/2), per-frame quality; reused on a rerun with the same raw data and motion params |
+| `motion/` | shifts (T, 2), template (the prepared half-resolution image, about H/2 x W/2), per-frame quality, the fill image (H x W uint8, with `motion_fill: "template"`); reused on a rerun with the same raw data and motion params |
 | `factors/` | per-tile factors `W, V, mean, sigma, energy`, max projection, block maxima |
 | `cnmf/A.npz` | footprints, scipy CSR (K, H*W) float32; row maximum 1, except units merged after the last spatial update (mean of the merged rows, maximum can be below 1) |
 | `cnmf/C.npy`, `cnmf/YrA.npy` | (K, T) float32: trace fed to the last spatial update; final residual trace |

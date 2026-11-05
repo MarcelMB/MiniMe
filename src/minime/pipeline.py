@@ -133,6 +133,7 @@ def _save_sidecar(
     params: Params,
     raw_hash: str,
     workers: int,
+    fill: np.ndarray | None = None,
 ) -> None:
     motion.save_sidecar(
         out / "motion",
@@ -143,6 +144,7 @@ def _save_sidecar(
             params=params.motion_params(),
             raw_hash=raw_hash,
             meta={"workers": workers, "pass1_seconds": p1.seconds},
+            fill=fill,
         ),
     )
 
@@ -417,8 +419,8 @@ def run(
         else:
             template = _template_from_sidecar(sc, info, params)
             template_img = sc.template
-            if params.motion_fill == "template":  # the fill image is not in the sidecar
-                fill = pass1.build_template(info, params).fill
+            if params.motion_fill == "template":  # sidecars before Nov 2026 have no fill
+                fill = sc.fill if sc.fill is not None else pass1.build_template(info, params).fill
                 template = dataclasses.replace(template, fill=fill)
     grid = tile_grid(info.height, info.width, params.tile)
     store = TileStore(out / "tiles", grid, pass1.n_parts_for(info, workers))
@@ -428,7 +430,7 @@ def run(
                 info, store, template, params, workers, shifts=None if sc is None else sc.shifts
             )
         with timer("sidecar_save"):
-            _save_sidecar(out, p1, template_img, params, raw_hash, workers)
+            _save_sidecar(out, p1, template_img, params, raw_hash, workers, template.fill)
         # the workers save each tile and every later stage reads V from its file, not from
         # RAM: V is T x rank per tile (8 GB on an 8 h session, 23 GB on 24 h), more than the
         # RAM left next to pass 2 or CNMF on a 32 GB Mac

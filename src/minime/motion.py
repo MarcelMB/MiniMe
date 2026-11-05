@@ -296,6 +296,9 @@ class MotionSidecar:
     params: dict[str, Any]
     raw_hash: str
     meta: dict[str, Any] = field(default_factory=dict)
+    # (h, w) uint8 fill image of the template (``Template.fill``); None when the run did not
+    # build one (zero fill, or a sidecar from before Nov 2026)
+    fill: np.ndarray | None = None
 
     @property
     def n_frames(self) -> int:
@@ -323,8 +326,9 @@ def save_sidecar(path: str | os.PathLike, sc: MotionSidecar) -> None:
         "params": sc.params,
     }
     tmp_npz = path / (ARRAY_FILE + ".tmp")
+    extra = {} if sc.fill is None else {"fill": np.ascontiguousarray(sc.fill, dtype=np.uint8)}
     with open(tmp_npz, "wb") as f:
-        np.savez(f, shifts=shifts, template=template, quality=quality)
+        np.savez(f, shifts=shifts, template=template, quality=quality, **extra)
     os.replace(tmp_npz, path / ARRAY_FILE)
     tmp_json = path / (META_FILE + ".tmp")
     tmp_json.write_text(json.dumps(meta, indent=1, default=str), encoding="utf-8")
@@ -340,6 +344,7 @@ def load_sidecar(path: str | os.PathLike) -> MotionSidecar:
         )
     with np.load(path / ARRAY_FILE) as z:
         shifts, template, quality = z["shifts"], z["template"], z["quality"]
+        fill = z["fill"] if "fill" in z.files else None
     return MotionSidecar(
         shifts=shifts,
         template=template,
@@ -347,6 +352,7 @@ def load_sidecar(path: str | os.PathLike) -> MotionSidecar:
         params=dict(meta.get("params", {})),
         raw_hash=str(meta.get("raw_hash", "")),
         meta=meta,
+        fill=fill,
     )
 
 
