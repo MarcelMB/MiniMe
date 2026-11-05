@@ -266,9 +266,15 @@ async function streamPass(
     create: true,
   });
   const cOut = await cFile.createSyncAccessHandle();
+  const yFile = await (await root.getDirectoryHandle(TRACE_DIR, { create: true })).getFileHandle("YrA.npy", {
+    create: true,
+  });
+  const yOut = await yFile.createSyncAccessHandle();
   const header = engine.traces_header();
   cOut.truncate(header.length + 4 * K * T);
   cOut.write(header, { at: 0 });
+  yOut.truncate(header.length + 4 * K * T);
+  yOut.write(header, { at: 0 });
   start("stream", T, K, H, W);
   const reader = new FileReaderSync();
   const t0 = performance.now();
@@ -280,6 +286,9 @@ async function streamPass(
     const c = engine.take_traces();
     for (let i = 0; i < K; i++)
       cOut.write(c.subarray(i * n, (i + 1) * n), { at: header.length + 4 * (i * T + written) });
+    const y = engine.take_yra();
+    for (let i = 0; i < K; i++)
+      yOut.write(y.subarray(i * n, (i + 1) * n), { at: header.length + 4 * (i * T + written) });
     written = t;
   };
   let lastPost = 0;
@@ -326,6 +335,8 @@ async function streamPass(
   drain();
   cOut.flush();
   cOut.close();
+  yOut.flush();
+  yOut.close();
   const passSeconds = (performance.now() - t0) / 1e3;
   const mb = memory.buffer.byteLength / 2 ** 20;
   log(`pass done, wasm heap ${mb.toFixed(0)} MB`);
@@ -333,6 +344,7 @@ async function streamPass(
   const out: Map<string, Uint8Array | Blob> = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
   engine.free();
   out.set("C.npy", await cFile.getFile());
+  out.set("YrA.npy", await yFile.getFile());
   const summary = decode(out.get("summary.json") as Uint8Array);
   end(
     `${T} frames, ${(T / passSeconds).toFixed(0)} fps; ${String(summary.kept)} units kept, ${String(summary.merged)} after the merge`,
@@ -880,6 +892,8 @@ async function saveRun(
   const traces = d.stream.get("C.npy");
   if (!(traces instanceof Blob))
     throw new Error("a run folder needs the streaming pass: the session has no stream object");
+  const yra = d.stream.get("YrA.npy");
+  if (!(yra instanceof Blob)) throw new Error("a run folder needs the streaming pass's YrA");
   const pass1 = session.pass1 as Record<string, unknown>;
   const to = new HandleDir(dir);
   await progressLog.close(); // writeRun writes it once more, then report.json last
@@ -903,6 +917,7 @@ async function saveRun(
     stitch: d.stitch,
     stream: d.stream,
     traces,
+    yra,
     progress: progressLog.lines,
   });
   await (await scratchParent()).removeEntry(scratchId, { recursive: true }).catch(() => undefined);

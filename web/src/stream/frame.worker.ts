@@ -288,10 +288,17 @@ async function streamChunk(m: Extract<ToFrameWorker, { type: "s1" }>): Promise<v
     },
   );
   const y8 = s.take_y8();
-  const r = { parts: cutForLanes(y8, m.b - m.a), cc: s.take_cc(), f: s.take_f(), gpuFrames: from - m.a };
+  const r = {
+    parts: cutForLanes(y8, m.b - m.a),
+    cc: s.take_cc(),
+    yra: s.take_yra(),
+    f: s.take_f(),
+    gpuFrames: from - m.a,
+  };
   post({ type: "done", kind: "s1", id: m.id, ms: performance.now() - began, heapMb: heapMb(), ...r }, [
     ...r.parts.map((p) => p.buffer),
     r.cc.buffer,
+    r.yra.buffer,
     r.f.buffer,
   ]);
 }

@@ -80,6 +80,10 @@ pub struct TraceModel {
     pub b: Vec<f64>,
     pub x: Csr,
     pub solver: NormalSolver,
+    /// `A Aᵀ` (K, K), `A b` (K,) and `1 / Σ a²` per unit: what `yra` needs
+    pub aa: Vec<f64>,
+    pub ab: Vec<f64>,
+    pub anorm: Vec<f64>,
 }
 
 fn symmetrize(g: &mut [f64], n: usize) {
@@ -98,6 +102,7 @@ impl TraceModel {
         let k = a.nrows;
         let mut g = a.gram();
         symmetrize(&mut g, k);
+        let aa = g.clone();
         let mut cbar: Vec<f64> = (0..k)
             .map(|r| {
                 let (ix, v) = a.row(r);
@@ -115,6 +120,15 @@ impl TraceModel {
             }
         }
         let b: Vec<f64> = ymean.iter().zip(&fit).map(|(&y, &f)| (y - f).max(0.0)).collect();
+        let ab: Vec<f64> = (0..k)
+            .map(|r| {
+                let (ix, v) = a.row(r);
+                ix.iter().zip(v).map(|(&c, &x)| x * b[c]).sum()
+            })
+            .collect();
+        let anorm: Vec<f64> = (0..k)
+            .map(|r| 1.0 / a.row(r).1.iter().map(|x| x * x).sum::<f64>())
+            .collect();
         let mut x = a.clone();
         x.nrows = k + 1;
         for (p, &v) in b.iter().enumerate() {
@@ -127,7 +141,15 @@ impl TraceModel {
         let mut gx = x.gram();
         symmetrize(&mut gx, k + 1);
         let solver = NormalSolver::certified(&gx, k + 1);
-        Self { k, b, x, solver }
+        Self {
+            k,
+            b,
+            x,
+            solver,
+            aa,
+            ab,
+            anorm,
+        }
     }
 
     /// Unclipped `(c (K,), f)` of one frame.
@@ -142,6 +164,36 @@ impl TraceModel {
             sol.push(s);
         }
         self.solver.solve(sol);
+    }
+
+    /// `solve`, keeping the unsolved right-hand side `[A; b]^T y` in `rhs` (what `yra` needs).
+    pub fn solve_rhs(&self, y: &[f32], sol: &mut Vec<f64>, rhs: &mut Vec<f64>) {
+        sol.clear();
+        for r in 0..self.x.nrows {
+            let (ix, v) = self.x.row(r);
+            let mut s = 0.0;
+            for (&c, &a) in ix.iter().zip(v) {
+                s += a * f64::from(y[c]);
+            }
+            sol.push(s);
+        }
+        rhs.clear();
+        rhs.extend_from_slice(sol);
+        self.solver.solve(sol);
+    }
+
+    /// `cnmf.compute_trace` for one frame: `max(0, c + A_norm ⊙ (Aᵀy − (A b) f − (A Aᵀ) c))`, with
+    /// `Aᵀy` the first K entries of `rhs`, `c` the clipped traces `cc`.
+    pub fn yra(&self, rhs: &[f64], cc: &[f64], f: f64, out: &mut [f64]) {
+        let k = self.k;
+        for i in 0..k {
+            let mut acc = rhs[i] - self.ab[i] * f;
+            let row = &self.aa[i * k..(i + 1) * k];
+            for (g, &c) in row.iter().zip(cc) {
+                acc -= g * c;
+            }
+            out[i] = (cc[i] + self.anorm[i] * acc).max(0.0);
+        }
     }
 }
 
@@ -270,11 +322,15 @@ pub struct StreamPass {
     pub lowpass: SosFilter,
     /// (n, K) frame-major clipped traces (the YrA analogue) since the last `take_c`
     pub c: Vec<f32>,
+    /// (n, K) frame-major YrA (`cnmf.compute_trace`) since the last `take_yra`
+    pub yra: Vec<f32>,
     pub f: Vec<f32>,
     pub t: usize,
     prev: Option<Vec<f32>>,
     sol: Vec<f64>,
     cc: Vec<f64>,
+    rhs: Vec<f64>,
+    yr: Vec<f64>,
     lp: Vec<f64>,
 }
 
@@ -288,6 +344,7 @@ impl StreamPass {
         let lowpass = SosFilter::new(butter_lowpass_sos(4, 2.0 * params.noise_freq), k);
         Self {
             c: Vec::new(),
+            yra: Vec::new(),
             f: Vec::with_capacity(params.t),
             params,
             model,
@@ -299,6 +356,8 @@ impl StreamPass {
             prev: None,
             sol: Vec::with_capacity(k + 1),
             cc: vec![0.0; k],
+            rhs: Vec::with_capacity(k + 1),
+            yr: vec![0.0; k],
             lp: vec![0.0; k],
         }
     }
@@ -306,19 +365,24 @@ impl StreamPass {
     /// Fold in one preprocessed frame (`P` values).
     pub fn push(&mut self, y: &[f32]) {
         let k = self.model.k;
-        self.model.solve(y, &mut self.sol);
+        self.model.solve_rhs(y, &mut self.sol, &mut self.rhs);
         for i in 0..k {
             self.cc[i] = self.sol[i].max(0.0);
         }
+        let mut yr = std::mem::take(&mut self.yr);
+        self.model.yra(&self.rhs, &self.cc, self.sol[k], &mut yr);
+        self.yra.extend(yr.iter().map(|&v| v as f32));
+        self.yr = yr;
         self.fold(y, self.sol[k] as f32);
     }
 
     /// Fold in one preprocessed frame whose least squares was solved elsewhere (a pool worker
     /// running `TraceModel::solve` on the same model): `cc` the clipped traces `max(c, 0)` in
-    /// float64, `f` the background trace as float32. The same arithmetic as `push`, which
-    /// solves and then calls `fold`.
-    pub fn push_solved(&mut self, y: &[f32], cc: &[f64], f: f32) {
+    /// float64, `yra` their YrA, `f` the background trace as float32. The same arithmetic as
+    /// `push`, which solves and then calls `fold`.
+    pub fn push_solved(&mut self, y: &[f32], cc: &[f64], yra: &[f64], f: f32) {
         self.cc.copy_from_slice(cc);
+        self.yra.extend(yra.iter().map(|&v| v as f32));
         self.fold(y, f);
     }
 
@@ -382,6 +446,11 @@ impl StreamPass {
     /// The traces since the last call, (n, K) frame-major; the caller stores them.
     pub fn take_c(&mut self) -> Vec<f32> {
         std::mem::take(&mut self.c)
+    }
+
+    /// The YrA since the last call, (n, K) frame-major.
+    pub fn take_yra(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.yra)
     }
 
     /// Bytes a browser keeps between frames (sums, support, model, filter state).
@@ -558,9 +627,10 @@ impl Stats {
 
 impl StreamPass {
     /// Store one frame's traces without folding it into the sums (a pool's lanes fold it):
-    /// `cc` the clipped traces, `f` the background trace.
-    pub fn push_traces(&mut self, cc: &[f64], f: f32) {
+    /// `cc` the clipped traces, `yra` their YrA, `f` the background trace.
+    pub fn push_traces(&mut self, cc: &[f64], yra: &[f64], f: f32) {
         self.c.extend(cc.iter().map(|&v| v as f32));
+        self.yra.extend(yra.iter().map(|&v| v as f32));
         self.f.push(f);
         self.t += 1;
     }
@@ -800,6 +870,33 @@ pub fn merge_from_stats(a: &Csr, st: &Stats, k: usize, mask: &[bool], thres_corr
 mod pool_tests {
     use super::*;
 
+    #[test]
+    fn yra_equals_the_clipped_trace_plus_the_residual_projection() {
+        // two units on 4 pixels, no overlap, mean 0: the LS solution is exact, so the residual
+        // projection is 0 and YrA = max(c, 0) when c >= 0; with a negative solution the clipped
+        // trace is 0 and YrA is the projection of what the clip left over, clipped to 0
+        let a = Csr {
+            nrows: 2,
+            ncols: 4,
+            indptr: vec![0, 2, 4],
+            indices: vec![0, 1, 2, 3],
+            data: vec![1.0, 1.0, 1.0, 1.0],
+        };
+        let model = TraceModel::build(&a, &[0.0; 4]);
+        let (mut sol, mut rhs, mut out) = (Vec::new(), Vec::new(), vec![0.0; 2]);
+        model.solve_rhs(&[2.0, 2.0, 3.0, 3.0], &mut sol, &mut rhs);
+        let cc: Vec<f64> = sol[..2].iter().map(|v| v.max(0.0)).collect();
+        model.yra(&rhs, &cc, sol[2], &mut out);
+        for (y, c) in out.iter().zip(&cc) {
+            assert!((y - c).abs() < 1e-9, "{out:?} vs {cc:?}");
+        }
+        model.solve_rhs(&[-2.0, -2.0, 3.0, 3.0], &mut sol, &mut rhs);
+        let cc: Vec<f64> = sol[..2].iter().map(|v| v.max(0.0)).collect();
+        model.yra(&rhs, &cc, sol[2], &mut out);
+        assert_eq!(cc[0], 0.0);
+        assert!(out[0] >= 0.0 && out[1] >= 0.0);
+    }
+
     fn lcg(seed: &mut u32) -> f64 {
         *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         f64::from(*seed >> 8) / f64::from(1u32 << 24)
@@ -863,13 +960,14 @@ mod pool_tests {
 
         let model = TraceModel::build(&a, &ymean);
         let mut two = StreamPass::new(params.clone(), &a, &ymean);
-        let mut sol = Vec::new();
+        let (mut sol, mut rhs, mut yr) = (Vec::new(), Vec::new(), vec![0.0; k]);
         let mut solved = Vec::new();
         for y in &frames {
-            model.solve(y, &mut sol);
+            model.solve_rhs(y, &mut sol, &mut rhs);
             let cc: Vec<f64> = sol[..k].iter().map(|v| v.max(0.0)).collect();
-            two.push_solved(y, &cc, sol[k] as f32);
-            solved.push((cc, sol[k] as f32));
+            model.yra(&rhs, &cc, sol[k], &mut yr);
+            two.push_solved(y, &cc, &yr, sol[k] as f32);
+            solved.push((cc, yr.clone(), sol[k] as f32));
         }
 
         let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
@@ -886,8 +984,8 @@ mod pool_tests {
                 .iter()
                 .map(|&r| FoldLane::new(&params, &three.support, k, r))
                 .collect();
-            for (y, (cc, f)) in frames.iter().zip(&solved) {
-                three.push_traces(cc, *f);
+            for (y, (cc, yr, f)) in frames.iter().zip(&solved) {
+                three.push_traces(cc, yr, *f);
                 for l in &mut ls {
                     l.fold(&y[l.range.pix[0]..l.range.pix[1]], cc);
                 }

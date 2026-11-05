@@ -53,14 +53,3 @@ router.add("POST", "/runs/:rid/fps", async (q, p) => {
   await state.registry.setFps(r, fps);
   return { json: { fps: await state.registry.fps(r) } };
 });
-
-// Tune (reruns, auto-tune, unit checks) is not part of the browser app: no reruns, and 404 for the rest.
-router.add("GET", "/runs/:rid/reruns", () => ({ json: { reruns: [] } }));
-for (const path of ["/runs/:rid/autotune", "/runs/:rid/flags", "/runs/:rid/pairs"])
-  router.add("GET", path, () => {
-    throw new HttpError(404, "auto-tune is not part of the browser app");
-  });
-for (const path of ["/jobs/rerun", "/jobs/autotune"])
-  router.add("POST", path, () => {
-    throw new HttpError(404, "auto-tune and reruns are not part of the browser app");
-  });

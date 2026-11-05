@@ -35,15 +35,18 @@ pub mod poolio;
 pub mod preprocess;
 pub mod preview;
 pub mod prof;
+pub mod score;
 pub mod seeds;
 pub mod simd;
 pub mod stitch;
 pub mod stream;
+pub mod tune;
 pub mod warp;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 #[cfg(all(target_arch = "wasm32", feature = "profile"))]
 pub mod wasm_bench;
+pub mod window;
 
 use stream::{Csr, Params, StreamPass};
 

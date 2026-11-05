@@ -1,17 +1,16 @@
 /** The motion residual of a run (main's `derived.compute_residual`): how far each block's max
  * projection sits from the whole run's, which a registration that held keeps near 0 px. */
 import type { RunCache } from "../cache";
-import { exists, readBytes } from "../dir";
+import { type Dir, exists, readBytes } from "../dir";
 import { readNpy } from "../npy";
 import { HttpError } from "../router";
 import type { RunInfo } from "../runs";
 import { wasm } from "../wasm";
 import { windowDir } from "../writer";
 
-const f32 = async (r: RunInfo, rel: string): Promise<{ shape: number[]; data: Float32Array }> => {
-  if (!(await exists(r.dir, rel)))
-    throw new HttpError(404, `the motion residual is not available for this run: ${rel}`);
-  const a = readNpy(await readBytes(r.dir, rel));
+const f32 = async (d: Dir, rel: string): Promise<{ shape: number[]; data: Float32Array }> => {
+  if (!(await exists(d, rel))) throw new HttpError(404, `the motion residual is not available for this run: ${rel}`);
+  const a = readNpy(await readBytes(d, rel));
   return { shape: a.shape, data: a.data instanceof Float32Array ? a.data : Float32Array.from(a.data) };
 };
 
@@ -21,8 +20,8 @@ const f32 = async (r: RunInfo, rel: string): Promise<{ shape: number[]; data: Fl
 export async function blockFiles(r: RunInfo): Promise<string[]> {
   const windows = r.meta.windows ?? [{ t0: 0, t1: r.meta.T }];
   const perWindow = windows.map((_, w) => `factors/${windowDir(w)}/block_max.npy`);
-  if (await exists(r.dir, perWindow[0])) return perWindow;
-  return (await exists(r.dir, "factors/block_max.npy")) ? ["factors/block_max.npy"] : [];
+  if (await exists(r.factors, perWindow[0])) return perWindow;
+  return (await exists(r.factors, "factors/block_max.npy")) ? ["factors/block_max.npy"] : [];
 }
 
 /** Compute `residual.npy` (n_blocks, 3: dy, dx, correlation) into the run's cache: every block
@@ -31,14 +30,14 @@ export async function blockFiles(r: RunInfo): Promise<string[]> {
  * parameters). File by file, so that only one window's blocks are in memory at a time. */
 export async function computeResidual(r: RunInfo, cache: RunCache): Promise<void> {
   const { H, W } = r.meta;
-  const [core, maxProj] = [await wasm(), await f32(r, "factors/max_proj.npy")];
+  const [core, maxProj] = [await wasm(), await f32(r.dir, "factors/max_proj.npy")];
   if (maxProj.data.length !== H * W)
     throw new HttpError(500, `factors/max_proj.npy holds ${maxProj.data.length} values, not H * W = ${H * W}`);
   const params = JSON.stringify(r.params.pass1 ?? r.params);
   const parts: Float32Array[] = [];
   let n = 0;
   for (const file of await blockFiles(r)) {
-    const blocks = await f32(r, file);
+    const blocks = await f32(r.factors, file);
     const [nb, h, wd] = blocks.shape;
     if (blocks.shape.length !== 3 || h !== H || wd !== W)
       throw new HttpError(500, `${file} is shaped (${blocks.shape.join(", ")}), not (n, ${H}, ${W})`);
