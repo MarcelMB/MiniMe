@@ -1,3 +1,4 @@
+import { DEVICES, type Device } from "../../gpu/plan";
 import { addEventProvider } from "../events";
 import { type JobBody, JobManager } from "../jobs";
 import { idbKV } from "../kv";
@@ -32,6 +33,8 @@ function jobBody(raw: unknown): JobBody {
   const b = (raw ?? {}) as Partial<JobBody>;
   if (typeof b.raw_dir !== "string" || typeof b.name !== "string")
     throw new HttpError(422, "raw_dir and name must be text");
+  if (b.device !== undefined && !DEVICES.includes(b.device as Device))
+    throw new HttpError(422, `device must be one of ${DEVICES.join(", ")}`);
   return {
     params: {},
     keep_store: false,

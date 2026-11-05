@@ -4,6 +4,7 @@
 import { HandleDir } from "./dir";
 import { readOutput, runStream } from "./e2eStream";
 import { browserFetch } from "./fetch";
+import { runSpeedTest } from "./speed";
 import { state } from "./state";
 
 declare global {
@@ -18,6 +19,8 @@ declare global {
     /** The streaming pipeline in a new worker (`e2eStream.ts`), and a slice of one of its outputs. */
     __minimeStream?: typeof runStream;
     __minimeStreamRead?: typeof readOutput;
+    /** The New run page's GPU self-test and speed test on `avis` (`speed.ts`). */
+    __minimeSpeed?: typeof runSpeedTest;
     /** `api.ts`'s `getJSON` and `postJSON` over the in-page router, and `getArray` for an array
      * answer (asked again while it is computing). */
     __minimeApi?: {
@@ -80,5 +83,6 @@ if (import.meta.env.MODE === "browser" && new URLSearchParams(location.search).h
   window.__minimeAddTree = addTree;
   window.__minimeStream = runStream;
   window.__minimeStreamRead = readOutput;
+  window.__minimeSpeed = runSpeedTest;
   window.__minimeApi = { getJSON, postJSON, getArray };
 }

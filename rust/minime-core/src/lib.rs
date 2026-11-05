@@ -2,26 +2,47 @@
 //! browser (wasm) build. Python (`src/minime`, `experiments/streaming/`) is the reference.
 
 pub mod avi;
+#[cfg(all(target_arch = "wasm32", feature = "bench"))]
+pub mod bench_wasm;
+pub mod bfft;
 pub mod butter;
 pub mod cnmf;
 pub mod compress;
+#[cfg(feature = "reference")]
+pub mod compress_ref;
 pub mod corr;
 pub mod factors;
+pub mod fastmath;
 pub mod filters;
+pub mod fsimd;
 pub mod gmm;
+#[cfg(target_arch = "wasm32")]
+pub mod gpu;
+pub mod gpuplan;
 pub mod init;
 pub mod linalg;
+pub mod median;
+pub mod median_net;
+pub mod morph;
 pub mod motion;
 pub mod nnqp;
 pub mod npy;
 pub mod pass1;
+#[cfg(target_arch = "wasm32")]
+pub mod pool;
+pub mod poolio;
 pub mod preprocess;
 pub mod preview;
+pub mod prof;
 pub mod seeds;
+pub mod simd;
 pub mod stitch;
 pub mod stream;
+pub mod warp;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
+#[cfg(all(target_arch = "wasm32", feature = "profile"))]
+pub mod wasm_bench;
 
 use stream::{Csr, Params, StreamPass};
 

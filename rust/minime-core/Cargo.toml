@@ -6,12 +6,25 @@ description = "Bounded-memory streaming MiniMe core (native check harness + wasm
 license = "GPL-3.0-or-later"
 publish = false
 
+[features]
+# wasm-only micro-benchmark entry point (`bench_wasm.rs`), built by tools/wasm-bench/run.sh
+bench = []
+# rustfft's wasm simd128 butterflies (browser build only; changes the FFT's rounding, so off by default)
+fft-simd = ["rustfft/wasm_simd"]
+# step timings (`prof`) and the pre-GEMM-work pass 2 (`compress_ref`) for A/B benches
+profile = []
+reference = []
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [[bin]]
 name = "minime-core"
 path = "src/bin/minime-core.rs"
+
+[[example]]
+name = "bench_pass2"
+required-features = ["profile", "reference"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

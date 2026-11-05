@@ -345,6 +345,55 @@ python experiments/streaming/check_pass2.py <pass2 ref> <ref>/rust_browser
 python experiments/streaming/check_pass1.py <pass1 ref> <ref>/rust_browser
 ```
 
+## Pass 2 and CNMF speed (2026-11-04, branch `speed/gemm`)
+Where pass 2 spent its 28 s in Chrome (100 tiles of 3000 frames, 1 thread, M1 Max, load 4-7;
+`rust/minime-core/tools/wasm_pass2/` for wasm, `examples/bench_pass2.rs` native, both
+`--features profile,reference`, old and new code alternating per tile): the two GEMMs
+`Y Z` and `Y^T Q`, twice each, 12.3 s (44 %, with the float32 copy of the tile), the noise
+10.9 s (39 %: 4096 FFTs of 3000 points per tile 3.8 s, a strided column gather 2.6 s, a libm
+`ln` and `hypot` per bin 4.4 s), QR 3.4 s (12 %), small SVD 1.1 s, mean/energy 0.5 s.
+`matrixmultiply` 0.3.11 *has* a wasm simd128 kernel (8 x 8) and runs at 38 GFLOP/s of the 51
+an M1 core has without a fused multiply-add. A hand-written 8 x 5 / 12 x 4 kernel packing
+straight from the uint8 tile was within +-7 % of it (bit-identical results), so it was
+dropped. With `-C target-feature=+relaxed-simd` (fused `f32x4.relaxed_madd`; Chrome and Edge
+114+, Firefox 146+, Safari unconfirmed) the same GEMMs run 1.26x faster; not enabled, it
+needs a second wasm file for browsers without it and the sums stop being the same on every
+machine.
+
+What changed (`compress.rs`, `bfft.rs`, `fastmath.rs`): mean and energy from integer column
+sums (exact: same bits); the noise of four pixels per vector in a Stockham FFT of the pixels'
+bytes (`bfft.rs`; any `T` whose half is 5-smooth, `realfft` otherwise), the logarithms of the
+bins as one vectorised Cephes `logf`, summed in order in float32 per pixel as numpy does; the
+QR's trailing updates for all columns at once, eight columns in registers, in the order of
+the column-by-column code (the same Q bit for bit); the small SVD's products with the
+eigenvectors the same way (bit for bit).
+
+| 100 tiles, 3000 frames, 1 thread | before | after | |
+|---|---|---|---|
+| pass 2, Chrome, in-process A/B | 28.3 s | 18.3 s | 1.54x |
+| pass 2, Chrome, whole stage of the e2e run | 27.7 s | 17.7 s | 1.57x |
+| pass 2, native, in-process A/B (`minime-core pass2`: 11.8 s) | 18.6 s | 11.6 s | 1.60x |
+| noise / QR / small SVD / mean+energy, Chrome | 10.9 / 3.4 / 1.1 / 0.5 s | 3.3 / 1.9 / 0.6 / 0.2 s | 3.3 / 1.8 / 1.8 / 2.5x |
+| GEMMs, Chrome and native | 12.3 s, 6.5 s | unchanged | 1.0x |
+
+Checks on the browser run with numpy's draws replayed (`check_pass2.py`, `check_seeds.py`,
+`check_init.py`, `check_cnmf.py`): the kept and last rank in 100 of 100 tiles, mean and energy
+exact; `W`, `V`, `s`, ranks of the native run bit-identical to the previous native run;
+`sigma` <= 1.27e-6 relative to numpy (was 1.1e-6 native, 1.2e-6 Chrome: another FFT, the
+same sums); reconstruction <= 5.5e-5; seeds, masks, merge pairs, units identical, every float
+within the old tolerances and as close as before (`B` 3.2e-6, footprints 2.2e-5, traces
+1.8e-5, 189 final units). A constant pixel's `sigma` is a float32 sum of 1320 equal logarithms
+and agrees with numpy only if summed in order: a faster sum through mantissa products was
+1e-4 off numpy's on the 123 constant pixels of this session and was dropped.
+
+CNMF in Chrome was 8x slower than native because `f64::mul_add` on wasm32 is a software
+`fma`: 15.6 ns, against 0.9 ns for a multiply and an add. The Gram matrix `Cc Cc^T` alone is
+54 M of them per iteration, 0.84 s of the 1.1 s of a spatial update (`f32::mul_add` is 2 ns
+there and stays). `linalg::madd64` is fused natively (the native CNMF outputs are
+bit-identical, 53 of 53 `.npy` files) and a multiply and an add on wasm32, and the Gram runs
+four sums side by side. CNMF stage in Chrome 2.63 s -> 0.38 s (spatial 1.09 / 1.06 ->
+0.16 / 0.14 s per iteration, traces 0.098 -> 0.018 s, background 0.06-0.10 -> 0.004-0.02 s).
+
 ## 8 h scale run (2026-11-03): motion ok, stream pass fails at the end
 First 8 h (576 files, 576 000 frames) of the real V4 24 h recording in headless Chrome, one
 worker, M1 Max; footprints (503), mean and noise from the 3 h MiniMe run `cafast_3h_fix`.
@@ -654,6 +703,115 @@ python scripts/contract_dump.py e2e/.data/browser-run/run e2e/.data/contract-bro
 The look check and `npm run e2e` need main's build (`npm run build`) and start `minime serve`
 themselves; run only one Playwright config at a time (they share ports and `dist-browser/`).
 
+## Worker pool (2026-11-04): the frame-parallel stages on N workers, same outputs bit for bit
+The run's worker (`stream.worker.ts`) keeps the stages that cannot be split (seeds, init, CNMF,
+stitch, the footprint update) and hands the frame-parallel ones to a pool of frame workers
+(`pool.ts`, `frame.worker.ts`, `poolStages.ts`: nested Web Workers, each its own wasm instance and
+AVI index). No SharedArrayBuffer, so no COOP/COEP: a worker gets its inputs in a message and returns
+its results in one; static hosting is unchanged. `params.workers` sets the count (a whole number
+>= 1; `1` runs everything in the run's own worker as before); the default is the machine's cores less
+two, at most 8. If the pool cannot start, the run goes on with one worker.
+
+- **Motion** is folded into pass 1: the motion stage is now only the template (200 frames of segment
+  0, its frames prepared on the pool, added in frame order); every window's pass 1 estimates its frames'
+  shifts against that template (`Pass1::push(raw, None)`, one median shared), and the windows'
+  shifts and quality are put together for the streaming pass and the run folder. Pass 1 rebuilds the
+  stage's own `Motion` from `template_src.npy` (the image before its FFT round trip; `template.npy`
+  would give shifts 1e-7 px off).
+- **Pass 1**: a window is cut into chunks (about two per worker, whole multiples of 100 frames);
+  a worker runs `Pass1Engine` from its chunk's first frame (`start_at`) and returns its max
+  projection, block maxima, shifts and quality, which the window's engine folds in (`merge_chunk`:
+  maxima are exact in any order). The tile store is one slab file per chunk (`slabs.ts`), written
+  through one sync access handle: a handle per tile and chunk exceeds WebKit's ~250 open handles
+  with 3 workers. Pass 2 reads the slabs through `File` snapshots, which need no exclusive handle.
+- **Pass 2**: tiles are independent (seed = tile index): a worker compresses any tile
+  (`compress_at`) and the window's engine takes the factors in tile order (`set_tile`).
+- **Streaming pass**: a worker preprocesses and solves 16-frame chunks (`StreamSolver`, the same
+  `prep().frame` and `TraceModel::solve`), the run's worker folds the solved frames in frame order
+  (`push_solved`), so every sum, the low-pass state (it runs across segment boundaries), `dsq`
+  (needs the previous frame across them) and the traces are the one-worker pass's. Splitting by
+  6000-frame segment would not be bit-identical (and would leave 2 jobs for a 5-min session).
+- **Overlap**: window w + 1's pass 1 is dealt to the workers when window w's pass 2 is done, so the pool
+  works while the run's worker does that window's seeds, init and CNMF (the stage row counts from the
+  deal).
+- Measured, 3000 frames (one window) of `synth_v4_5min`, headless Chrome 156, M1 Max (8 P + 2 E cores,
+  other agents' load average 4-6), seconds or rate per stage, `workers` 1 / 2 / 4 / 8:
+
+  | stage | 1 | 2 | 4 | 8 | 8 vs 1 |
+  |---|---|---|---|---|---|
+  | template (200 frames x 2) | 7.6 s | 3.9 s | 2.0 s | 1.1 s | 6.9x |
+  | pass 1 | 38 fps | 72 fps | 140 fps | 264 fps | 6.9x |
+  | pass 2 | 3.5 tiles/s | 6.3 | 12.6 | 21.7 | 6.2x |
+  | streaming pass | 72 fps | 136 | 258 | 436 | 6.1x |
+  | seeds + init + CNMF (serial) | 10.5 s | 10.5 s | 10.5 s | 10.5 s | 1x |
+  | whole run | 167 s | 94 s | 53 s | 34 s | 4.9x |
+
+  Whole 5-min session (9000 frames, 3 windows, overlap on): 79 s with 8 workers against 487 s with one
+  worker (the motion stage folded in) and 644 s before (8.2x); its outputs are the one-worker run's bit
+  for bit (92 files, `C.npy` included); F1 0.962, recall 0.960, precision 0.964, trace correlation median
+  0.995, 419 stitched, 418 kept, 417 merged units, as in the reference browser run.
+- Memory: the wasm heap over all workers peaks at 1.0 GB with 8 (the run's worker 0.28 GB, about 90 MB
+  per frame worker). Chrome's peak resident memory on 3000 frames in a profile on disk: 1.9 GB with 1
+  worker, 2.6 GB with 4, 3.3 GB with 8 (the renderer 1.0, 1.6, 2.4 GB: about 0.2 GB per worker); in an
+  ephemeral profile, where OPFS lives in memory and holds about 2 GB at most, 5.2 GB over the 9000
+  frames.
+- Chrome, Firefox and WebKit (Playwright's) give the same outputs as Chrome with one worker (63 files on
+  6000 frames, 4 workers). WebKit allows about 250 open sync access handles for the whole page: one
+  per tile and chunk (100 tiles) did not run, hence the slabs. Terminating the run's worker stops its
+  frame workers (all three browsers); an error in a frame worker ends the run with its message.
+- Checks (`web/e2e/stream.spec.ts` with `STREAM_WORKERS=n`, `STREAM_TILE_CRC=1`,
+  `STREAM_KEEP_STORE=1`): every output file of the run (A, C, units, shifts, quality, template,
+  window factors, kept tiles, tile CRCs) is identical for 1 and N workers and to the run before the
+  pool; only timings in the JSON differ. Native: `cargo test` (chunks merged = one run, solved frames
+  folded = `push`, template from prepared frames, tile factors round trip).
+
+## GPU path (2026-11-04): the per-frame kernels on WebGPU, same outputs bit for bit
+Each frame worker can run its per-frame kernels on the GPU (`web/src/gpu/`, `web/src/stream/gpuStages.ts`,
+`rust/minime-core/src/{gpu,gpuplan}.rs`): median, band-pass registration image and its 2x2 mean, the warp and
+top-hat of the denoised frame, the warp of the registration image and its 2x2 mean. The CPU keeps the FFT shift
+estimate, the quality, the fold and the tile writes, the same Rust code as the CPU path (`Motion::estimate_down`,
+`quality_down`, `Pass1::fold_corrected`, `StreamSolver::solve_prepped`). Batches of 8 frames; the next batch's
+GPU work overlaps this batch's CPU work. Pass 1 (with the shift estimate), the template and the streaming pass's
+preprocessing use it. WebGPU works in nested workers in Chrome and WebKit, so every frame worker has its own device.
+
+- **Same bits**: integer kernels are exact by construction; the float ones need a fused `fma` and no
+  reassociation. Metal's fast math reassociates `(a + b) + (c + d)` (one value in ~1e5 off by an ulp), so the
+  float 2x2 mean runs in two dispatches. Before a run uses the GPU, a **self-test** sends 3 of the session's
+  frames (start, middle, end; shifts with a tie and a border) through every kernel and compares each output with
+  the CPU's (`gpu_reference`) byte for byte; any difference turns the GPU off for the run, with what differed.
+  A device lost or a GPU error during the run switches that worker's GPU off; the frames from the failed batch
+  on go through the CPU path (nothing of the failed batch was folded).
+- **Device** (`ToWorker.device`, New run's Speed card in the browser build): `auto` (default: the fastest the
+  speed test measured), `cpu`, `gpu`, `both` (the first frame workers on the GPU, the rest on the CPU; a dealt
+  pass 1 sizes the workers' chunks by their rates). A GPU run with one worker still gets a pool of one.
+  Software adapters (SwiftShader, `isFallbackAdapter`) and unsupported parameters (`motion_before_tophat` off,
+  `motion_down` 1, odd sizes) are refused with the reason.
+- **Speed test** (~2 s at the run's start, cached in IndexedDB `minime-speed` per GPU, cores, frame size, workers
+  and `SPEED_TEST_VERSION`): pass 1 on 32 session frames per worker, CPU / GPU (one, then all workers) / split,
+  twice each, the faster run counts. `report.json` `device`: asked, used, GPU, why, self-test, speed test, frames
+  each stage did on the GPU, fallbacks. The job page shows "Ran on ...".
+- Measured (headless Chrome 156, M1 Max, load 4-10 from other sessions, bench lock), every run folder's 87 (5-min)
+  / 147 (V4) non-JSON files identical across modes and worker counts; 5-min F1 0.962, traces 0.995:
+
+  | session | workers | CPU | GPU | both | pass 1 CPU -> GPU |
+  |---|---|---|---|---|---|
+  | 5-min synth (9000 frames) | 8 | 31.4 s | 26.4 s | 27.5 s | 12.8 -> 8.7 s |
+  | | 4 | 48.3 s | 35.3 s | 39.5 s | 20.5 -> 10.1 s |
+  | | 2 | 87.9 s | 64.0 s | 74.8 s | 37.8 -> 17.8 s |
+  | 20-min V4 (23711 frames) | 8 | 114.8 s | 98.5 s (auto 95.2 s) | 105.9 s | 39.1 -> 21.3 s |
+
+  With 8 workers pass 1 is held by the tile writes to OPFS (~3 ms per frame per worker with eight writing) and the
+  FFT estimate (1.3 ms); pass 2 (CPU) is then the largest stage. Both was never the fastest here (the M1 Max GPU
+  outruns its CPU workers); it is for a weak GPU beside many cores.
+- Fallbacks checked: no WebGPU (`STREAM_GPU_TEST=nogpu`, and Playwright's headless shell: no adapter), a
+  self-test mismatch (`mismatch`), devices lost after the 3rd / 30th batch (`lost`, `lost:30`, in the template and
+  mid pass 1): CPU path, the same files. WebKit: self-test passes, speed test runs (`e2e/speed.spec.ts`); its full
+  e2e did not run here because OPFS fails in Playwright's WebKit on this machine (`UnknownError`, CPU mode and a
+  bare probe alike). Firefox: not installed for this Playwright.
+
+Run it: `STREAM_DEVICE=auto|cpu|gpu|both [STREAM_GPU_TEST=...] STREAM_RAW=... STREAM_OUT=... npm run e2e:stream`;
+the speed test alone: `e2e/speed.spec.ts` with the stream config's server.
+
 ## Next
 0. Rerun the 8 h and 24 h streaming pass with the traces in OPFS (8 h scale run above);
    machine-hours, so overnight.
@@ -665,12 +823,10 @@ themselves; run only one Playwright config at a time (they share ports and `dist
 1b. ~~`ymean`/`sn` for a browser-only run, window loop chained into the streaming pass~~
    (done). A second streaming pass on the updated footprints (`t2_stream.py --n-updates
    1`'s pass 1, the scored traces) is one more read of the movie; not chained yet.
-1c. Fold the shift estimate into pass 1 (`Pass1` already estimates when no shift is given;
-   the shifts are the same code, so identical): the separate motion stage reads and
-   median-filters every frame once more, about a third of a run (128 of 415 s on 6000
-   frames). Keep the template build as its own short stage.
-2. Speed: preprocessing in a worker pool (frames are independent), faster median
-   (Perreault O(1) or a sorting-network median), then rayon + COOP/COEP.
+1c. ~~Fold the shift estimate into pass 1~~ (done, "Worker pool" below): the motion stage is now the
+   template build only.
+2. Speed: ~~worker pool~~ (done, below); faster median (Perreault O(1) or a sorting-network
+   median), a faster NNQP/CNMF loop (now the largest serial part), then rayon + COOP/COEP.
 3. ~~Save outputs to a folder~~ (done: picked folder or Browser storage, "Browser back end"
    above). Still open: checkpoint the per-segment sums so a run can resume.
 4. WebGPU for traces and sums once the CPU path is complete.

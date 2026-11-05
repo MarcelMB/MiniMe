@@ -1,3 +1,4 @@
+import type { Device } from "../gpu/plan";
 import { isFinal, type ProgressEvent, type RunPlan, type StageProgress } from "../launch/params";
 import type { FromWorker, ToWorker } from "../stream/protocol";
 import { DEFAULTS, unusedParams, WINDOW_FRAMES } from "../stream/session";
@@ -20,6 +21,8 @@ export type JobBody = {
   tune: boolean;
   tune_args: Record<string, number>;
   fps: number | null;
+  /** Where the per-frame stages run (the browser build's Speed panel): auto, cpu, gpu or both. */
+  device?: Device;
 };
 
 /** A job as main's `asdict(Job)` has it: the page's `Job` plus the fields it does not read. */
@@ -416,6 +419,7 @@ export class JobManager {
       fps: b.fps,
       scratch: job.id,
       browserStorage: splitVpath(job.out_dir).root === OPFS_NAME,
+      device: b.device,
     };
     try {
       const w = this.o.makeWorker();
