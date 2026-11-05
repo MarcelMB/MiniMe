@@ -112,6 +112,7 @@ def stream_meta(params: Params, H: int, W: int) -> dict:
         "median_ksize": params.median_ksize,
         "tophat_wnd": params.tophat_wnd,
         "motion_before_tophat": params.motion_before_tophat,
+        "motion_fill": params.motion_fill,
         "dl_wnd": params.dl_wnd,
         "sparse_snr": params.sparse_snr,
         "size_thres": list(params.size_thres),
@@ -145,6 +146,8 @@ def write_session(
     (d / "session.json").write_text(json.dumps(session, indent=1))
     np.save(d / "shifts.npy", np.ascontiguousarray(sc.shifts, dtype=np.float32))
     np.save(d / "template.npy", sc.template.astype(np.float32))
+    if sc.fill is not None:
+        np.save(d / "fill.npy", sc.fill)
     for p2 in sorted((s.root / "processed" / "stream").glob("ref_pass2_*_*")):
         t0 = int(p2.name.split("_")[2])
         for f in sorted((p2 / "inputs").glob("omega_*.npy")):

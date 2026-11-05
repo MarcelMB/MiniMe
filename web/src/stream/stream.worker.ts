@@ -28,6 +28,7 @@ import init, {
   Pass1Engine,
   Pass2Engine,
   SeedsEngine,
+  SpreadWorker,
   StitchEngine,
   stream_params,
   time_windows,
@@ -45,7 +46,8 @@ import {
   tilesAsFiles,
 } from "./poolStages";
 import type { FromWorker, Stage, ToWorker } from "./protocol";
-import { DEFAULTS, MOTION_PARAMS, sessionFor } from "./session";
+import { DEFAULTS, motionParams, sessionFor } from "./session";
+import { fillTemplate, localRunner, poolRunner, spreadTemplate } from "./spread";
 
 const post = (m: FromWorker, transfer: Transferable[] = []) => self.postMessage(m, transfer);
 const BLOCK = 64; // frames per File.slice read
@@ -419,29 +421,47 @@ async function motionStage(
   memory: WebAssembly.Memory,
 ): Promise<Out> {
   if (!segs.length) throw new Error("no AVIs");
-  const engine = new MotionEngine(files, segs[0].avi.n_frames());
+  const frames = segs.reduce((a, s) => a + s.avi.n_frames(), 0);
+  const engine = new MotionEngine(files, segs[0].avi.n_frames(), frames);
   const [H, W, t0, t1, n] = [engine.height(), engine.width(), engine.t0(), engine.t1(), engine.template_n()];
   for (const { file, avi } of segs)
     if (avi.height() !== H || avi.width() !== W)
       throw new Error(`${file.name}: ${avi.height()}x${avi.width()} frames, inputs say ${H}x${W}`);
-  log(`${segs.length} files indexed; template from ${n} frames (read twice), then frames ${t0}-${t1}`);
-  const total = 2 * n + (t1 - t0);
+  const spread = engine.spread();
+  const filled = (decode(files.get("params.json") as Uint8Array).motion_fill ?? "zero") === "template";
+  // a spread template reads its frames 5 times (means, 2 x shifts, 2 x aligned means), the fill once more
+  const reads = (spread ? 5 : 2) + (filled ? 1 : 0);
+  log(
+    `${segs.length} files indexed; template from ${n} frames ${spread ? "spread over the session" : "of segment 0"} (read ${reads} times), then frames ${t0}-${t1}`,
+  );
+  const total = reads * n + (t1 - t0);
   start("motion", total, 0, H, W);
   const began = performance.now();
   let done = 0;
   let lastPost = 0;
-  const tick = () => {
-    done++;
+  const tickN = (k: number) => {
+    done += k;
     const now = performance.now();
     if (now - lastPost > 500) {
       lastPost = now;
       progress(done, total, (now - began) / 1e3);
     }
   };
+  const tick = () => tickN(1);
   const setStride = (s: number) => engine.set_stride(s);
-  // with a pool its workers prepare the template frames and the engine adds them in frame order
-  if (pool)
-    await templatePooled(pool, engine, files.get("params.json") as Uint8Array, n, total, began, { progress, log });
+  const params = files.get("params.json") as Uint8Array;
+  // the spread template and the fill: the pool's workers (or one here) read and prepare the frames
+  let local: SpreadWorker | null = null;
+  const runner = () => {
+    if (pool) return poolRunner(pool);
+    local ??= new SpreadWorker(params);
+    return localRunner(local, segs);
+  };
+  if ((spread || filled) && pool) await pool.broadcast({ type: "u0", params });
+  if (spread) await spreadTemplate(engine, runner(), tickN);
+  else if (pool)
+    // with a pool its workers prepare the template frames and the engine adds them in frame order
+    await templatePooled(pool, engine, params, n, total, began, { progress, log });
   else
     for (let round = 0; round < 2; round++)
       forFrames(segs, 0, n, setStride, (c) => {
@@ -449,6 +469,9 @@ async function motionStage(
         tick();
       });
   engine.build_template();
+  await fillTemplate(engine, runner(), tickN);
+  (local as SpreadWorker | null)?.free();
+  if ((spread || filled) && pool) await pool.broadcast({ type: "free" });
   const tTemplate = (performance.now() - began) / 1e3;
   log("template built");
   forFrames(segs, t0, t1, setStride, (c) => {
@@ -652,6 +675,12 @@ async function runSession(
     files = new Map(files);
     files.set("template.npy", source); // pass 1 rebuilds the stage's own motion from this
     out.set("template.npy", template);
+    // the template fill: every window's pass 1 and the streaming pass put this image where a frame has no data
+    const fill = m.files.get("fill.npy");
+    if (fill) {
+      files.set("fill.npy", fill);
+      out.set("fill.npy", fill);
+    }
   }
   const ownShifts: Float64Array[] = [];
   const ownQuality: Float32Array[] = [];
@@ -799,6 +828,8 @@ async function runSession(
       ["params.json", stream_params(session, T)],
       ["shifts.npy", shifts as Uint8Array],
     ]);
+    const fill = files.get("fill.npy");
+    if (fill) sf.set("fill.npy", fill);
     for (const name of ["A_data.npy", "A_indices.npy", "A_indptr.npy", "ymean.npy", "sn.npy"]) {
       const b = st.files.get(name);
       if (!b) throw new Error(`the stitch gave no ${name}`);
@@ -866,7 +897,8 @@ async function saveRun(
       shifts: bytes("shifts.npy"),
       template: bytes("template.npy"),
       quality: bytes("quality.npy"),
-      params: Object.fromEntries(MOTION_PARAMS.map((k) => [k, pass1[k]])),
+      fill: motion.get("fill.npy"),
+      params: motionParams(pass1),
     },
     stitch: d.stitch,
     stream: d.stream,

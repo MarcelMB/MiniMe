@@ -15,6 +15,9 @@ export const DEFAULTS = {
   template_frames: 200,
   motion_before_tophat: true,
   motion_bandpass: [1.0, 6.0] as [number, number],
+  template_source: "spread" as "spread" | "first",
+  template_chunks: 10,
+  motion_fill: "template" as "template" | "zero",
   tile: 64,
   svd_k0: 40,
   svd_power_iter: 1,
@@ -53,7 +56,8 @@ export type Session = ReturnType<typeof defaultSession>;
 /** The parameters the browser pipeline reads (everything `defaultSessionFrom` takes from DEFAULTS). */
 export const SESSION_PARAMS = Object.keys(DEFAULTS) as readonly string[];
 
-/** The motion sidecar's parameters (`Params.motion_params()`), the ones that fix the shifts. */
+/** The motion sidecar's parameters (`Params.motion_params()`), the ones that fix the shifts
+ * (`template_source` and `template_chunks` count only for a spread template). */
 export const MOTION_PARAMS = [
   "median_ksize",
   "tophat_wnd",
@@ -62,7 +66,18 @@ export const MOTION_PARAMS = [
   "template_frames",
   "motion_before_tophat",
   "motion_bandpass",
+  "template_source",
+  "template_chunks",
 ] as const;
+
+/** `Params.motion_params()` of a stage's parameters: the spread template's keys only with a spread
+ * template (a sidecar from before them holds none). */
+export function motionParams(p: Record<string, unknown>): Record<string, unknown> {
+  const spread = p.template_source === "spread";
+  return Object.fromEntries(
+    MOTION_PARAMS.filter((k) => spread || (k !== "template_source" && k !== "template_chunks")).map((k) => [k, p[k]]),
+  );
+}
 
 /** `session.json` for `H` x `W` frames with every parameter at its default. */
 export function defaultSession(H: number, W: number, windowFrames = WINDOW_FRAMES) {
@@ -97,6 +112,9 @@ function defaultSessionFrom(p: typeof DEFAULTS, H: number, W: number, windowFram
       tile: p.tile,
       seeds_wnd: p.seeds_wnd,
       seeds_stp: p.seeds_stp,
+      template_source: p.template_source,
+      template_chunks: p.template_chunks,
+      motion_fill: p.motion_fill,
     },
     pass2: {
       ...size,
@@ -150,6 +168,7 @@ function defaultSessionFrom(p: typeof DEFAULTS, H: number, W: number, windowFram
       median_ksize: p.median_ksize,
       tophat_wnd: p.tophat_wnd,
       motion_before_tophat: p.motion_before_tophat,
+      motion_fill: p.motion_fill,
       dl_wnd: p.dl_wnd,
       sparse_snr: p.sparse_snr,
       size_thres: p.size_thres,
