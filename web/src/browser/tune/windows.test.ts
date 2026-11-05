@@ -73,6 +73,9 @@ describe("TuneWorkers", () => {
     await tw.trial(new Uint8Array(), { diameter: 7 } as never, true);
     await tw.trial(new Uint8Array(), { diameter: 7 } as never, false);
     expect(seen).toEqual(["", JSON.stringify({ "0": { seeds_pnr: 10, seeds_merged: 5 } })]);
+    tw.clearCaps();
+    await tw.trial(new Uint8Array(), { diameter: 7 } as never, false);
+    expect(seen[2]).toBe("");
   });
 
   it("rejects a pending trial when a worker crashes, and when the workers are closed", async () => {

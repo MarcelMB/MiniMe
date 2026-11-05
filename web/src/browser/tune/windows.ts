@@ -206,6 +206,11 @@ export class TuneWorkers {
     return hist;
   }
 
+  /** Forget the per-window caps: the next trial runs uncapped. */
+  clearCaps(): void {
+    this.caps.clear();
+  }
+
   close(): void {
     const err = new Error("the tune workers were closed");
     for (const s of this.slots) {
