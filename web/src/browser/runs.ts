@@ -14,6 +14,10 @@ export type RunInfo = {
   id: string;
   vpath: string;
   dir: Dir;
+  /** The folder that holds factors/wNN and tiles/: the run's own, or its source run's for a rerun. */
+  factors: Dir;
+  /** The source run's vpath for a rerun (params.source_run), else null. */
+  sourceRun: string | null;
   params: Record<string, unknown>;
   // biome-ignore lint/suspicious/noExplicitAny: report.json is free-form (main reads it the same way)
   report: Record<string, any>;
@@ -71,11 +75,17 @@ export class Registry {
     const stamp = `${rf.lastModified}-${rf.size}`;
     await this.invalidateStale(id, stamp);
     const meta = await readJSON<RunInfo["meta"]>(dir, "factors/meta.json");
+    const params = await readJSON<Record<string, unknown>>(dir, "params.json");
+    const sourceRun =
+      typeof params.source_run === "string" && !isDiskPath(params.source_run) ? params.source_run : null;
+    const factors = sourceRun ? await this.folders.resolve(sourceRun).catch(() => dir) : dir;
     return {
       id,
       vpath,
       dir,
-      params: await readJSON(dir, "params.json"),
+      factors,
+      sourceRun,
+      params,
       report: JSON.parse(await rf.text()),
       meta: { ...meta, H: +meta.H, W: +meta.W, T: +meta.T, tile: +meta.tile, ranks: meta.ranks.map(Number) },
       mtime: rf.lastModified / 1e3,

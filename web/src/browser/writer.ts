@@ -19,6 +19,7 @@ const FACTORS = [
   "s.npy",
   "mean.npy",
   "sigma.npy",
+  "energy.npy",
   "k.npy",
   "rank.npy",
   "block_max.npy",

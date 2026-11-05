@@ -67,7 +67,7 @@ const FACTOR_FILES = ["W.npy", "V.npy", "mean.npy", "rank.npy"];
 const factorDir = (w: number) => `factors/${windowDir(w)}`;
 
 /** Whether the run folder holds the factors a reconstruction needs (a Python run's are not in this format). */
-export const hasRecon = (r: RunInfo): Promise<boolean> => exists(r.dir, `${factorDir(0)}/W.npy`);
+export const hasRecon = (r: RunInfo): Promise<boolean> => exists(r.factors, `${factorDir(0)}/W.npy`);
 
 function factors(r: RunInfo, w: number): Promise<Factors> {
   return lru(factorCache, `${r.id}:${r.stamp}:${w}`, () => loadFactors(r, w));
@@ -77,8 +77,8 @@ async function loadFactors(r: RunInfo, w: number): Promise<Factors> {
   const [d, win] = [factorDir(w), windowsOf(r.meta)[w]];
   const files: ArrayLike<number>[] = [];
   for (const name of FACTOR_FILES) {
-    if (!(await exists(r.dir, `${d}/${name}`))) throw notAvailable("recon frames", `${d}/${name}`);
-    files.push(readNpy(new Uint8Array(await (await fileAt(r.dir, `${d}/${name}`)).arrayBuffer())).data);
+    if (!(await exists(r.factors, `${d}/${name}`))) throw notAvailable("recon frames", `${d}/${name}`);
+    files.push(readNpy(new Uint8Array(await (await fileAt(r.factors, `${d}/${name}`)).arrayBuffer())).data);
   }
   const [W, V, mean, rank] = files;
   const { H, W: width, tile } = r.meta;
@@ -150,14 +150,14 @@ const firstTile = (r: RunInfo) => tileGrid(r.meta.H, r.meta.W, r.meta.tile)[0];
  * (pixels of tile 0) frames. */
 async function flatParts(r: RunInfo): Promise<Part[]> {
   const px = pixels(firstTile(r));
-  const numbers = (await (await walk(r.dir, FLAT)).entries())
+  const numbers = (await (await walk(r.factors, FLAT)).entries())
     .flatMap((e) => (e.kind === "file" ? [/^tile_000\.part(\d+)$/.exec(e.name)] : []))
     .flatMap((m) => (m ? [Number(m[1])] : []))
     .sort((a, b) => a - b);
   const parts: Part[] = [];
   let first = 0;
   for (const part of numbers) {
-    const frames = Math.floor((await fileAt(r.dir, `${FLAT}/${tileName(0, part)}`)).size / px);
+    const frames = Math.floor((await fileAt(r.factors, `${FLAT}/${tileName(0, part)}`)).size / px);
     parts.push({ part, first, frames });
     first += frames;
   }
@@ -168,9 +168,9 @@ async function flatParts(r: RunInfo): Promise<Part[]> {
  * 404 when it kept none. */
 function layout(r: RunInfo): Promise<Layout> {
   return lru(layouts, `${r.id}:${r.stamp}`, async () => {
-    if (await exists(r.dir, `${FLAT}/${tileName(0, 0)}`)) return { flat: await flatParts(r) };
+    if (await exists(r.factors, `${FLAT}/${tileName(0, 0)}`)) return { flat: await flatParts(r) };
     const first = `${FLAT}/${windowDir(0)}/${tileName(0, 0)}`;
-    if (await exists(r.dir, first)) return { flat: null };
+    if (await exists(r.factors, first)) return { flat: null };
     throw notAvailable("pre frames", first);
   });
 }
@@ -189,7 +189,7 @@ function tileFiles(r: RunInfo, dir: string, part: number): Promise<File[]> {
   const n = tileGrid(r.meta.H, r.meta.W, r.meta.tile).length;
   return lru(handles, `${r.id}:${r.stamp}:${dir}:${part}`, async () => {
     try {
-      const d: Dir = await walk(r.dir, dir);
+      const d: Dir = await walk(r.factors, dir);
       return await Promise.all(Array.from({ length: n }, (_, k) => d.file(tileName(k, part))));
     } catch (e) {
       if (e instanceof HttpError && e.status === 404) throw notAvailable("pre frames", `${dir}/${tileName(0, part)}`);
