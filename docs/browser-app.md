@@ -765,6 +765,53 @@ two, at most 8. If the pool cannot start, the run goes on with one worker.
   pool; only timings in the JSON differ. Native: `cargo test` (chunks merged = one run, solved frames
   folded = `push`, template from prepared frames, tile factors round trip).
 
+## GPU path (2026-11-04): the per-frame kernels on WebGPU, same outputs bit for bit
+Each frame worker can run its per-frame kernels on the GPU (`web/src/gpu/`, `web/src/stream/gpuStages.ts`,
+`rust/minime-core/src/{gpu,gpuplan}.rs`): median, band-pass registration image and its 2x2 mean, the warp and
+top-hat of the denoised frame, the warp of the registration image and its 2x2 mean. The CPU keeps the FFT shift
+estimate, the quality, the fold and the tile writes, the same Rust code as the CPU path (`Motion::estimate_down`,
+`quality_down`, `Pass1::fold_corrected`, `StreamSolver::solve_prepped`). Batches of 8 frames; the next batch's
+GPU work overlaps this batch's CPU work. Pass 1 (with the shift estimate), the template and the streaming pass's
+preprocessing use it. WebGPU works in nested workers in Chrome and WebKit, so every frame worker has its own device.
+
+- **Same bits**: integer kernels are exact by construction; the float ones need a fused `fma` and no
+  reassociation. Metal's fast math reassociates `(a + b) + (c + d)` (one value in ~1e5 off by an ulp), so the
+  float 2x2 mean runs in two dispatches. Before a run uses the GPU, a **self-test** sends 3 of the session's
+  frames (start, middle, end; shifts with a tie and a border) through every kernel and compares each output with
+  the CPU's (`gpu_reference`) byte for byte; any difference turns the GPU off for the run, with what differed.
+  A device lost or a GPU error during the run switches that worker's GPU off; the frames from the failed batch
+  on go through the CPU path (nothing of the failed batch was folded).
+- **Device** (`ToWorker.device`, New run's Speed card in the browser build): `auto` (default: the fastest the
+  speed test measured), `cpu`, `gpu`, `both` (the first frame workers on the GPU, the rest on the CPU; a dealt
+  pass 1 sizes the workers' chunks by their rates). A GPU run with one worker still gets a pool of one.
+  Software adapters (SwiftShader, `isFallbackAdapter`) and unsupported parameters (`motion_before_tophat` off,
+  `motion_down` 1, odd sizes) are refused with the reason.
+- **Speed test** (~2 s at the run's start, cached in IndexedDB `minime-speed` per GPU, cores, frame size, workers
+  and `SPEED_TEST_VERSION`): pass 1 on 32 session frames per worker, CPU / GPU (one, then all workers) / split,
+  twice each, the faster run counts. `report.json` `device`: asked, used, GPU, why, self-test, speed test, frames
+  each stage did on the GPU, fallbacks. The job page shows "Ran on ...".
+- Measured (headless Chrome 156, M1 Max, load 4-10 from other sessions, bench lock), every run folder's 87 (5-min)
+  / 147 (V4) non-JSON files identical across modes and worker counts; 5-min F1 0.962, traces 0.995:
+
+  | session | workers | CPU | GPU | both | pass 1 CPU -> GPU |
+  |---|---|---|---|---|---|
+  | 5-min synth (9000 frames) | 8 | 31.4 s | 26.4 s | 27.5 s | 12.8 -> 8.7 s |
+  | | 4 | 48.3 s | 35.3 s | 39.5 s | 20.5 -> 10.1 s |
+  | | 2 | 87.9 s | 64.0 s | 74.8 s | 37.8 -> 17.8 s |
+  | 20-min V4 (23711 frames) | 8 | 114.8 s | 98.5 s (auto 95.2 s) | 105.9 s | 39.1 -> 21.3 s |
+
+  With 8 workers pass 1 is held by the tile writes to OPFS (~3 ms per frame per worker with eight writing) and the
+  FFT estimate (1.3 ms); pass 2 (CPU) is then the largest stage. Both was never the fastest here (the M1 Max GPU
+  outruns its CPU workers); it is for a weak GPU beside many cores.
+- Fallbacks checked: no WebGPU (`STREAM_GPU_TEST=nogpu`, and Playwright's headless shell: no adapter), a
+  self-test mismatch (`mismatch`), devices lost after the 3rd / 30th batch (`lost`, `lost:30`, in the template and
+  mid pass 1): CPU path, the same files. WebKit: self-test passes, speed test runs (`e2e/speed.spec.ts`); its full
+  e2e did not run here because OPFS fails in Playwright's WebKit on this machine (`UnknownError`, CPU mode and a
+  bare probe alike). Firefox: not installed for this Playwright.
+
+Run it: `STREAM_DEVICE=auto|cpu|gpu|both [STREAM_GPU_TEST=...] STREAM_RAW=... STREAM_OUT=... npm run e2e:stream`;
+the speed test alone: `e2e/speed.spec.ts` with the stream config's server.
+
 ## Next
 0. Rerun the 8 h and 24 h streaming pass with the traces in OPFS (8 h scale run above);
    machine-hours, so overnight.

@@ -149,14 +149,6 @@ export function stageKernels(gpu: WorkerGpu, get: () => string): Kernels | null 
   }
 }
 
-/** Milliseconds a frame worker's GPU path spent per step (summed over its tasks; `profile` posts them). */
-export const gpuMs: Record<string, number> = {};
-const lap = (what: string, t: number) => {
-  const now = performance.now();
-  gpuMs[what] = (gpuMs[what] ?? 0) + now - t;
-  return now;
-};
-
 /** Batch sizes from window frame `a` to `b` of a chunk whose engine holds `buffered` frames: at most
  * `BATCH`, never across a multiple of `FLUSH` (the tile store's blocks). */
 export function batches(a: number, b: number, buffered: number): number[] {
@@ -192,23 +184,17 @@ export async function pass1Gpu(
   const [H, W, t0] = [engine.height(), engine.width(), engine.t0()];
   const sizes = batches(a, b, engine.buffered());
   const starts = sizes.map((_, i) => a + sizes.slice(0, i).reduce((x, y) => x + y, 0));
-  const read = (i: number) => {
-    const t = performance.now();
-    const raw = readFrames(segs, t0 + starts[i], t0 + starts[i] + sizes[i], H, W);
-    lap("read", t);
-    return raw;
-  };
+  const read = (i: number) => readFrames(segs, t0 + starts[i], t0 + starts[i] + sizes[i], H, W);
   const quiet = <T>(p: Promise<T | null>) => {
     p.catch(() => undefined);
     return p;
   };
-  let down = quiet(onGpu(gpu, () => g.denoise(read(0), sizes[0], true)));
+  const first = read(0);
+  let down = quiet(onGpu(gpu, () => g.denoise(first, sizes[0], true)));
   for (let i = 0; i < sizes.length; i++) {
     const [f, n] = [starts[i], sizes[i]];
-    let t = performance.now();
     const d = await down;
     if (!d) return f;
-    t = lap("denoise", t);
     const given = engine.given_shifts(f, n);
     let est = new Float64Array(0);
     let used = given;
@@ -216,20 +202,15 @@ export async function pass1Gpu(
       est = engine.estimate_down(n, d);
       used = Float32Array.from(est);
     }
-    t = lap("estimate", t);
     const corrected = quiet(onGpu(gpu, () => g.correct(used, n, { blk: true, warped: true })));
     const next = i + 1 < sizes.length ? read(i + 1) : null;
-    t = performance.now();
     const out = await corrected;
     if (!out) return f;
     gpu.afterBatch(g);
-    t = lap("correct", t);
     // the next batch's median and registration image go on while this one is folded and written
     if (next) down = quiet(onGpu(gpu, () => g.denoise(next, sizes[i + 1], true)));
     engine.push_corrected(n, out.blk as Uint8Array, out.warped as Float32Array, est, used);
-    t = lap("fold", t);
     if (engine.buffered() === FLUSH) flush();
-    lap("flush", t);
     tick(f + n - a);
   }
   return b;
