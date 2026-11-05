@@ -214,12 +214,43 @@ impl Pass1 {
             let warped = Reg::U8(blk.clone());
             (blk, Some(warped))
         };
-        if let (Some(m), Some(r)) = (&self.motion, &warped) {
-            self.quality.push(m.quality(r));
-        }
-        self.fold(&blk);
-        self.shifts.extend([dy, dx]);
+        let quality = match (&self.motion, &warped) {
+            (Some(m), Some(r)) => Some(m.quality(r)),
+            _ => None,
+        };
+        self.fold_corrected(&blk, quality, [dy, dx]);
         Ok([dy, dx])
+    }
+
+    /// The end of `push` for a frame corrected elsewhere (the GPU path, `web/src/gpu/`): its quality
+    /// (if there is a template), the max projection, block maximum and tile buffers of `blk`, and the
+    /// shift used. The estimated shift (`shifts64`) goes in before, with `push_estimate`.
+    pub fn fold_corrected(&mut self, blk: &[u8], quality: Option<f32>, used: [f32; 2]) {
+        if let Some(q) = quality {
+            self.quality.push(q);
+        }
+        self.fold(blk);
+        self.shifts.extend(used);
+    }
+
+    /// Record a shift estimated against the template, before the cast to float32 (as `push` does).
+    pub fn push_estimate(&mut self, e: [f64; 2]) {
+        self.shifts64.extend(e);
+    }
+
+    /// Frames this pass still takes (the window's frames past `t`).
+    pub fn room(&self) -> usize {
+        self.edges.last().unwrap().saturating_sub(self.t)
+    }
+
+    /// The template, when there is one (the GPU path estimates and scores against it).
+    pub fn motion(&self) -> Option<&Motion> {
+        self.motion.as_ref()
+    }
+
+    /// The motion parameters of the pass.
+    pub fn motion_params(&self) -> &MotionParams {
+        &self.p
     }
 
     /// Max projection, block maximum and tile buffers of one corrected frame.

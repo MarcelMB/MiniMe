@@ -11,7 +11,9 @@ import {
   writeRun,
   writeWindow,
 } from "../browser/writer";
+import type { Device } from "../gpu/plan";
 import type { ProgressUnit } from "../launch/params";
+import { cachedSpeedTest, type DeviceReport, selfTest, setupDevice } from "./device";
 import { readNpy } from "./npy";
 import { orderAvis } from "./order";
 import init, {
@@ -65,6 +67,13 @@ let pool: Pool | undefined;
  * on beside the later windows' pass 1 and pass 2; the windows queue for it in order. */
 let windowPool: Pool | undefined;
 let windowChain: Promise<unknown> = Promise.resolve();
+/** Where the run's per-frame stages go (`ToWorker.device`), the tests' GPU hooks, what the run's start
+ * decided (`device.ts`, for `report.json`), and for the split the frame workers' rates (a dealt pass
+ * 1's chunks are sized by them). */
+let deviceAsked: Device = "auto";
+let gpuTest = "";
+let deviceReport: DeviceReport | null = null;
+let chunkRates: number[] | undefined;
 /** The tile store of the window just through pass 1 when the pool ran it (slabs, `slabs.ts`). */
 let slabStore: Store | undefined;
 const heapMb = () =>
@@ -180,8 +189,15 @@ async function run({
   keepStore,
   scratch,
   browserStorage,
+  device,
+  speedTest,
+  gpuTest: hook,
 }: ToWorker): Promise<void> {
   const tl = performance.now();
+  deviceAsked = device ?? "auto";
+  gpuTest = hook ?? "";
+  deviceReport = null;
+  chunkRates = undefined;
   let dest = given;
   if (outPath) {
     dest = await navigator.storage.getDirectory();
@@ -195,6 +211,7 @@ async function run({
   const wasm = await init();
   wasmMemory = wasm.memory;
   log("wasm ready");
+  if (speedTest) return speedOnly(avis, params ?? {}, Boolean(speedTest.force), log, tl);
   const files = new Map<string, Uint8Array>();
   for (const f of inputs) files.set(f.name, new Uint8Array(await f.arrayBuffer()));
   if (files.size) log(`read ${files.size} input files`);
@@ -519,7 +536,39 @@ async function runWindows(
   tl: number,
   opts: RunOpts,
 ): Promise<void> {
-  return withPool(avis, opts.params, log, () => runSession(avis, files, log, memory, tl, opts));
+  return withPool(avis, opts.params, log, () => runSession(avis, files, log, memory, tl, opts), deviceAsked !== "cpu");
+}
+
+/** The New run page's speed test on its videos: the GPU self-test, then the speed test (cached unless
+ * `force`), answered with `speed`. */
+async function speedOnly(
+  avis: File[],
+  params: Record<string, unknown>,
+  force: boolean,
+  log: (what: string) => void,
+  tl: number,
+): Promise<void> {
+  const segs = indexSegments(avis);
+  if (!segs.length) throw new Error("no AVIs");
+  const T = segs.reduce((n, s) => n + s.avi.n_frames(), 0);
+  const [H, W] = [segs[0].avi.height(), segs[0].avi.width()];
+  const session = sessionFor(H, W, params) as Record<string, unknown>;
+  const pass1 = encode({ ...(session.pass1 as Record<string, unknown>), t0: 0, t1: 0 });
+  const p = await Pool.create(workerCount(params), avis, scratchId);
+  try {
+    const gt = await selfTest(p, pass1, T, gpuTest);
+    if (gt.failure)
+      post({ type: "speed", test: null, selfTest: gt.failure, reason: gt.failure, gpu: gt.name, cached: false });
+    else {
+      const s = await cachedSpeedTest(p, segs, pass1, T, H, W, gt.name, gpuTest, force);
+      log(`speed test: ${JSON.stringify(s.test.fps)} frames/s${s.cached ? " (cached)" : ""}`);
+      post({ type: "speed", test: s.test, selfTest: "pass", reason: "", gpu: gt.name, cached: s.cached });
+    }
+  } finally {
+    p.close();
+    for (const sg of segs) sg.avi.free();
+  }
+  post({ type: "done", files: new Map(), seconds: (performance.now() - tl) / 1e3 });
 }
 
 /** Run `f` with the run's frame workers (`params.workers`, or the default count) when there are more
@@ -529,9 +578,11 @@ async function withPool<T>(
   params: Record<string, unknown>,
   log: (what: string) => void,
   f: () => Promise<T>,
+  gpuMaybe = false,
 ): Promise<T> {
   const n = workerCount(params);
-  if (n > 1) {
+  // the GPU path runs on frame workers: one worker then still gets a pool (of one)
+  if (n > 1 || (gpuMaybe && "gpu" in navigator)) {
     try {
       pool = await Pool.create(n, avis, scratchId);
       log(`${n} frame workers`);
@@ -579,6 +630,12 @@ async function runSession(
   // own; every frame's shift is then estimated by its window's pass 1 (same code, same template) and
   // the windows' shifts and qualities are put together after the loop
   const ownMotion = !shifts || !files.has("template.npy");
+  {
+    const pass1 = encode({ ...(sessionObj.pass1 as Record<string, unknown>), t0: 0, t1: 0 });
+    const d = await setupDevice(pool, segs, pass1, T, H, W, deviceAsked, gpuTest, log);
+    deviceReport = d.report;
+    chunkRates = d.rates;
+  }
   if (ownMotion) {
     stageLabel = "motion";
     const mp = encode({ ...(sessionObj.pass1 as Record<string, unknown>), t0: 0, t1: 0 });
@@ -894,6 +951,7 @@ function report(
     wasm_heap_peak_mb: heapPeakMb,
     wall_total: wallTotal,
     workers: pool?.size ?? 1,
+    device: deviceReport ? { ...deviceReport, gpu_frames: { ...(pool?.gpuFrames ?? {}) } } : null,
     where: "browser",
   };
 }
@@ -940,7 +998,7 @@ function beginPass1(p: Pool, files: Map<string, Uint8Array>, tiles: string, log:
   const engine = new Pass1Engine(files);
   const sink: Ahead["sink"] = {};
   const ctx = { progress: (...a: Parameters<typeof progress>) => sink.progress?.(...a), log };
-  const done = pass1Pooled(p, engine, files, engine.t1() - engine.t0(), ctx, tiles, true);
+  const done = pass1Pooled(p, engine, files, engine.t1() - engine.t0(), ctx, tiles, true, chunkRates);
   done.catch(() => undefined); // an error surfaces where the window waits for it
   return { engine, done, began: performance.now(), sink };
 }

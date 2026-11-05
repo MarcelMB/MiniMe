@@ -77,6 +77,18 @@ fn gauss_kernel_fixed(n: usize, sigma: f64) -> Vec<u32> {
     out
 }
 
+/// The taps `motion::bandpass(.., lo, hi)` filters with: `gauss_u8`'s fixed-point weights for `lo`
+/// and `gauss_f32`'s float32 weights for `hi / 2` (the half-resolution image), as the GPU kernels
+/// (`web/src/gpu/`) need them to give the same bits.
+pub fn bandpass_taps(lo: f64, hi: f64) -> (Vec<u32>, Vec<f32>) {
+    let s = hi / 2.0;
+    let wide = gauss_kernel(gauss_ksize(s, 4.0), s)
+        .iter()
+        .map(|&v| v as f32)
+        .collect();
+    (gauss_kernel_fixed(gauss_ksize(lo, 3.0), lo), wide)
+}
+
 /// `cv2.GaussianBlur(src, (0, 0), sigma)` on uint8.
 ///
 /// The fixed-point sums are exact integers, so the order of the two passes is free: first

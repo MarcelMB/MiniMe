@@ -62,6 +62,12 @@ describe("chunkBounds", () => {
     expect(chunkBounds(1001, 4, true)).toEqual([0, 251, 502, 753, 1001]);
   });
 
+  it("with `even` and the workers' rates sizes each worker's chunk by its rate", () => {
+    expect(chunkBounds(3000, 4, true, [3, 3, 1, 1])).toEqual([0, 1125, 2250, 2625, 3000]);
+    // a chunk that would be empty: equal chunks instead
+    expect(chunkBounds(3, 4, true, [100, 1, 1, 1])).toEqual([0, 1, 2, 3]);
+  });
+
   it("never gives more chunks than the tile parts allow", () => {
     for (const [t, n] of [
       [3000, 8],

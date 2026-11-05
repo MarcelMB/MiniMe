@@ -16,6 +16,9 @@ pub mod fastmath;
 pub mod filters;
 pub mod fsimd;
 pub mod gmm;
+#[cfg(target_arch = "wasm32")]
+pub mod gpu;
+pub mod gpuplan;
 pub mod init;
 pub mod linalg;
 pub mod median;
