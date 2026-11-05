@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import multiprocessing
 import os
@@ -72,23 +73,30 @@ def spread_starts(T: int, chunks: int, length: int) -> np.ndarray:
 
 
 def read_range(info: RawInfo, t0: int, n: int) -> np.ndarray:
-    """Session frames ``t0 .. t0 + n`` as (n, h, w) uint8, across segment ends."""
+    """Session frames ``t0 .. t0 + n`` as (m, h, w) uint8, across segment ends; fewer
+    (``m < n``) where a segment holds fewer frames than probed (pass 1 then names it)."""
     starts = np.concatenate([[0], np.cumsum(info.segment_frames)])
     out, t, end = [], int(t0), min(int(t0) + n, info.frames)
     while t < end:
         seg = int(np.searchsorted(starts, t, "right")) - 1
         k = min(end, int(starts[seg + 1])) - t
-        out.append(io.read_frames(info.segments[seg], t - int(starts[seg]), k, info.bgr))
+        with contextlib.suppress(OSError):  # no frame decodable there: a truncated segment
+            out.append(io.read_frames(info.segments[seg], t - int(starts[seg]), k, info.bgr))
         t += k
-    return np.concatenate(out)
+    return np.concatenate(out) if out else np.zeros((0, info.height, info.width), np.uint8)
 
 
 def sample_frames(info: RawInfo, chunks: int, length: int) -> np.ndarray:
     """(chunks * length, h, w) uint8: ``chunks`` runs of ``length`` consecutive frames spread
-    evenly over the session."""
-    return np.concatenate(
+    evenly over the session (fewer where a segment is truncated)."""
+    out = np.concatenate(
         [read_range(info, int(t), length) for t in spread_starts(info.frames, chunks, length)]
     )
+    if not out.shape[0]:
+        raise OSError(
+            f"no frames could be read for the motion template in {info.segments[0].parent}"
+        )
+    return out
 
 
 def _reg(frames: np.ndarray, params: Params) -> np.ndarray:
@@ -96,24 +104,26 @@ def _reg(frames: np.ndarray, params: Params) -> np.ndarray:
 
 
 def with_fill(tmpl: Template, frames: np.ndarray, params: Params) -> Template:
-    """``tmpl`` carrying the fill image of ``frames`` (raw template frames): the mean of
-    their tophat images (what pass 1 hands to pass 2) at the template's position."""
+    """``tmpl`` carrying the fill image of ``frames`` (the raw template frames): the mean of
+    their corrected tophat images (what pass 1 hands to pass 2) at the template's position,
+    over the frames that hold data at each pixel (``motion.fill_image``)."""
     den = preprocess.denoise(frames, params.median_ksize)
-    reg = registration_image(den, params)
-    sh = motion.estimate(reg, tmpl, params.motion_max_shift)
-    top = preprocess.tophat(motion.apply_shifts(den, sh, "replicate"), params.tophat_wnd)
-    if not params.motion_before_tophat:
-        top = motion.apply_shifts(preprocess.tophat(den, params.tophat_wnd), sh, "replicate")
-    return dataclasses.replace(tmpl, fill=motion.fill_image(top, np.zeros_like(sh)))
+    sh = motion.estimate(registration_image(den, params), tmpl, params.motion_max_shift)
+    if params.motion_before_tophat:
+        top = preprocess.tophat(motion.apply_shifts(den, sh, replicate=True), params.tophat_wnd)
+    else:
+        top = motion.apply_shifts(preprocess.tophat(den, params.tophat_wnd), sh, replicate=True)
+    return dataclasses.replace(tmpl, fill=motion.fill_image(top, sh))
 
 
 def build_template(info: RawInfo, params: Params) -> Template:
-    """Motion template from the first ``template_frames`` frames of segment 0 (moved to the
-    session's median position with ``template_recentre``), or with ``template_source =
-    "spread"`` from frames spread over the session."""
+    """Motion template from frames spread over the session (``template_source = "spread"``:
+    ``template_chunks`` runs, best-agreeing run first, 2 alignment rounds, median position)
+    or from the first ``template_frames`` frames of segment 0 ("first"); with
+    ``motion_fill = "template"`` it carries the fill image of the same frames."""
     p = params
-    chunks = max(1, p.template_chunks)
     if p.template_source == "spread":
+        chunks = max(1, p.template_chunks)
         frames = sample_frames(info, chunks, max(1, p.template_frames // chunks))
         tmpl = motion.make_template(
             _reg(frames, p),
@@ -125,11 +135,7 @@ def build_template(info: RawInfo, params: Params) -> Template:
         )
     else:
         frames = read_avi(info.segments[0], max_frames=p.template_frames, bgr=info.bgr)
-        reg = _reg(frames, p)
-        tmpl = motion.make_template(reg, p.motion_down, p.motion_max_shift)
-        if p.template_recentre:
-            probe = _reg(sample_frames(info, chunks, max(1, p.template_frames // chunks)), p)
-            tmpl = motion.recentre(reg, tmpl, probe, p.motion_max_shift)[0]
+        tmpl = motion.make_template(_reg(frames, p), p.motion_down, p.motion_max_shift)
     return with_fill(tmpl, frames, p) if p.motion_fill == "template" else tmpl
 
 
@@ -181,18 +187,12 @@ class Pass1:
                 np.maximum(self.block_max[bi], part.max(axis=0), out=self.block_max[bi])
 
     def _estimate(self, reg: np.ndarray) -> np.ndarray:
-        """Shifts of one sub-batch: vs the template, optionally outlier-fixed and refined
-        against the sub-batch's own mean (``motion_outlier``, ``motion_refine``)."""
+        """Shifts of one sub-batch vs the template, outlier-fixed with ``motion_outlier``."""
         p, t = self.params, self.template
-        if p.motion_outlier <= 0 and not p.motion_refine:
+        if p.motion_outlier <= 0:
             return motion.estimate(reg, t, p.motion_max_shift)
         sh, peak = motion.estimate_peak(reg, t, p.motion_max_shift)
-        sh = motion.fix_outliers(sh, peak, p.motion_outlier)
-        if p.motion_refine:
-            sh = motion.fix_outliers(
-                motion.refine(reg, sh, t, p.motion_max_shift), peak, p.motion_outlier
-            )
-        return sh
+        return motion.fix_outliers(sh, peak, p.motion_outlier)
 
     def process(self, frames: np.ndarray) -> np.ndarray:
         """Corrected, tile-packed uint8 buffer for this batch (see ``pack_tiles``)."""
@@ -223,17 +223,19 @@ class Pass1:
                         f"{self.given_shifts.shape[0]} shifts given"
                     )
             lap("motion_estimate")
-            fill = "replicate" if p.motion_fill == "template" else p.motion_fill
+            # template fill: warp with the edge pixels replicated (no step for the tophat),
+            # then put the fill image where the frame has no data
+            fill = p.motion_fill == "template"
             if p.motion_before_tophat:
-                blk = motion.apply_shifts(blk, sh, fill)
+                blk = motion.apply_shifts(blk, sh, replicate=fill)
                 reg = motion.apply_shifts(reg, sh)
                 lap("motion_apply")
                 blk = preprocess.tophat(blk, p.tophat_wnd)
                 lap("tophat")
             else:
-                blk = reg = motion.apply_shifts(reg, sh, fill)
+                blk = reg = motion.apply_shifts(reg, sh, replicate=fill)
                 lap("motion_apply")
-            if p.motion_fill == "template":
+            if fill:
                 blk = motion.fill_outside(blk, sh, self.template.fill)
             np.maximum(self.max_proj, blk.max(axis=0), out=self.max_proj)
             lap("max_proj")

@@ -8,7 +8,7 @@ import pytest
 import scipy.sparse as sps
 from typer.testing import CliRunner
 
-from minime import cli, motion, pipeline, report
+from minime import cli, pipeline, report
 from minime.params import Params
 from minime.testing import synth
 from tests.conftest import TINY_PARAMS
@@ -41,11 +41,15 @@ def test_pipeline_end_to_end_tiny(tiny_session):
     assert rep["counts"]["units_final"] == A.shape[0]
     cents = synth.true_centroids(tiny_session["setup"])
     cents = cents[(cents >= 4).all(1) & (cents < 60).all(1)]
+    from minime import score
     from minime.init import centroids
 
+    # units sit in template coordinates: the true cells moved by the template's position
+    sh = np.load(out / "motion" / "arrays.npz")["shifts"].astype(float)
+    c = score.motion_fit(sh, tiny_session["setup"].shifts.astype(float))[0]
     uc = centroids(A, 64, 64)
-    d = np.sqrt(((cents[:, None] - uc[None]) ** 2).sum(-1)).min(1)
-    assert (d < 5).mean() >= 0.8
+    d = [np.sqrt(((cents[:, None] + m * c - uc[None]) ** 2).sum(-1)).min(1) for m in (1, -1)]
+    assert max((di < 5).mean() for di in d) >= 0.8
     # output contract
     assert np.load(out / "cnmf" / "YrA.npy").shape == C.shape
     assert np.load(out / "cnmf" / "b.npy").shape == (64, 64)
@@ -269,51 +273,34 @@ def test_a_failed_run_removes_the_tile_store(tiny_session, tmp_path, monkeypatch
     assert (tmp_path / "f" / "motion").is_dir() and not (tmp_path / "f" / "tiles").exists()
 
 
-def test_border_mask_zeroes_rarely_filled_pixels():
-    """Frames shifted by dx = -3 most of the time leave columns 0-2 zero-filled: masked."""
-    from minime import pass1
-
-    shifts = np.zeros((10, 2), np.float32)
-    shifts[1:, 1] = -3
-    p1 = pass1.Pass1Result(
-        shifts=shifts,
-        quality=np.ones(10, np.float32),
-        max_proj=np.full((6, 8), 9, np.uint8),
-        block_max=np.full((2, 6, 8), 9, np.uint8),
-        block_edges=np.array([0, 5, 10]),
-        frames=10,
-        seconds={},
-    )
-    assert pipeline.border_mask(p1, 6, 8, 0.0) is None
-    valid = pipeline.border_mask(p1, 6, 8, 0.5)
-    assert valid is not None and not valid[:, :3].any() and valid[:, 3:].all()
-    assert (p1.max_proj[:, :3] == 0).all() and (p1.block_max[:, :, :3] == 0).all()
-    assert (p1.max_proj[:, 3:] == 9).all()
-
-
-def test_border_coverage_run_zeroes_masked_pixels_in_factors(tiny_session, tmp_path):
-    """With border_coverage the masked pixels hold 0 in every tile pass 2 compresses."""
-    from minime import factors as fmod
-
-    p = Params(**{**TINY_PARAMS, "border_coverage": 0.99})
-    out = pipeline.run(tiny_session["raw_dir"], p, run_name="m", out_root=tmp_path)
-    fac = fmod.Factors.load(out / "factors")
-    sh = np.load(out / "motion" / "arrays.npz")["shifts"]
-    bad = motion.coverage(sh, 64, 64) < 0.99
-    assert bad.any() and (fac.max_proj[bad] == 0).all()
-    for tf in fac.tiles:  # zeroed pixels must not turn into NaN (zero noise) in pass 2
-        assert all(
-            np.isfinite(np.asarray(v)).all() for v in vars(tf).values() if hasattr(v, "dtype")
-        )
-
-
 def test_spread_template_fill_run_and_sidecar_rerun_agree(tiny_session, tmp_path):
-    """template_source="spread" + motion_fill="template" runs; a rerun reusing the motion
-    sidecar rebuilds the fill image and gives the same units."""
-    p = Params(**{**TINY_PARAMS, "template_source": "spread", "motion_fill": "template"})
+    """The default spread template + template fill: a rerun reusing the motion sidecar
+    rebuilds the fill image and gives the same units."""
+    p = Params(**TINY_PARAMS)
+    assert (p.template_source, p.motion_fill) == ("spread", "template")
     out = pipeline.run(tiny_session["raw_dir"], p, run_name="f", out_root=tmp_path)
     a1 = sps.load_npz(out / "cnmf" / "A.npz").toarray()
     out = pipeline.run(tiny_session["raw_dir"], p, run_name="f", out_root=tmp_path)
     rep = json.loads((out / "report.json").read_text())
     assert rep["motion"]["sidecar_reused"]
     assert np.array_equal(sps.load_npz(out / "cnmf" / "A.npz").toarray(), a1)
+
+
+def test_motion_report_warns_when_frames_hit_max_shift():
+    from minime import pass1
+
+    def p1(shifts):
+        n = len(shifts)
+        return pass1.Pass1Result(
+            np.asarray(shifts, np.float32), np.full(n, 0.5, np.float32),
+            np.zeros((4, 4), np.uint8), np.zeros((1, 4, 4), np.uint8), np.array([0, n]), n, {},
+        )  # fmt: skip
+
+    sh = np.zeros((2000, 2))
+    sh[:2, 1] = -20.4  # 2 of 2000 = 0.1 %: no warning yet
+    rep = pipeline.motion_report(p1(sh), Params(), False)
+    assert rep["frames_at_max_shift"] == 2 and "warning" not in rep
+    sh[2, 0] = 19.6
+    rep = pipeline.motion_report(p1(sh), Params(), True)
+    assert rep["frames_at_max_shift"] == 3 and "motion_max_shift = 20 px" in rep["warning"]
+    assert rep["sidecar_reused"] and rep["max_abs_shift_px"] == pytest.approx(20.4)

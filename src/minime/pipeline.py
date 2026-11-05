@@ -182,8 +182,6 @@ def seeds_unmerged(
             fac.t0,
             fac.session_T,
         )
-    if p.border_coverage > 0:  # the border mask zeroed pixels: no seeds right next to them
-        s = seeds.drop_near_masked(s, fac.max_proj)
     n["seeds_init"] = len(s)
     st["seeds_init"] = s
     with timer("pnr_refine"):
@@ -357,18 +355,27 @@ def _write_params(
 # ---------------------------------------------------------------------------
 
 
-def border_mask(p1: pass1.Pass1Result, h: int, w: int, min_coverage: float) -> np.ndarray | None:
-    """Pixels the warp fills from inside the frame in at least ``min_coverage`` of the frames
-    (None when off or when every pixel passes); the others are zeroed in pass 1's max
-    projection and block maxima here, and in the tiles by pass 2."""
-    if min_coverage <= 0:
-        return None
-    valid = motion.coverage(p1.shifts, h, w) >= min_coverage
-    if valid.all():
-        return None
-    p1.max_proj[~valid] = 0
-    p1.block_max[:, ~valid] = 0
-    return valid
+# share of frames at the motion search's edge above which report.json warns
+MAX_SHIFT_WARN = 0.001
+
+
+def motion_report(p1: pass1.Pass1Result, params: Params, sidecar_reused: bool) -> dict:
+    """report.json's ``motion`` entry, with a ``warning`` when more than ``MAX_SHIFT_WARN``
+    of the frames sit at ``motion_max_shift`` (their motion may be larger)."""
+    bound = motion.at_max_shift(p1.shifts, params.motion_max_shift, params.motion_down)
+    out: dict = {
+        "sidecar_reused": sidecar_reused,
+        "quality_median": float(np.median(p1.quality)),
+        "max_abs_shift_px": float(np.abs(p1.shifts).max()),
+        "frames_at_max_shift": int(bound.sum()),
+    }
+    if bound.mean() > MAX_SHIFT_WARN:
+        out["warning"] = (
+            f"{int(bound.sum())} of {bound.size} frames ({100 * bound.mean():.2f} %) hit "
+            f"motion_max_shift = {params.motion_max_shift} px: their motion may be larger "
+            "(raise motion_max_shift, or check those frames for corruption)"
+        )
+    return out
 
 
 def run(
@@ -425,9 +432,8 @@ def run(
         # the workers save each tile and every later stage reads V from its file, not from
         # RAM: V is T x rank per tile (8 GB on an 8 h session, 23 GB on 24 h), more than the
         # RAM left next to pass 2 or CNMF on a 32 GB Mac
-        valid = border_mask(p1, info.height, info.width, params.border_coverage)
         with timer("pass2"):
-            tiles = pass2.run_pass2(store, grid, params, workers, out / "factors", valid)
+            tiles = pass2.run_pass2(store, grid, params, workers, out / "factors")
         fac = pass2.build_factors(info, grid, p1, tiles, params)
         with timer("factors_save"):
             fac.save_meta(out / "factors")
@@ -454,11 +460,7 @@ def run(
     timer.to_json(
         out / "report.json",
         {
-            "motion": {
-                "sidecar_reused": sc is not None,
-                "quality_median": float(np.median(p1.quality)),
-                "max_abs_shift_px": float(np.abs(p1.shifts).max()),
-            },
+            "motion": motion_report(p1, params, sc is not None),
             "bytes": {
                 "raw": int(sum(p.stat().st_size for p in info.segments)),
                 "store_peak": int(store_peak),

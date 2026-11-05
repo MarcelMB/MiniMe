@@ -118,12 +118,3 @@ def test_seed_ptp_threads_equal_serial():
     pix = np.random.default_rng(2).integers(0, f.P, 50)
     one = sd.seed_ptp(f, pix, (0.1, 99.9), batch=7, threads=1)
     assert np.array_equal(sd.seed_ptp(f, pix, (0.1, 99.9), batch=7, threads=4), one)
-
-
-def test_drop_near_masked_removes_seeds_next_to_zeroed_pixels():
-    mp = np.full((20, 20), 9, np.uint8)
-    mp[:, :2] = 0  # border mask zeroed columns 0-1
-    s = pd.DataFrame({"height": [5, 5, 5], "width": [2, 4, 10], "seeds": [1, 1, 1]})
-    out = sd.drop_near_masked(s, mp, radius=3)
-    assert out["width"].tolist() == [10]
-    assert len(sd.drop_near_masked(s, np.full((20, 20), 9, np.uint8))) == 3

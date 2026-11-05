@@ -21,17 +21,10 @@ RUN_METADATA_KEYS = frozenset(
         "source_run",
     }
 )
-# motion prototypes: in a sidecar's parameters only when not at their default, so sidecars
-# written before they existed stay valid
-_OFF: dict[str, Any] = {
-    "template_source": "first",
-    "template_chunks": 10,
-    "template_recentre": False,
-    "motion_refine": False,
-    "motion_outlier": 0.0,
-    "motion_fill": "zero",
-}
-NEW_MOTION_PARAMS = tuple(_OFF)
+# what runs made before these parameters existed used: a sidecar's parameters hold a key only
+# when it differs from this value (older sidecars stay valid for runs that use it), and a
+# run's params.json without the key gets this value back (``with_legacy``)
+LEGACY: dict[str, Any] = {"template_source": "first", "motion_fill": "zero"}
 
 
 @dataclass
@@ -47,27 +40,21 @@ class Params:
     # on real data (WL25) a fixed template on tophat frames went stale (bench/README.md)
     motion_before_tophat: bool = True
     motion_bandpass: tuple[float, float] = (1.0, 6.0)
-    # motion template (prototypes, defaults = the first-frames template): "first" = the
-    # first template_frames frames of segment 0; "spread" = template_frames frames in
-    # template_chunks runs spread evenly over the session, aligned and put at their median
-    # position. template_recentre moves the "first" template to the median position of
-    # template_chunks probe frames spread over the session
-    template_source: str = "first"
+    # motion template: "spread" = template_frames frames in template_chunks runs spread
+    # evenly over the session, started from the run that agrees best with the others,
+    # aligned twice and put at the frames' median position; "first" = the first
+    # template_frames frames of segment 0 (before Nov 2026). A first-frames template sits
+    # where the field was in the first seconds, often px away from where it is for the rest
+    # of the session, and the warp's border band then comes and goes (Nov 2026 motion study)
+    template_source: str = "spread"
     template_chunks: int = 10
-    template_recentre: bool = False
-    # re-estimate each sub-batch against its own mean (tied back to the template)
-    motion_refine: bool = False
+    # what the warp puts where a shifted frame has no data: "template" = the template
+    # frames' mean tophat image there, "zero" = 0 (before Nov 2026). A zero band that comes
+    # and goes with the motion is an on/off signal that pass 2 / CNMF turn into edge units
+    motion_fill: str = "template"
     # px: replace a shift this far from its neighbours' when its correlation peak is weak
     # (black or corrupted frame); 0 = off
     motion_outlier: float = 0.0
-    # what the warp puts where a shifted frame has no data: "zero", "replicate" (the
-    # nearest edge pixel) or "template" (the template frames' mean there): a zero band that
-    # comes and goes with the motion is an on/off signal that pass 2 / CNMF turn into units
-    motion_fill: str = "zero"
-    # pixels the motion warp reads from inside the frame in fewer than this fraction of the
-    # frames (zero fill otherwise) are set to 0 before pass 2: their on/off steps would
-    # otherwise become band-shaped units along the border. 0 = off
-    border_coverage: float = 0.0
     # tiling + compression
     tile: int = 64
     svd_k0: int = 40
@@ -123,10 +110,8 @@ class Params:
         # motion._prep only knows 2x downsampling, but estimate scales shifts by motion_down
         if self.motion_down not in (1, 2):
             raise ValueError(f"motion_down must be 1 or 2, not {self.motion_down!r}")
-        if self.motion_fill not in ("zero", "replicate", "template"):
-            raise ValueError(
-                f"motion_fill must be 'zero', 'replicate' or 'template', not {self.motion_fill!r}"
-            )
+        if self.motion_fill not in ("zero", "template"):
+            raise ValueError(f"motion_fill must be 'zero' or 'template', not {self.motion_fill!r}")
         if self.template_source not in ("first", "spread"):
             raise ValueError(
                 f"template_source must be 'first' or 'spread', not {self.template_source!r}"
@@ -136,7 +121,14 @@ class Params:
         return asdict(self)
 
     def motion_params(self) -> dict[str, Any]:
-        """The subset of parameters that invalidates a motion sidecar."""
+        """The subset of parameters that invalidates a motion sidecar (the shifts); the
+        motion fill is not one of them."""
+        extra: dict[str, Any] = {}
+        if self.template_source != LEGACY["template_source"]:
+            extra["template_source"] = self.template_source
+            extra["template_chunks"] = self.template_chunks
+        if self.motion_outlier > 0:
+            extra["motion_outlier"] = self.motion_outlier
         return {
             "median_ksize": self.median_ksize,
             "tophat_wnd": self.tophat_wnd,
@@ -145,7 +137,7 @@ class Params:
             "template_frames": self.template_frames,
             "motion_before_tophat": self.motion_before_tophat,
             "motion_bandpass": self.motion_bandpass,
-            **{k: getattr(self, k) for k in NEW_MOTION_PARAMS if getattr(self, k) != _OFF[k]},
+            **extra,
         }
 
     def to_json(self, path: str | Path) -> None:
@@ -166,7 +158,7 @@ class Params:
         cls, d: dict[str, Any], base: Params | None = None, source: str = "params"
     ) -> Params:
         """Like ``from_json`` for an already parsed mapping."""
-        d = dict(d)
+        d = with_legacy(d)
         for k in RUN_METADATA_KEYS:
             d.pop(k, None)
         if "sparse_penal" in d:
@@ -181,3 +173,11 @@ class Params:
             if k in d:
                 d[k] = tuple(d[k])
         return cls(**{**(base.asdict() if base is not None else {}), **d})
+
+
+def with_legacy(d: dict[str, Any]) -> dict[str, Any]:
+    """A copy of ``d``; when it is a run's params.json (it holds run metadata), the
+    ``LEGACY`` values of the parameters it predates are filled in: that run used them."""
+    if not RUN_METADATA_KEYS & d.keys():
+        return dict(d)
+    return {**LEGACY, **d}

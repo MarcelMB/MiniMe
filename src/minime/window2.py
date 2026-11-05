@@ -40,11 +40,8 @@ FACTOR_PARAMS = (
     "motion_bandpass",
     "template_source",
     "template_chunks",
-    "template_recentre",
-    "motion_refine",
-    "motion_outlier",
     "motion_fill",
-    "border_coverage",  # zeroes pixels before pass 2
+    "motion_outlier",
     "tile",
     "svd_k0",
     "svd_power_iter",
