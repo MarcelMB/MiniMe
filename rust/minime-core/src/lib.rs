@@ -45,6 +45,7 @@ pub mod warp;
 pub mod wasm;
 #[cfg(all(target_arch = "wasm32", feature = "profile"))]
 pub mod wasm_bench;
+pub mod window;
 
 use stream::{Csr, Params, StreamPass};
 
