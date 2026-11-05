@@ -42,7 +42,10 @@ export const DEFAULTS = {
   background_clip: false,
 };
 
-/** `t1_discovery.py`'s stitch threshold (`cos`). */
+/** `t1_discovery.py`'s stitch threshold (`cos`). The stitch also joins units whose centres are
+ * closer than `merge_min_dist` across windows (`stream._close_groups`), as the batch CNMF loop
+ * does over the whole session: without it the units of a cell one window estimated worse pile up
+ * with the number of windows (`experiments/unit_inflation/`). */
 export const STITCH_COS = 0.7;
 /** `ref_dump.py`'s streaming-pass layout: sums per 6000-frame segment, 100 frames per batch. */
 export const STREAM_SEGMENT_FRAMES = 6000;
@@ -142,7 +145,7 @@ function defaultSessionFrom(p: typeof DEFAULTS, H: number, W: number, windowFram
       loop_merge_corr: p.loop_merge_corr,
       merge_min_dist: p.merge_min_dist,
     },
-    stitch: { cos_thres: STITCH_COS },
+    stitch: { cos_thres: STITCH_COS, min_dist: p.merge_min_dist },
     stream: {
       ...size,
       segment_frames: STREAM_SEGMENT_FRAMES,

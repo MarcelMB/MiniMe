@@ -418,6 +418,8 @@ worker, M1 Max; footprints (503), mean and noise from the 3 h MiniMe run `cafast
   base64 string of a > 512 MB output would exceed V8's string limit.
 
 ## Stitch result (2026-11-03): native and Chrome match Python
+(2026-11-05: the stitch also joins groups closer than `merge_min_dist` across windows,
+`stitch.min_dist`; without it units grew with the session length. `docs/unit-inflation.md`.)
 `stream.stitch` at `cos_thres` 0.7 (`t1_discovery.py`'s default, recorded in
 `t1_fresh/summary.json`). `ref_stitch.py` redoes it step by step on the stored `fresh` window
 units and reproduces the stored `stitched_A.npz` / `stitched.npz` exactly (12 windows,

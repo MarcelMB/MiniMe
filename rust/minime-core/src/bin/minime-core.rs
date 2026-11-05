@@ -451,7 +451,7 @@ fn run_stitch(args: &[String]) -> Result<(), String> {
         .collect::<Result<Vec<_>, _>>()?;
     let load = s0.elapsed().as_secs_f64();
     let s1 = Instant::now();
-    let res = stitch::stitch(&windows, p.cos_thres, p.h * p.w)?;
+    let res = stitch::stitch_with(&windows, p.cos_thres, p.min_dist, p.w, p.h * p.w)?;
     let seconds = s1.elapsed().as_secs_f64();
     let summary =
         serde_json::json!({"stage": "stitch", "windows": windows.len(), "load": load, "seconds": seconds});
