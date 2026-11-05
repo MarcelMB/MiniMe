@@ -48,6 +48,17 @@ describe("the sweep table and curves", () => {
     expect(r1).toBe("run,3,auto,0.8,0.8,0.8,1,0.9,10,1,0,9,1,0,0,0,10,8,6,5,4,25,0.12,");
     expect(r2).toBe("seeds,4,auto,0.8,0.8,0.8,1,0.9,,,,,,,,,10,8,6,5,4,25,0.12,ValueError: x");
   });
+  it("quotes an error with a comma, a quote or a newline as pandas does", () => {
+    const row = (e: string) =>
+      sweepCsv([trial("seeds", {}, null, e)])
+        .split("\n")
+        .slice(1)
+        .join("\n")
+        .trimEnd();
+    expect(row("ValueError: x, y")).toMatch(/,"ValueError: x, y"$/);
+    expect(row('bad "seed"')).toMatch(/,"bad ""seed"""$/);
+    expect(row("a\nb")).toMatch(/,"a\nb"$/);
+  });
   it("gives the best good/flagged per value in grid order", () => {
     const ts = [
       trial("sparse", { sparse_snr: 0.7 }, 5),
