@@ -26,7 +26,8 @@ export type ToWorker = {
   /** Only the GPU self-test and speed test on these videos (the New run page's Speed panel): `force`
    * runs the speed test again over a cached one. Answered with `speed`. */
   speedTest?: { force?: boolean };
-  /** The tests' GPU hooks: "nogpu", "mismatch" (the self-test fails), "lost" (a device is lost mid-run). */
+  /** The tests' GPU hooks: "nogpu", "mismatch" (the self-test fails), "lost" / "lost:N" (each frame
+   * worker's device is lost after its 3rd / N-th GPU batch). */
   gpuTest?: string;
 };
 

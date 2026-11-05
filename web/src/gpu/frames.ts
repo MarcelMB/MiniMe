@@ -283,7 +283,8 @@ export async function openAdapter(): Promise<{ adapter: GPUAdapter; info: GpuInf
 
 /** The adapter's name as the panel and `report.json` show it. */
 export function gpuName(i: GpuInfo): string {
-  return [i.description, i.vendor, i.architecture, i.device].filter(Boolean).join(" · ") || "GPU";
+  const parts = [i.description, i.vendor, i.architecture, i.device].filter(Boolean);
+  return [...new Set(parts)].join(" · ") || "GPU";
 }
 
 /** A device for `maxB` frames of `k`'s size, with the buffer limits that needs (or the adapter's). */

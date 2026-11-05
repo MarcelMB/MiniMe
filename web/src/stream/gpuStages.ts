@@ -120,9 +120,10 @@ export class WorkerGpu {
     this.frames = null;
   }
 
-  /** After each batch: the "lost" test hook loses the device after the third. */
+  /** After each batch: the "lost" test hook loses the device after the third batch ("lost:N": the N-th). */
   afterBatch(g: GpuFrames): void {
-    if (this.test === "lost" && g.batches === 3) g.device.destroy();
+    const m = /^lost(?::(\d+))?$/.exec(this.test);
+    if (m && g.batches === Number(m[1] ?? 3)) g.device.destroy();
   }
 }
 

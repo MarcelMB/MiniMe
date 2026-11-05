@@ -33,8 +33,10 @@ export type DeviceReport = {
 /** Self-test frames (start, middle, end of the session) and their shifts: sub-pixel, a tie, and one
  * far enough for the border's zeros. */
 const SELF_TEST_SHIFTS = [1.37, -2.61, -0.5, 0.5, -13.25, 7.0625];
-/** Frames per worker in each speed-test run (three GPU batches). */
-const SPEED_FRAMES = 24;
+/** Frames per worker in each speed-test run (four GPU batches), and runs per mode: the fastest counts,
+ * as whatever else the machine does only slows a run down. */
+const SPEED_FRAMES = 32;
+const SPEED_REPEATS = 2;
 
 let kv: KV | null = null;
 const cache = () => (kv ??= idbKV("speed"));
@@ -111,21 +113,25 @@ export async function speedTest(
   };
   await turnGpu(pool, N, test);
   await run(N, 8); // warm up: the shaders compile, the engines' plans are made
-  const gpuAll = (await run(N)).fps;
-  await turnGpu(pool, 1, test);
-  const gpuOne = (await run(1)).fps;
-  await turnGpu(pool, 0, test);
-  await run(N, 4);
-  const cpu = (await run(N)).fps;
+  let [gpuAll, gpuOne, cpu] = [0, 0, 0];
+  for (let k = 0; k < SPEED_REPEATS; k++) {
+    await turnGpu(pool, N, test);
+    gpuAll = Math.max(gpuAll, (await run(N)).fps);
+    await turnGpu(pool, 1, test);
+    gpuOne = Math.max(gpuOne, (await run(1)).fps);
+    await turnGpu(pool, 0, test);
+    cpu = Math.max(cpu, (await run(N)).fps);
+  }
   let both = 0;
   let bothGpu = 0;
   let bothRates: number[] = [];
   if (N > 1) {
     bothGpu = splitWorkers(N, gpuAll, gpuOne);
     await turnGpu(pool, bothGpu, test);
-    const r = await run(N);
-    both = r.fps;
-    bothRates = r.rates;
+    for (let k = 0; k < SPEED_REPEATS; k++) {
+      const r = await run(N);
+      if (r.fps > both) [both, bothRates] = [r.fps, r.rates];
+    }
   }
   await turnGpu(pool, 0, test);
   return {
