@@ -187,6 +187,8 @@ export function JobPage({ id }: { id: string }) {
   const wall = Date.now() / 1000;
   const shown = running ? live.current.get(running.stage) : null;
   const runText = job.status === "running" && live.current.hasPlan() ? runLeftText(live.current.runLeft(wall)) : null;
+  // the browser run's device (its "device: ..." log line), main's runs have none
+  const device = [...log].reverse().find((l) => l.startsWith("device: "));
   return (
     <div className="page">
       <div className="row">
@@ -230,6 +232,7 @@ export function JobPage({ id }: { id: string }) {
       <div className="bento">
         <section className="card span2" aria-label="Stages">
           <span className="label">Stages</span>
+          {device && <span className="muted">Ran on {device.slice(8).replace(/ at [\d.]+ s$/, "")}</span>}
           <StageRows rows={rows.map((r) => (r === running ? liveRow(r, events, now) : r))} final={final} />
           {shown && (
             <LiveBar

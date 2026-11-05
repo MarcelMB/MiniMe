@@ -1,3 +1,4 @@
+import type { Device, SpeedTest } from "../gpu/plan";
 import type { ProgressEvent, ProgressUnit } from "../launch/params";
 
 /** Messages between the stream page and its worker. With `out` (a writable folder) the whole
@@ -20,7 +21,19 @@ export type ToWorker = {
   scratch?: string;
   /** The run folder is in Browser storage (OPFS): the traces take that room twice. */
   browserStorage?: boolean;
+  /** Where the per-frame stages run (default auto: the fastest the speed test measured). */
+  device?: Device;
+  /** Only the GPU self-test and speed test on these videos (the New run page's Speed panel): `force`
+   * runs the speed test again over a cached one. Answered with `speed`. */
+  speedTest?: { force?: boolean };
+  /** The tests' GPU hooks: "nogpu", "mismatch" (the self-test fails), "lost" / "lost:N" (each frame
+   * worker's device is lost after its 3rd / N-th GPU batch). */
+  gpuTest?: string;
 };
+
+/** What the speed test found (`speed`): the test (or null without a usable GPU), the self-test's
+ * verdict ("pass" or what differed) and why the GPU cannot be used ("" when it can). */
+export type SpeedAnswer = { test: SpeedTest | null; selfTest: string; reason: string; gpu: string; cached: boolean };
 
 export type Stage = "stream" | "motion" | "pass1" | "pass2" | "seeds" | "init" | "cnmf" | "stitch";
 
@@ -55,4 +68,5 @@ export type FromWorker =
   // large outputs (the traces) come as an OPFS file instead of bytes
   | { type: "done"; files: Map<string, Uint8Array | Blob>; seconds: number }
   | { type: "log"; message: string }
+  | ({ type: "speed" } & SpeedAnswer)
   | { type: "error"; message: string };

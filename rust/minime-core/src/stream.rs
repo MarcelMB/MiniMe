@@ -96,7 +96,9 @@ impl TraceModel {
                 ix.iter().zip(v).map(|(&c, &x)| x * ymean[c]).sum()
             })
             .collect();
-        NormalSolver::new(&g, k).solve(&mut cbar);
+        // `certified`: the same solver as `NormalSolver::new` without its O(K^3) eigensolve when
+        // a bound shows Cholesky (16 s at K = 827)
+        NormalSolver::certified(&g, k).solve(&mut cbar);
         let mut fit = vec![0.0; a.ncols];
         for (r, &cb) in cbar.iter().enumerate() {
             let (ix, v) = a.row(r);
@@ -116,7 +118,7 @@ impl TraceModel {
         x.indptr.push(x.indices.len());
         let mut gx = x.gram();
         symmetrize(&mut gx, k + 1);
-        let solver = NormalSolver::new(&gx, k + 1);
+        let solver = NormalSolver::certified(&gx, k + 1);
         Self { k, b, x, solver }
     }
 
@@ -300,8 +302,23 @@ impl StreamPass {
         for i in 0..k {
             self.cc[i] = self.sol[i].max(0.0);
         }
+        self.fold(y, self.sol[k] as f32);
+    }
+
+    /// Fold in one preprocessed frame whose least squares was solved elsewhere (a pool worker
+    /// running `TraceModel::solve` on the same model): `cc` the clipped traces `max(c, 0)` in
+    /// float64, `f` the background trace as float32. The same arithmetic as `push`, which
+    /// solves and then calls `fold`.
+    pub fn push_solved(&mut self, y: &[f32], cc: &[f64], f: f32) {
+        self.cc.copy_from_slice(cc);
+        self.fold(y, f);
+    }
+
+    /// The frame's traces are in `self.cc`: store them and add the frame to the running sums.
+    fn fold(&mut self, y: &[f32], f: f32) {
+        let k = self.model.k;
         self.c.extend(self.cc.iter().map(|&v| v as f32));
-        self.f.push(self.sol[k] as f32);
+        self.f.push(f);
         if self.t > 0 && self.t.is_multiple_of(self.params.segment_frames) {
             self.done.add(&self.seg);
             self.seg = Stats::zeros(self.seg.l.len(), k, self.seg.ysum.len());
@@ -364,6 +381,216 @@ impl StreamPass {
         let sup = 8 * (self.support.active.len() + self.support.indptr.len() + 2 * self.support.pix.len());
         let model = 8 * self.model.b.len() + 16 * self.model.x.data.len() + 8 * (self.model.k + 1).pow(2);
         self.done.nbytes() + self.seg.nbytes() + sup + model + 32 * self.model.k
+    }
+}
+
+/// The share of `StreamPass::fold`'s sums one fold lane keeps: rows `rows` of the K x K sums
+/// (and of `csum`, `lsum`), pixels `pix` of `ysum` and `dsq`, and the support pairs `pairs` (the
+/// pairs on those pixels: the support is sorted by pixel).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LaneRange {
+    pub rows: [usize; 2],
+    pub pix: [usize; 2],
+    pub pairs: [usize; 2],
+}
+
+/// The fold split into `lanes` shares of about equal work: rows evenly (each row costs `2 K`), pixels
+/// by their cost (`ysum`, `dsq` and one multiply-add per support pair on the pixel).
+pub fn lane_ranges(k: usize, p: usize, sup: &Support, lanes: usize) -> Vec<LaneRange> {
+    let lanes = lanes.max(1);
+    // pairs per pixel, then cumulative cost
+    let mut per = vec![0usize; p];
+    for &q in &sup.pix {
+        per[q] += 1;
+    }
+    let total: usize = per.iter().map(|&n| 2 + n).sum();
+    let mut pix_bounds = vec![0usize];
+    let mut acc = 0usize;
+    for (q, &n) in per.iter().enumerate() {
+        acc += 2 + n;
+        while pix_bounds.len() < lanes && acc * lanes >= total * pix_bounds.len() {
+            pix_bounds.push(q + 1);
+        }
+    }
+    while pix_bounds.len() <= lanes {
+        pix_bounds.push(p);
+    }
+    *pix_bounds.last_mut().unwrap() = p;
+    let first_pair = |q: usize| sup.pix.partition_point(|&x| x < q);
+    (0..lanes)
+        .map(|j| LaneRange {
+            rows: [k * j / lanes, k * (j + 1) / lanes],
+            pix: [pix_bounds[j], pix_bounds[j + 1]],
+            pairs: [first_pair(pix_bounds[j]), first_pair(pix_bounds[j + 1])],
+        })
+        .collect()
+}
+
+/// One lane of the fold (`lane_ranges`): the same per-element sums as `StreamPass::fold`, in the
+/// same frame order, on its rows, pixels and pairs, with its own copy of the low-pass filter (run on
+/// all K traces, as `fold` runs it) and of the previous frame on its pixels. Lanes put together
+/// (`StreamPass::put_lane`) are the one-thread sums bit for bit, however many there are.
+pub struct FoldLane {
+    pub range: LaneRange,
+    k: usize,
+    segment_frames: usize,
+    pair_pix: Vec<usize>,
+    pair_unit: Vec<usize>,
+    lowpass: SosFilter,
+    /// sums of the finished segments and of the running one, on this lane's share
+    pub done: Stats,
+    pub seg: Stats,
+    prev: Option<Vec<f32>>,
+    lp: Vec<f64>,
+    pub t: usize,
+}
+
+impl FoldLane {
+    pub fn new(params: &Params, sup: &Support, k: usize, range: LaneRange) -> Self {
+        let rows = range.rows[1] - range.rows[0];
+        let zeros = Stats {
+            n: 0,
+            l: vec![0.0; range.pairs[1] - range.pairs[0]],
+            m: vec![0.0; rows * k],
+            csum: vec![0.0; rows],
+            ysum: vec![0.0; range.pix[1] - range.pix[0]],
+            dsq: vec![0.0; range.pix[1] - range.pix[0]],
+            mlp: vec![0.0; rows * k],
+            lsum: vec![0.0; rows],
+        };
+        Self {
+            range,
+            k,
+            segment_frames: params.segment_frames,
+            pair_pix: sup.pix[range.pairs[0]..range.pairs[1]].to_vec(),
+            pair_unit: sup.unit[range.pairs[0]..range.pairs[1]].to_vec(),
+            lowpass: SosFilter::new(butter_lowpass_sos(4, 2.0 * params.noise_freq), k),
+            seg: zeros.clone(),
+            done: zeros,
+            prev: None,
+            lp: vec![0.0; k],
+            t: 0,
+        }
+    }
+
+    /// Fold in the next frame: `y` its pixels `pix[0]..pix[1]`, `cc` all K clipped traces.
+    pub fn fold(&mut self, y: &[f32], cc: &[f64]) {
+        let k = self.k;
+        let [r0, r1] = self.range.rows;
+        let p0 = self.range.pix[0];
+        if self.t > 0 && self.t.is_multiple_of(self.segment_frames) {
+            self.done.add(&self.seg);
+            let z = |v: &Vec<f64>| vec![0.0; v.len()];
+            let s = &self.seg;
+            self.seg = Stats {
+                n: 0,
+                l: z(&s.l),
+                m: z(&s.m),
+                csum: z(&s.csum),
+                ysum: z(&s.ysum),
+                dsq: z(&s.dsq),
+                mlp: z(&s.mlp),
+                lsum: z(&s.lsum),
+            };
+        }
+        let st = &mut self.seg;
+        st.n += 1;
+        for i in r0..r1 {
+            let ci = cc[i];
+            if ci != 0.0 {
+                let row = &mut st.m[(i - r0) * k..(i - r0 + 1) * k];
+                for (mj, &cj) in row.iter_mut().zip(cc) {
+                    *mj += ci * cj;
+                }
+            }
+            st.csum[i - r0] += ci;
+        }
+        self.lp.copy_from_slice(cc);
+        self.lowpass.step(&mut self.lp);
+        for i in r0..r1 {
+            let li = self.lp[i];
+            let row = &mut st.mlp[(i - r0) * k..(i - r0 + 1) * k];
+            for (mj, &lj) in row.iter_mut().zip(&self.lp) {
+                *mj += li * lj;
+            }
+            st.lsum[i - r0] += li;
+        }
+        for (s, &v) in st.ysum.iter_mut().zip(y) {
+            *s += f64::from(v);
+        }
+        if let Some(prev) = &self.prev {
+            for ((s, &v), &u) in st.dsq.iter_mut().zip(y).zip(prev) {
+                let d = f64::from(v - u);
+                *s += d * d;
+            }
+        }
+        for ((l, &q), &u) in st.l.iter_mut().zip(&self.pair_pix).zip(&self.pair_unit) {
+            *l += f64::from(y[q - p0]) * cc[u];
+        }
+        match &mut self.prev {
+            Some(prev) => prev.copy_from_slice(y),
+            None => self.prev = Some(y.to_vec()),
+        }
+        self.t += 1;
+    }
+}
+
+impl Stats {
+    /// One flat float64 array: `n`, then `l`, `m`, `csum`, `ysum`, `dsq`, `mlp`, `lsum`.
+    pub fn to_flat(&self) -> Vec<f64> {
+        let mut out = vec![self.n as f64];
+        for a in [
+            &self.l, &self.m, &self.csum, &self.ysum, &self.dsq, &self.mlp, &self.lsum,
+        ] {
+            out.extend_from_slice(a);
+        }
+        out
+    }
+}
+
+impl StreamPass {
+    /// Store one frame's traces without folding it into the sums (a pool's lanes fold it):
+    /// `cc` the clipped traces, `f` the background trace.
+    pub fn push_traces(&mut self, cc: &[f64], f: f32) {
+        self.c.extend(cc.iter().map(|&v| v as f32));
+        self.f.push(f);
+        self.t += 1;
+    }
+
+    /// Put a lane's sums (`FoldLane::done`, `seg` as `Stats::to_flat`) in their place in this pass's.
+    pub fn put_lane(&mut self, r: LaneRange, done: &[f64], seg: &[f64]) -> Result<(), String> {
+        let k = self.model.k;
+        let rows = r.rows[1] - r.rows[0];
+        let (np, nl) = (r.pix[1] - r.pix[0], r.pairs[1] - r.pairs[0]);
+        let want = 1 + nl + 2 * rows * k + 2 * rows + 2 * np;
+        if done.len() != want
+            || seg.len() != want
+            || r.rows[1] > k
+            || r.pix[1] > self.done.ysum.len()
+            || r.pairs[1] > self.done.l.len()
+        {
+            return Err(format!(
+                "a fold lane's sums hold {} values, expected {want}",
+                done.len()
+            ));
+        }
+        for (dst, src) in [(&mut self.done, done), (&mut self.seg, seg)] {
+            dst.n = src[0] as usize;
+            let mut at = 1;
+            let mut take = |n: usize| {
+                let s = &src[at..at + n];
+                at += n;
+                s
+            };
+            dst.l[r.pairs[0]..r.pairs[1]].copy_from_slice(take(nl));
+            dst.m[r.rows[0] * k..r.rows[1] * k].copy_from_slice(take(rows * k));
+            dst.csum[r.rows[0]..r.rows[1]].copy_from_slice(take(rows));
+            dst.ysum[r.pix[0]..r.pix[1]].copy_from_slice(take(np));
+            dst.dsq[r.pix[0]..r.pix[1]].copy_from_slice(take(np));
+            dst.mlp[r.rows[0] * k..r.rows[1] * k].copy_from_slice(take(rows * k));
+            dst.lsum[r.rows[0]..r.rows[1]].copy_from_slice(take(rows));
+        }
+        Ok(())
     }
 }
 
@@ -559,4 +786,144 @@ pub fn merge_from_stats(a: &Csr, st: &Stats, k: usize, mask: &[bool], thres_corr
         out.nrows += 1;
     }
     out
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+
+    fn lcg(seed: &mut u32) -> f64 {
+        *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        f64::from(*seed >> 8) / f64::from(1u32 << 24)
+    }
+
+    /// Frames solved on one `TraceModel` and folded in by `push_solved` (what a pool worker
+    /// and the accumulating engine do) give the sums, traces and low-pass state of `push`.
+    #[test]
+    fn solved_frames_fold_in_exactly_as_push_does() {
+        let (h, w, t, k) = (10usize, 12usize, 47usize, 4usize);
+        let p = h * w;
+        let params = Params {
+            h,
+            w,
+            t,
+            segment_frames: 20, // two segment boundaries inside the pass
+            median_ksize: 3,
+            tophat_wnd: 3,
+            motion_before_tophat: true,
+            dl_wnd: 2,
+            sparse_snr: 1.0,
+            size_thres: [None, None],
+            noise_freq: 0.06,
+            loop_merge_corr: 0.9,
+        };
+        let mut seed = 7u32;
+        // k blobs of a few pixels each
+        let (mut indptr, mut indices, mut data) = (vec![0usize], Vec::new(), Vec::new());
+        for u in 0..k {
+            let (cy, cx) = (2 + 2 * u, 2 + 3 * (u % 3));
+            for dy in 0..3 {
+                for dx in 0..3 {
+                    indices.push((cy + dy).min(h - 1) * w + (cx + dx).min(w - 1));
+                    data.push(0.2 + lcg(&mut seed));
+                }
+            }
+            indptr.push(indices.len());
+        }
+        // duplicate pixels (clamped at the border) are harmless for this test
+        let a = Csr {
+            nrows: k,
+            ncols: p,
+            indptr,
+            indices,
+            data,
+        };
+        let ymean: Vec<f64> = (0..p).map(|_| 20.0 + 10.0 * lcg(&mut seed)).collect();
+        let frames: Vec<Vec<f32>> = (0..t)
+            .map(|_| {
+                (0..p)
+                    .map(|_| (255.0 * lcg(&mut seed)) as f32 * (lcg(&mut seed) as f32))
+                    .collect()
+            })
+            .collect();
+
+        let mut one = StreamPass::new(params.clone(), &a, &ymean);
+        for y in &frames {
+            one.push(y);
+        }
+
+        let model = TraceModel::build(&a, &ymean);
+        let mut two = StreamPass::new(params.clone(), &a, &ymean);
+        let mut sol = Vec::new();
+        let mut solved = Vec::new();
+        for y in &frames {
+            model.solve(y, &mut sol);
+            let cc: Vec<f64> = sol[..k].iter().map(|v| v.max(0.0)).collect();
+            two.push_solved(y, &cc, sol[k] as f32);
+            solved.push((cc, sol[k] as f32));
+        }
+
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        let bits32 = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        // the fold in lanes (rows, pixels and pairs shared out), put together: the same sums bit for bit
+        for lanes in [1, 2, 3, 5, 9] {
+            let mut three = StreamPass::new(params.clone(), &a, &ymean);
+            let ranges = lane_ranges(k, p, &three.support, lanes);
+            assert_eq!(ranges.len(), lanes);
+            assert_eq!(ranges[0].pix[0], 0);
+            assert_eq!(ranges[lanes - 1].pix[1], p);
+            assert_eq!(ranges[lanes - 1].pairs[1], three.support.pix.len());
+            let mut ls: Vec<FoldLane> = ranges
+                .iter()
+                .map(|&r| FoldLane::new(&params, &three.support, k, r))
+                .collect();
+            for (y, (cc, f)) in frames.iter().zip(&solved) {
+                three.push_traces(cc, *f);
+                for l in &mut ls {
+                    l.fold(&y[l.range.pix[0]..l.range.pix[1]], cc);
+                }
+            }
+            for l in &ls {
+                three
+                    .put_lane(l.range, &l.done.to_flat(), &l.seg.to_flat())
+                    .unwrap();
+            }
+            assert_eq!(bits32(&one.c), bits32(&three.c));
+            assert_eq!(bits32(&one.f), bits32(&three.f));
+            assert_eq!(one.t, three.t);
+            let (a, b) = (one.total(), three.total());
+            assert_eq!(a.n, b.n);
+            for (x, y) in [
+                (&a.l, &b.l),
+                (&a.m, &b.m),
+                (&a.csum, &b.csum),
+                (&a.ysum, &b.ysum),
+                (&a.dsq, &b.dsq),
+                (&a.mlp, &b.mlp),
+                (&a.lsum, &b.lsum),
+            ] {
+                assert_eq!(bits(x), bits(y), "{lanes} lanes");
+            }
+        }
+
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        let bits32 = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits32(&one.c), bits32(&two.c));
+        assert_eq!(bits32(&one.f), bits32(&two.f));
+        let (a, b) = (one.total(), two.total());
+        assert_eq!(a.n, b.n);
+        assert_eq!(a.n, t);
+        for (x, y) in [
+            (&a.l, &b.l),
+            (&a.m, &b.m),
+            (&a.csum, &b.csum),
+            (&a.ysum, &b.ysum),
+            (&a.dsq, &b.dsq),
+            (&a.mlp, &b.mlp),
+            (&a.lsum, &b.lsum),
+        ] {
+            assert_eq!(bits(x), bits(y));
+        }
+        assert!(a.mlp.iter().any(|&v| v != 0.0));
+    }
 }

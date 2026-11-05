@@ -110,13 +110,18 @@ test("streams raw AVIs in the browser and saves the outputs", async ({ page }) =
   await inputFiles(page, "avis", avis.slice(0, nFiles));
   if (inputs) await inputFiles(page, "inputs", [inputs], true);
   const keepStore = Boolean(process.env.STREAM_KEEP_STORE);
+  const workers = Number(process.env.STREAM_WORKERS ?? 0) || undefined;
+  const tileCrc = Boolean(process.env.STREAM_TILE_CRC);
+  // STREAM_DEVICE: auto (default), cpu, gpu or both; STREAM_GPU_TEST: the GPU test hooks (nogpu, mismatch, lost)
+  const device = (process.env.STREAM_DEVICE || undefined) as "auto" | "cpu" | "gpu" | "both" | undefined;
+  const gpuTest = process.env.STREAM_GPU_TEST || undefined;
   // resolves when the run is done (hours on a long session); a failed run rejects with its message
   const done = await page.evaluate(
-    ({ keepStore }) => {
+    ({ keepStore, workers, tileCrc, device, gpuTest }) => {
       const files = (id: string) => [...((document.getElementById(id) as HTMLInputElement | null)?.files ?? [])];
-      return window.__minimeStream!(files("avis"), files("inputs"), { keepStore });
+      return window.__minimeStream!(files("avis"), files("inputs"), { keepStore, workers, tileCrc, device, gpuTest });
     },
-    { keepStore },
+    { keepStore, workers, tileCrc, device, gpuTest },
   );
   await saveOutputs(page, done.files, out!);
   console.log(`done in ${done.seconds.toFixed(0)} s: ${done.files.length} output files -> ${out}`);

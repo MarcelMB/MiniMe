@@ -46,6 +46,7 @@ const BY_DESIGN: { selector: string; text?: string }[] = [
   { selector: "label.switch", text: "Auto-tune" }, // New run: the same
   { selector: 'section[aria-label="Reconstruction"]' }, // a Python run's factors are not in the browser's format
   { selector: 'section[aria-label="Noise per pixel"]' }, // (the noise image: the same)
+  { selector: 'section[aria-label="Speed"]' }, // New run: the browser build's GPU / CPU card
 ];
 
 /** Files under `dir` as `[relative path, base64]`. */

@@ -1,0 +1,273 @@
+// The frame-parallel stages on a pool of frame workers, put together by the run's own worker so that
+// every output equals the one-worker run's, bit for bit (see `rust/minime-core/src/pool.rs`):
+// - pass 1: chunks of consecutive window frames, each worker writing its own part of every tile
+//   file; maxima, shifts and quality fold into the window's engine;
+// - pass 2: tiles, read from the parts in order;
+// - the streaming pass: workers preprocess and solve chunks of frames, this thread folds the solved
+//   frames into the pass's sums in frame order.
+
+import type { Engine, MotionEngine, Pass1Engine, Pass2Engine } from "./pkg/minime_core.js";
+import type { Pool } from "./pool";
+import type { FileMap } from "./poolProtocol";
+import { readTile, slabName } from "./slabs";
+
+const STREAM_CHUNK = 16; // frames per streaming task: a worker's 0.2 s, 6 MB of preprocessed pixels
+
+/** What the pool stages need from the run's worker (its stage rows, log and scratch folder). */
+export type Ctx = {
+  progress: (done: number, frames: number, seconds: number, stateMb?: number) => void;
+  log: (what: string) => void;
+};
+
+const pick = (files: FileMap, keep: (name: string) => boolean): FileMap =>
+  new Map([...files].filter(([name]) => keep(name)));
+
+/** Log how busy the workers were over a stage that began at `began` (`busy` ms of their time). */
+function utilisation(pool: Pool, ctx: Ctx, what: string, began: number, busy: number, tasks: number): void {
+  const wall = performance.now() - began;
+  ctx.log(`${what}: ${tasks} tasks on ${pool.size} workers, ${((100 * busy) / (wall * pool.size)).toFixed(0)}% busy`);
+}
+
+/** Chunk starts (and the end) of a window of `t` frames for `n` workers: about two chunks per
+ * worker (the slowest worker then holds up the stage less), in multiples of 100 frames, the
+ * tile buffering; with `even` one chunk per worker of the same size, as a worker that is dealt its
+ * chunks up front cannot take over another's. */
+export function chunkBounds(t: number, n: number, even = false, weights?: number[]): number[] {
+  if (even && weights && weights.length === n) {
+    // one chunk per worker in proportion to its rate (the split of GPU and CPU workers); chunk i goes
+    // to worker i, so none may be empty
+    const sum = weights.reduce((a, b) => a + b, 0);
+    const bounds = [0];
+    let acc = 0;
+    for (let i = 0; i < n - 1; i++) {
+      acc += weights[i];
+      bounds.push(Math.round((t * acc) / sum));
+    }
+    bounds.push(t);
+    if (bounds.every((b, i) => i === 0 || b > bounds[i - 1])) return bounds;
+  }
+  const size = even ? Math.ceil(t / n) : Math.max(100, Math.ceil(t / (2 * n) / 100) * 100);
+  const bounds: number[] = [];
+  for (let a = 0; a < t; a += size) bounds.push(a);
+  bounds.push(t);
+  return bounds;
+}
+
+/** The motion template of `n` frames on the pool: the workers prepare the frames of each round, `engine`
+ * adds them in frame order and hands round 1's template to round 2. `total` and `began` are the
+ * stage's frame count and start for its progress. */
+export async function templatePooled(
+  pool: Pool,
+  engine: MotionEngine,
+  params: Uint8Array,
+  n: number,
+  total: number,
+  began: number,
+  ctx: Ctx,
+): Promise<void> {
+  await pool.broadcast({ type: "t0", params });
+  const TASK = 5; // frames per task: a worker's 0.1 s
+  let done = 0;
+  for (const round of ["t1", "t2"] as const) {
+    await pool.run(round, Math.ceil(n / TASK), (i) => ({ type: round, a: i * TASK, b: Math.min(n, (i + 1) * TASK) }), {
+      ordered: true,
+      onResult: (i, r) => {
+        const k = Math.min(n, (i + 1) * TASK) - i * TASK;
+        const len = r.preps.length / k;
+        for (let j = 0; j < k; j++) engine.push_template_prepped(r.preps.subarray(j * len, (j + 1) * len));
+        done += k;
+        ctx.progress(done, total, (performance.now() - began) / 1e3);
+      },
+    });
+    if (round === "t1") await pool.broadcast({ type: "tfirst", image: engine.first_image() });
+  }
+  await pool.broadcast({ type: "free" });
+}
+
+/** The tile store a pooled pass 1 left: its slabs' frame counts and the tiles' sizes (`slabs.ts`). */
+export type Store = { tiles: string; frames: number[]; pixels: number[]; bytes: number };
+
+/** Pass 1 of a window of `t` frames on the pool, its tile store in the scratch folder `tiles`:
+ * `engine` (the window's, with no frame pushed) takes the chunks' results. With `deal` the chunks
+ * are posted to the workers before this returns, so it can be called from code that then keeps the
+ * thread busy: the workers go on and the results wait to be taken. */
+export async function pass1Pooled(
+  pool: Pool,
+  engine: Pass1Engine,
+  files: FileMap,
+  t: number,
+  ctx: Ctx,
+  tiles: string,
+  deal = false,
+  weights?: number[],
+): Promise<Store> {
+  const bounds = chunkBounds(t, pool.size, deal, weights);
+  const parts = bounds.length - 1;
+  const stage = pick(files, (n) => n === "params.json" || n === "template.npy" || n === "shifts.npy");
+  const live = new Array<number>(parts).fill(0);
+  const began = performance.now();
+  let bytes = 0;
+  let lastPost = 0;
+  const busy0 = pool.busyMs.p1;
+  const report = (force = false) => {
+    const now = performance.now();
+    if (!force && now - lastPost < 500) return;
+    lastPost = now;
+    ctx.progress(
+      live.reduce((a, b) => a + b, 0),
+      t,
+      (now - began) / 1e3,
+    );
+  };
+  await pool.run("p1", parts, (i) => ({ type: "p1", files: stage, a: bounds[i], b: bounds[i + 1], chunk: i, tiles }), {
+    deal,
+    onProgress: (i, done) => {
+      live[i] = done;
+      report();
+    },
+    onResult: (i, r) => {
+      engine.merge_chunk(r.a, r.n, r.maxProj, r.blockMax, r.shifts, r.shifts64, r.quality);
+      live[i] = r.n;
+      bytes += r.bytes;
+      report();
+    },
+  });
+  report(true);
+  utilisation(pool, ctx, "pass 1", began, pool.busyMs.p1 - busy0, parts);
+  return {
+    tiles,
+    frames: bounds.slice(1).map((b, i) => b - bounds[i]),
+    pixels: Array.from({ length: engine.n_tiles() }, (_, k) => engine.tile_pixels(k)),
+    bytes,
+  };
+}
+
+/** Pass 2 on the tiles of the window's tile store: the workers compress them in any order, `engine`
+ * takes the factors in tile order. Returns the components in all. */
+export async function pass2Pooled(
+  pool: Pool,
+  engine: Pass2Engine,
+  files: FileMap,
+  store: Store,
+  ctx: Ctx,
+): Promise<{ rankTotal: number; readMs: number }> {
+  const n = engine.n_tiles();
+  await pool.broadcast({
+    type: "p2ctx",
+    files: pick(files, (f) => f === "pass2.json" || f.startsWith("omega_")),
+    chunks: store.frames,
+    tiles: store.tiles,
+  });
+  const began = performance.now();
+  const busy0 = pool.busyMs.p2;
+  let rankTotal = 0;
+  let readMs = 0;
+  await pool.run("p2", n, (k) => ({ type: "p2", k }), {
+    ordered: true,
+    onResult: (k, r) => {
+      rankTotal += engine.set_tile(k, r.factors);
+      readMs += r.readMs;
+      ctx.progress(k + 1, n, (performance.now() - began) / 1e3);
+    },
+  });
+  utilisation(pool, ctx, "pass 2", began, pool.busyMs.p2 - busy0, n);
+  await pool.broadcast({ type: "free" });
+  return { rankTotal, readMs };
+}
+
+/** The streaming pass on the pool: the workers preprocess and solve chunks of frames, and every
+ * worker also keeps one lane of the fold (`StreamLane`: its rows of the K x K sums, its pixels and
+ * their support pairs), fed every chunk in frame order; this thread stores the traces (`engine`, the
+ * pass built from the same `files`, `push_traces`) and at the end puts the lanes' sums in place
+ * (`put_lane`). Each sum is the one-thread pass's, element for element in frame order, so the result
+ * is the same bit for bit for any number of workers. `after(t)` is called with the frames stored so
+ * far after every chunk (the caller drains the traces to C.npy). */
+export async function streamPooled(
+  pool: Pool,
+  engine: Engine,
+  files: FileMap,
+  after: (t: number) => void,
+  ctx: Ctx,
+): Promise<void> {
+  const T = engine.frames();
+  const N = pool.size;
+  const tb = performance.now();
+  await pool.run("f0", N, (j) => ({ type: "f0", files, lane: j, lanes: N }), { deal: true, onResult: () => undefined });
+  ctx.log(`streaming pass: solvers and ${N} fold lanes built in ${((performance.now() - tb) / 1e3).toFixed(1)} s`);
+  const chunks = Math.ceil(T / STREAM_CHUNK);
+  const began = performance.now();
+  const [busy0, fold0] = [pool.busyMs.s1, pool.busyMs.f1];
+  const acks = new Uint8Array(chunks);
+  let [t, given, folded, lastPost, storeMs] = [0, 0, 0, 0, 0];
+  const live = new Map<number, number>();
+  await pool.run("s1", chunks, (i) => ({ type: "s1", a: i * STREAM_CHUNK, b: Math.min(T, (i + 1) * STREAM_CHUNK) }), {
+    ordered: true,
+    maxAhead: 3 * N,
+    // no more solving while the lanes are more than a few chunks behind: the chunks wait in their queues
+    hold: () => given - folded >= 4 * N,
+    onProgress: (i, done) => live.set(i, done),
+    onResult: (i, r) => {
+      live.delete(i);
+      const s = performance.now();
+      engine.push_traces(r.cc, r.f);
+      storeMs += performance.now() - s;
+      for (let j = 0; j < N; j++) {
+        const cc = j === N - 1 ? r.cc : r.cc.slice();
+        pool.post(j, { type: "f1", id: i, n: r.f.length, y8: r.parts[j], cc }, [r.parts[j].buffer, cc.buffer]);
+      }
+      given++;
+      t += r.f.length;
+      after(t);
+      const now = performance.now();
+      if (now - lastPost > 500) {
+        lastPost = now;
+        let running = 0;
+        for (const d of live.values()) running += d;
+        ctx.progress(t + running, T, (now - began) / 1e3, engine.state_mb());
+      }
+    },
+    onSide: (r) => {
+      if (r.kind === "f1" && ++acks[r.id] === N) folded++;
+    },
+    until: () => folded === chunks,
+  });
+  await pool.run("f2", N, () => ({ type: "f2" }), {
+    deal: true,
+    onResult: (_, r) => engine.put_lane(r.range, r.done, r.seg),
+  });
+  utilisation(pool, ctx, "streaming pass", began, pool.busyMs.s1 - busy0 + pool.busyMs.f1 - fold0, chunks);
+  ctx.log(
+    `streaming pass: solving ${((pool.busyMs.s1 - busy0) / T).toFixed(2)} ms, folding ${((pool.busyMs.f1 - fold0) / T).toFixed(2)} ms of worker time per frame; storing the traces ${(storeMs / T).toFixed(2)} ms here`,
+  );
+  await pool.broadcast({ type: "free" });
+}
+
+/** The slabs of a pooled tile store, as read-only snapshots (pass 1 has closed them). */
+async function slabFiles(dir: FileSystemDirectoryHandle, store: Store): Promise<File[]> {
+  return Promise.all(store.frames.map(async (_, c) => (await dir.getFileHandle(slabName(c))).getFile()));
+}
+
+/** CRC-32 of every tile of a pooled store as one file (the pass 1 check). */
+export async function tileCrcs(
+  dir: FileSystemDirectoryHandle,
+  store: Store,
+  crc32: (bytes: Uint8Array, crc: number) => number,
+): Promise<Uint32Array> {
+  const slabs = await slabFiles(dir, store);
+  const reader = new FileReaderSync();
+  return Uint32Array.from({ length: store.pixels.length }, (_, k) =>
+    crc32(readTile(slabs, store.frames, store.pixels, k, reader), 0),
+  );
+}
+
+/** Hand the pooled store's tiles to `write(name, bytes)` as the `tile_KKK.part00` files a one-worker run keeps. */
+export async function tilesAsFiles(
+  dir: FileSystemDirectoryHandle,
+  store: Store,
+  write: (name: string, bytes: Uint8Array) => Promise<void>,
+): Promise<void> {
+  const slabs = await slabFiles(dir, store);
+  const reader = new FileReaderSync();
+  for (let k = 0; k < store.pixels.length; k++)
+    await write(`tile_${String(k).padStart(3, "0")}.part00`, readTile(slabs, store.frames, store.pixels, k, reader));
+}

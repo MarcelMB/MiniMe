@@ -3,6 +3,7 @@ import { getJSON, postJSON } from "../api";
 import { ErrorNote, Loading, Toggle } from "../controls";
 import { FEATURES } from "../features";
 import { fmtBytes, fmtDuration, fmtInt } from "../format";
+import type { Device } from "../gpu/plan";
 import { FolderPicker } from "../home/FolderPicker";
 import { useFolders } from "../home/Home";
 import { useResource } from "../poll";
@@ -47,6 +48,7 @@ export function NewRun() {
   const [offered, setOffered] = useState(false);
   const [submitErr, setSubmitErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [device, setDevice] = useState<Device>("auto"); // the browser build's Speed card
 
   const merged = useMemo(() => {
     const d: Record<string, unknown> = {};
@@ -74,6 +76,7 @@ export function NewRun() {
       tune: FEATURES.tune && tune,
       tune_args: FEATURES.tune && tune && diameter ? { diameter } : {},
       fps: fps.fps,
+      ...(FEATURES.SpeedPanel ? { device } : {}),
     }).then(
       (job) => go({ name: "job", id: job.id }),
       (e: Error) => {
@@ -189,6 +192,17 @@ export function NewRun() {
             onChange={setKeep}
           />
         </section>
+        {FEATURES.SpeedPanel && info.data && defaults.data && (
+          <FEATURES.SpeedPanel
+            raw={raw}
+            frames={info.data.frames}
+            width={info.data.width}
+            height={info.data.height}
+            params={changedOnly(merged, defaults.data.params)}
+            device={device}
+            onDevice={setDevice}
+          />
+        )}
         <section className="card span4" aria-label="4. Parameters">
           <span className="label">4 · Parameters</span>
           {FEATURES.tune && (
