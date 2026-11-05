@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
-
 from minime.compress import compress_tile_windows
 from minime.factors import Factors, TileFactors, load_tile, save_tile
 from minime.io import RawInfo
@@ -27,15 +25,14 @@ def pass2_worker(
     indices: range,
     params: Params,
     out_dir: str | None = None,
-    valid: np.ndarray | None = None,
 ) -> list[TileFactors]:
     """Compress the tiles ``indices`` (seed = tile index), in time windows of at most
     ``params.svd_window`` frames. With ``out_dir`` each tile is saved there (``save_tile``)
-    and the list is empty. ``valid`` (H, W bool): pixels kept, the others are set to 0."""
+    and the list is empty."""
     store = TileStore(Path(store_root), grid, n_parts)
     out: list[TileFactors] = []
     for i in indices:
-        tf = _compress(store, i, params, _tile_mask(grid[i], valid))
+        tf = _compress(store, i, params)
         if out_dir is None:
             out.append(tf)
         else:
@@ -43,33 +40,10 @@ def pass2_worker(
     return out
 
 
-def _tile_mask(t: Tile, valid: np.ndarray | None) -> np.ndarray | None:
-    """Pixels of tile ``t`` outside ``valid`` (None when there are none)."""
-    if valid is None:
-        return None
-    drop = ~valid[t.y0 : t.y1, t.x0 : t.x1]
-    return drop if drop.any() else None
-
-
-def _reader(store: TileStore, i: int, drop: np.ndarray | None):
-    """``read(t0, t1)`` of tile ``i``'s frames with the ``drop`` pixels set to 0."""
-
-    def read(t0: int, t1: int) -> np.ndarray:
-        frames = store.read_frames(i, t0, t1)
-        if drop is not None:
-            frames = np.array(frames)
-            frames[:, drop] = 0
-        return frames
-
-    return read
-
-
-def _compress(
-    store: TileStore, i: int, params: Params, drop: np.ndarray | None = None
-) -> TileFactors:
+def _compress(store: TileStore, i: int, params: Params) -> TileFactors:
     """Factors of tile ``i`` (seed = tile index)."""
     return compress_tile_windows(
-        _reader(store, i, drop),
+        lambda t0, t1: store.read_frames(i, t0, t1),
         store.tile_frames(i),
         params.svd_window,
         k0=params.svd_k0,
@@ -88,16 +62,14 @@ def run_pass2(
     params: Params,
     workers: int,
     out_dir: Path | None = None,
-    valid: np.ndarray | None = None,
 ) -> list[TileFactors]:
     """Compress every tile with ``workers`` single-threaded processes; grid order.
 
     With ``out_dir`` the workers save the tiles there and the result reads each ``V``
-    memory-mapped from its file. ``valid`` (H, W bool): pixels kept, the others are zeroed
-    before compression (``pipeline.border_mask``)."""
+    memory-mapped from its file."""
     ranges = _split(len(grid), workers)
     od = None if out_dir is None else str(out_dir)
-    jobs = [(str(store.root), grid, store.n_parts, r, params, od, valid) for r in ranges]
+    jobs = [(str(store.root), grid, store.n_parts, r, params, od) for r in ranges]
     res = run_workers(pass2_worker, jobs)
     if out_dir is None:
         return [tf for chunk in res for tf in chunk]
