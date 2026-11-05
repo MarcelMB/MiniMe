@@ -51,22 +51,28 @@ def motion_meta(params: Params, H: int, W: int, t0: int, t1: int) -> dict:
         "t1": t1,
         **params.motion_params(),
         "motion_bandpass": list(params.motion_bandpass),
+        # not a sidecar key (the shifts do not depend on it), but the Rust core builds the fill
+        "template_source": params.template_source,
+        "template_chunks": params.template_chunks,
+        "motion_fill": params.motion_fill,
     }
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--session", type=Path, default=st.DEFAULT_SESSION)
+    ap.add_argument("--baseline", default="baseline", help="the batch run whose params to use")
+    ap.add_argument("--name", default="ref_motion", help="output folder prefix")
     ap.add_argument("--t0", type=int, default=0)
     ap.add_argument("--t1", type=int, default=3000)
     ap.add_argument("--batch", type=int, default=200, help="frames per estimate call")
     a = ap.parse_args()
 
-    s = st.Session(a.session)
+    s = st.Session(a.session, baseline=a.baseline)
     params = s.params()
     info = io.probe(s.raw)
     H, W = info.height, info.width
-    out = s.out(f"ref_motion_{a.t0}_{a.t1}")
+    out = s.out(f"{a.name}_{a.t0}_{a.t1}")
     inp, ref = out / "inputs", out / "ref"
     inp.mkdir(exist_ok=True)
     ref.mkdir(exist_ok=True)
@@ -78,6 +84,8 @@ def main() -> None:
     tmpl = pass1.build_template(info, params)
     t_template = time.perf_counter() - t
     np.save(ref / "template.npy", motion.template_image(tmpl))
+    if tmpl.fill is not None:
+        np.save(ref / "fill.npy", tmpl.fill)
 
     shifts, quality, reg_chk, prep_chk, chk_t = [], [], [], [], []
     t = time.perf_counter()

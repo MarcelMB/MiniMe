@@ -96,17 +96,22 @@ pub(crate) fn fma(a: f32, b: f32, c: f32) -> f32 {
 /// `cv2.warpAffine(f, [[1, 0, -dx], [0, 1, -dy]], INTER_LINEAR)` on any pixel type:
 /// `out(y, x) = f(y + dy, x + dx)` by fused bilinear lerps, zeros outside; `store`
 /// converts the float32 result to the output type.
+#[allow(clippy::too_many_arguments)]
 fn shift_with<T: Copy, O>(
     src: &[T],
     h: usize,
     w: usize,
     dy: f32,
     dx: f32,
+    replicate: bool,
     load: impl Fn(T) -> f32,
     store: impl Fn(f32) -> O,
 ) -> Vec<O> {
     let at = |yy: i64, xx: i64| -> f32 {
-        if yy >= 0 && yy < h as i64 && xx >= 0 && xx < w as i64 {
+        if replicate {
+            let (yy, xx) = (yy.clamp(0, h as i64 - 1), xx.clamp(0, w as i64 - 1));
+            load(src[yy as usize * w + xx as usize])
+        } else if yy >= 0 && yy < h as i64 && xx >= 0 && xx < w as i64 {
             load(src[yy as usize * w + xx as usize])
         } else {
             0.0
@@ -141,7 +146,13 @@ fn shift_with<T: Copy, O>(
 /// float32 lerps, round half to even), zeros outside; four pixels at a time (`warp`), the
 /// same bits as `shift_scalar`.
 pub fn shift(src: &[u8], h: usize, w: usize, dy: f32, dx: f32) -> Vec<u8> {
-    crate::warp::shift_u8(src, h, w, dy, dx)
+    crate::warp::shift_u8(src, h, w, dy, dx, false)
+}
+
+/// `cv2.warpAffine(..., borderMode=BORDER_REPLICATE)` on uint8: `shift` with the nearest edge
+/// pixel where it reads 0 (`motion.apply_shifts(..., replicate=True)`).
+pub fn shift_replicate(src: &[u8], h: usize, w: usize, dy: f32, dx: f32) -> Vec<u8> {
+    crate::warp::shift_u8(src, h, w, dy, dx, true)
 }
 
 /// The same warp on float32 frames (`motion.apply_shifts` on the registration image).
@@ -151,14 +162,21 @@ pub fn shift_f32(src: &[f32], h: usize, w: usize, dy: f32, dx: f32) -> Vec<f32> 
 
 /// `shift`, one pixel at a time: its reference.
 pub fn shift_scalar(src: &[u8], h: usize, w: usize, dy: f32, dx: f32) -> Vec<u8> {
-    shift_with(src, h, w, dy, dx, f32::from, |v| {
+    shift_with(src, h, w, dy, dx, false, f32::from, |v| {
+        v.round_ties_even().clamp(0.0, 255.0) as u8
+    })
+}
+
+/// `shift_replicate`, one pixel at a time: its reference.
+pub fn shift_replicate_scalar(src: &[u8], h: usize, w: usize, dy: f32, dx: f32) -> Vec<u8> {
+    shift_with(src, h, w, dy, dx, true, f32::from, |v| {
         v.round_ties_even().clamp(0.0, 255.0) as u8
     })
 }
 
 /// `shift_f32`, one pixel at a time: its reference.
 pub fn shift_f32_scalar(src: &[f32], h: usize, w: usize, dy: f32, dx: f32) -> Vec<f32> {
-    shift_with(src, h, w, dy, dx, |v| v, |v| v)
+    shift_with(src, h, w, dy, dx, false, |v| v, |v| v)
 }
 
 /// Running min (`is_min`) or max over windows of `2r + 1` samples along one line, samples
@@ -270,22 +288,42 @@ pub fn tophat_scalar(src: &[u8], h: usize, w: usize, wnd: usize) -> Vec<u8> {
         .collect()
 }
 
-/// Settings of `stream.FrameStream._prep`.
+/// Settings of `stream.FrameStream._prep`; `fill`: the session's fill image (`h * w`) with
+/// `motion_fill = "template"` (the warp then replicates the edge pixels).
 #[derive(Debug, Clone, Copy)]
-pub struct Prep {
+pub struct Prep<'a> {
     pub median_ksize: usize,
     pub tophat_wnd: usize,
     pub motion_before_tophat: bool,
+    pub fill: Option<&'a [u8]>,
 }
 
-impl Prep {
-    /// Median, shift and tophat of one raw frame, in MiniMe's order.
+impl Prep<'_> {
+    /// Median, shift, tophat (in MiniMe's order) and the template fill of one raw frame.
     pub fn frame(&self, raw: &[u8], h: usize, w: usize, dy: f32, dx: f32) -> Vec<u8> {
         let den = median_blur(raw, h, w, self.median_ksize);
-        if self.motion_before_tophat {
-            tophat(&shift(&den, h, w, dy, dx), h, w, self.tophat_wnd)
+        let warp = |f: &[u8]| {
+            if self.fill.is_some() {
+                shift_replicate(f, h, w, dy, dx)
+            } else {
+                shift(f, h, w, dy, dx)
+            }
+        };
+        let mut out = if self.motion_before_tophat {
+            tophat(&warp(&den), h, w, self.tophat_wnd)
         } else {
-            shift(&tophat(&den, h, w, self.tophat_wnd), h, w, dy, dx)
+            warp(&tophat(&den, h, w, self.tophat_wnd))
+        };
+        self.fill_border(&mut out, h, w, dy, dx);
+        out
+    }
+
+    /// The template fill of a frame preprocessed by `frame` without it (the GPU path):
+    /// `motion.fill_outside` with the rectangle of the float32 shift (the sidecar's).
+    pub fn fill_border(&self, y8: &mut [u8], h: usize, w: usize, dy: f32, dx: f32) {
+        if let Some(fill) = self.fill {
+            let r = crate::fill::valid_rect(f64::from(dy), f64::from(dx), h, w);
+            crate::fill::fill_outside(y8, h, w, r, fill);
         }
     }
 }

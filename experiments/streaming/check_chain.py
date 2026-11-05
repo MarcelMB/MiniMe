@@ -54,6 +54,8 @@ def main() -> None:
         shutil.copy2(a.browser / f"{n}.npy", inp / f"{n}.npy")
     sh = np.load(a.ref / "session" / "shifts.npy")[: params["T"]]
     np.save(inp / "shifts.npy", sh)
+    if (a.ref / "session" / "fill.npy").exists():  # the template fill's image
+        shutil.copy2(a.ref / "session" / "fill.npy", inp / "fill.npy")
     np.save(inp / "sos.npy", butter(4, 2 * params["noise_freq"], output="sos"))
     (nat / "ref").mkdir()
     subprocess.run(

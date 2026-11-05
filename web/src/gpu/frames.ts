@@ -72,7 +72,7 @@ export class GpuFrames {
       unpack: K.unpack,
       pack: K.pack,
       median: K.median(k.median),
-      shiftU8: K.shiftU8,
+      shiftU8: k.replicate ? K.shiftU8Replicate : K.shiftU8,
       shiftF32: K.shiftF32,
       areaRowsF32: K.areaRowsF32,
       areaColsF32: K.areaColsF32,

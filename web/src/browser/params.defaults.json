@@ -65,6 +65,42 @@
       "window2": false
     },
     {
+      "name": "template_source",
+      "group": "Preprocessing + motion",
+      "type": "str",
+      "default": "spread",
+      "help": "Motion template from frames spread over the session ('spread') or from the first frames ('first', before Nov 2026).",
+      "common": false,
+      "window2": false
+    },
+    {
+      "name": "template_chunks",
+      "group": "Preprocessing + motion",
+      "type": "int",
+      "default": 10,
+      "help": "Runs of frames spread over the session for a 'spread' template.",
+      "common": false,
+      "window2": false
+    },
+    {
+      "name": "motion_fill",
+      "group": "Preprocessing + motion",
+      "type": "str",
+      "default": "template",
+      "help": "What motion correction puts where a shifted frame has no data: the template frames' mean ('template') or 0 ('zero', before Nov 2026).",
+      "common": false,
+      "window2": false
+    },
+    {
+      "name": "motion_outlier",
+      "group": "Preprocessing + motion",
+      "type": "float",
+      "default": 0.0,
+      "help": "Replace a shift this many px off its neighbours when the frame matches the template badly (0 = off).",
+      "common": false,
+      "window2": false
+    },
+    {
       "name": "tile",
       "group": "Tiling + compression",
       "type": "int",

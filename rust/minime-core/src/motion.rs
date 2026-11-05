@@ -5,8 +5,9 @@
 //! float32 mean). numpy's float32 pocketfft is not reproduced, so the correlation, and with
 //! it the sub-pixel shift, agrees to float32 rounding (the integer peak should match).
 
+use crate::fill::{valid_rect, FillSum, Rect};
 use crate::filters::{area_down2_f32, area_down2_u8, gauss_f32, gauss_u8, resize_up2_f32};
-use crate::preprocess::{check_median_ksize, median_blur, shift_f32, tophat};
+use crate::preprocess::{check_median_ksize, median_blur, shift_f32, shift_replicate, tophat};
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
@@ -27,6 +28,52 @@ pub struct MotionParams {
     pub template_frames: usize,
     pub motion_before_tophat: bool,
     pub motion_bandpass: [f64; 2],
+    /// "spread" (frames spread over the session) or "first" (the first frames of segment 0);
+    /// missing in inputs written before Nov 2026, which used "first"
+    #[serde(default = "first_source")]
+    pub template_source: String,
+    #[serde(default = "ten")]
+    pub template_chunks: usize,
+    /// "template" (the fill image where a shifted frame has no data) or "zero"; missing = "zero"
+    #[serde(default = "zero_fill")]
+    pub motion_fill: String,
+}
+
+fn first_source() -> String {
+    "first".into()
+}
+fn ten() -> usize {
+    10
+}
+fn zero_fill() -> String {
+    "zero".into()
+}
+
+impl MotionParams {
+    /// `template_source == "spread"`.
+    pub fn spread(&self) -> bool {
+        self.template_source == "spread"
+    }
+    /// `motion_fill == "template"`.
+    pub fn template_fill(&self) -> bool {
+        self.motion_fill == "template"
+    }
+    /// Refuse the values Python's `Params` refuses.
+    pub fn check(&self) -> Result<(), String> {
+        if !matches!(self.template_source.as_str(), "first" | "spread") {
+            return Err(format!(
+                "template_source must be 'first' or 'spread', not {:?}",
+                self.template_source
+            ));
+        }
+        if !matches!(self.motion_fill.as_str(), "zero" | "template") {
+            return Err(format!(
+                "motion_fill must be 'zero' or 'template', not {:?}",
+                self.motion_fill
+            ));
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -464,9 +511,38 @@ impl Motion {
 
     /// `estimate` of a frame already at the prepared size (`Correlator::downsample`).
     pub fn estimate_down(&self, down: Vec<f32>) -> [f64; 2] {
+        self.peak_of(&self.corr.prep_down(down)).0
+    }
+
+    /// `motion.estimate_peak` of one frame: the shift and the correlation peak normalised by
+    /// the prepared frame's and the template image's norms (near 0 for a black or corrupted
+    /// frame). The norms are float32 (numpy's pairwise sum) and float64 (numpy's BLAS dot):
+    /// only a threshold on the ratio uses it.
+    pub fn estimate_peak(&self, reg: &Reg) -> ([f64; 2], f32) {
+        self.estimate_peak_down(self.corr.downsample(reg))
+    }
+
+    /// `estimate_peak` of a frame already at the prepared size (`Correlator::downsample`).
+    pub fn estimate_peak_down(&self, down: Vec<f32>) -> ([f64; 2], f32) {
+        let prep = self.corr.prep_down(down);
+        let (shift, peak) = self.peak_of(&prep);
+        let sq: Vec<f32> = prep.iter().map(|v| v * v).collect();
+        let nf = pairwise_sum(&sq).sqrt();
+        let nt = self
+            .image
+            .iter()
+            .map(|&v| f64::from(v) * f64::from(v))
+            .sum::<f64>()
+            .sqrt() as f32;
+        let den = nf * nt;
+        (shift, if den > 0.0 { peak / den } else { 0.0 })
+    }
+
+    /// The shift of a prepared frame and the correlation at its integer peak.
+    fn peak_of(&self, prep: &[f32]) -> ([f64; 2], f32) {
         let c = &self.corr;
         let (ph, pw) = (c.ph, c.pw);
-        let mut spec = c.rfft2(&c.prep_down(down));
+        let mut spec = c.rfft2(prep);
         for (v, t) in spec.iter_mut().zip(&self.spec) {
             *v *= t;
         }
@@ -491,10 +567,13 @@ impl Motion {
         let sx = parabolic(at(iy, (ix + pw - 1) % pw), c0, at(iy, (ix + 1) % pw));
         let wrap = |i: usize, n: usize| if i > n / 2 { i as f64 - n as f64 } else { i as f64 };
         let down = c.down as f64;
-        [
-            down * (wrap(iy, ph) + f64::from(sy)),
-            down * (wrap(ix, pw) + f64::from(sx)),
-        ]
+        (
+            [
+                down * (wrap(iy, ph) + f64::from(sy)),
+                down * (wrap(ix, pw) + f64::from(sx)),
+            ],
+            c0,
+        )
     }
 
     /// `motion.frame_quality` of one motion-corrected registration frame: Pearson
@@ -519,6 +598,460 @@ impl Motion {
             (ft / den) as f32
         } else {
             0.0
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spread template and fill image (`template_source = "spread"`, `motion_fill = "template"`)
+// ---------------------------------------------------------------------------
+
+/// `pass1.spread_starts`: first frames of `chunks` runs of `length` frames spread evenly over
+/// `[0, t)`: `np.linspace(0, t - length, chunks).round()` (halves to even).
+pub fn spread_starts(t: usize, chunks: usize, length: usize) -> Vec<usize> {
+    let num = chunks.max(1);
+    let stop = (t - length.min(t)) as f64;
+    if num == 1 {
+        return vec![0];
+    }
+    let div = (num - 1) as f64;
+    let step = stop / div;
+    (0..num)
+        .map(|i| {
+            let v = if i == num - 1 {
+                stop
+            } else if step == 0.0 {
+                i as f64 / div * stop
+            } else {
+                i as f64 * step + 0.0
+            };
+            v.round_ties_even() as usize
+        })
+        .collect()
+}
+
+/// The session frames `pass1.sample_frames` reads for a spread template of `t` frames:
+/// `template_chunks` runs of `template_frames // template_chunks` (at least 1) frames, in order.
+pub fn spread_frames(p: &MotionParams, t: usize) -> Vec<usize> {
+    let chunks = p.template_chunks.max(1);
+    let length = (p.template_frames / chunks).max(1);
+    spread_starts(t, chunks, length)
+        .into_iter()
+        .flat_map(|s| s..(s + length).min(t))
+        .collect()
+}
+
+/// Exclusive ends of `np.array_split`'s `chunks` parts of `n` items.
+fn split_ends(n: usize, chunks: usize) -> Vec<usize> {
+    let (q, r) = (n / chunks, n % chunks);
+    let mut ends = Vec::with_capacity(chunks);
+    let mut at = 0;
+    for i in 0..chunks {
+        at += q + usize::from(i < r);
+        ends.push(at);
+    }
+    ends
+}
+
+/// `np.median` of float32 values: the middle one, or the float32 mean of the two middle ones.
+fn median_f32(v: &[f32]) -> f32 {
+    let mut s = v.to_vec();
+    s.sort_by(f32::total_cmp);
+    let n = s.len();
+    if n % 2 == 1 {
+        s[n / 2]
+    } else {
+        (s[n / 2 - 1] + s[n / 2]) / 2.0
+    }
+}
+
+/// `np.median` of float64 values.
+fn median_f64(sorted: &[f64]) -> f64 {
+    let n = sorted.len();
+    if n % 2 == 1 {
+        sorted[n / 2]
+    } else {
+        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+    }
+}
+
+/// `np.percentile(v, q)` (method "linear") of sorted float64 values, numpy's `_lerp` included.
+fn percentile_f64(sorted: &[f64], q: f64) -> f64 {
+    let n = sorted.len();
+    let virt = (n - 1) as f64 * (q / 100.0);
+    let prev = virt.floor();
+    let (i0, i1) = if virt >= (n - 1) as f64 {
+        (n - 1, n - 1)
+    } else if virt < 0.0 {
+        (0, 0)
+    } else {
+        (prev as usize, prev as usize + 1)
+    };
+    let gamma = virt - prev;
+    let (a, b) = (sorted[i0], sorted[i1]);
+    let diff = b - a;
+    if gamma >= 0.5 {
+        b - diff * (1.0 - gamma)
+    } else {
+        a + diff * gamma
+    }
+}
+
+/// `motion._reachable_median`: per axis the median of the shifts, clipped to keep the frames
+/// between their 2nd and 98th percentile within `0.75 * max_shift` px of it (their middle when
+/// they span more).
+fn reachable_median(s: &[[f64; 2]], max_shift: usize) -> [f64; 2] {
+    let lim = 0.75 * max_shift as f64;
+    std::array::from_fn(|k| {
+        let mut v: Vec<f64> = s.iter().map(|x| x[k]).collect();
+        v.sort_by(f64::total_cmp);
+        let lo = percentile_f64(&v, 98.0) - lim;
+        let hi = percentile_f64(&v, 2.0) + lim;
+        if lo <= hi {
+            median_f64(&v).max(lo).min(hi)
+        } else {
+            (lo + hi) / 2.0
+        }
+    })
+}
+
+/// `motion._best_chunk`'s choice among the chunk means (prepared images): the one whose
+/// mean-removed, normalised image correlates best with the others. The normalisation is numpy's
+/// float32; the Gram matrix is float64 (numpy's is a float32 BLAS product), so only a near tie
+/// could choose differently.
+fn best_chunk(means: &[Vec<f32>]) -> usize {
+    let rows: Vec<Vec<f32>> = means
+        .iter()
+        .map(|m| {
+            let mu = mean_f32(m);
+            let c: Vec<f32> = m.iter().map(|&v| v - mu).collect();
+            let sq: Vec<f32> = c.iter().map(|v| v * v).collect();
+            let norm = pairwise_sum(&sq).sqrt() + 1e-12f32;
+            c.iter().map(|&v| v / norm).collect()
+        })
+        .collect();
+    let k = rows.len();
+    let dot =
+        |a: &[f32], b: &[f32]| -> f64 { a.iter().zip(b).map(|(&x, &y)| f64::from(x) * f64::from(y)).sum() };
+    let mut best = (0, f64::NEG_INFINITY);
+    for i in 0..k {
+        let score: f64 = (0..k).filter(|&j| j != i).map(|j| dot(&rows[i], &rows[j])).sum();
+        if score > best.1 {
+            best = (i, score);
+        }
+    }
+    best.0
+}
+
+/// Which frames a `SpreadBuilder` takes next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpreadStage {
+    /// prepared registration images, in frame order (`add_prepped`): the runs' means
+    Means,
+    /// `estimate_peak` of every frame against `current_image()` with a search of twice
+    /// `motion_max_shift`, any order (`set_estimate`); round 1 or 2
+    Estimate(u8),
+    /// prepared registration images warped by `warp_shift(i)`, in frame order (`add_prepped`)
+    Mean(u8),
+    /// the fill sums of every frame against the final template (`add_fill`), any order
+    Fill,
+    Done,
+}
+
+/// `pass1.build_template` with `template_source = "spread"` (and the fill image of
+/// `pass1.with_fill`), fed by whoever reads and prepares the frames: one worker or a pool.
+///
+/// `motion.make_template(iters=2, chunks, centre="median")`: start from the mean of the run that
+/// agrees best with the others, then twice: shifts and correlation peaks of every frame against
+/// the current template (search `2 * motion_max_shift`), the template moved to
+/// `_reachable_median` of the frames whose peak is at least half the median, the frames
+/// warped by their shift minus it and averaged (numpy's sequential float32 mean).
+pub struct SpreadBuilder {
+    p: MotionParams,
+    frames: Vec<usize>,
+    ends: Vec<usize>,
+    stage: SpreadStage,
+    next: usize,
+    acc: Vec<f32>,
+    means: Vec<Vec<f32>>,
+    est: Vec<Option<([f64; 2], f32)>>,
+    got: usize,
+    shifts: Vec<[f64; 2]>,
+    current: Option<Motion>,
+    done: Option<Motion>,
+    fill: FillSum,
+}
+
+impl SpreadBuilder {
+    /// A spread template for a session of `t` frames.
+    pub fn new(p: &MotionParams, t: usize) -> Result<Self, String> {
+        check_median_ksize(p.median_ksize)?;
+        p.check()?;
+        let frames = spread_frames(p, t);
+        let chunks = p.template_chunks.max(1);
+        if frames.len() < chunks {
+            return Err(format!(
+                "a spread template needs at least {chunks} frames, the session has {t}"
+            ));
+        }
+        let corr = Correlator::new(p.h, p.w, p.motion_down)?;
+        let px = corr.ph * corr.pw;
+        Ok(Self {
+            ends: split_ends(frames.len(), chunks),
+            est: vec![None; frames.len()],
+            frames,
+            p: p.clone(),
+            stage: SpreadStage::Means,
+            next: 0,
+            acc: vec![0.0; px],
+            means: Vec::new(),
+            got: 0,
+            shifts: Vec::new(),
+            current: None,
+            done: None,
+            fill: FillSum::new(p.h * p.w),
+        })
+    }
+
+    /// The session frames of the template, in the order `add_prepped` takes them.
+    pub fn frames(&self) -> &[usize] {
+        &self.frames
+    }
+
+    pub fn stage(&self) -> SpreadStage {
+        self.stage
+    }
+
+    /// Frames taken in the current stage.
+    pub fn taken(&self) -> usize {
+        match self.stage {
+            SpreadStage::Means | SpreadStage::Mean(_) => self.next,
+            SpreadStage::Estimate(_) => self.got,
+            SpreadStage::Fill => self.fill.n as usize,
+            SpreadStage::Done => self.frames.len(),
+        }
+    }
+
+    fn correlator(&self) -> Correlator {
+        Correlator::new(self.p.h, self.p.w, self.p.motion_down).expect("checked in new")
+    }
+
+    /// The template an `Estimate` stage aligns to (its source image: `Motion::from_image` of it
+    /// with a search of `2 * motion_max_shift` rebuilds it), or the final one's in `Fill`.
+    pub fn current_image(&self) -> Option<&[f32]> {
+        match self.stage {
+            SpreadStage::Estimate(_) => self.current.as_ref().map(Motion::source_image),
+            SpreadStage::Fill | SpreadStage::Done => self.done.as_ref().map(Motion::source_image),
+            _ => None,
+        }
+    }
+
+    /// The shift a `Mean` stage warps template frame `i` by.
+    pub fn warp_shift(&self, i: usize) -> [f64; 2] {
+        self.shifts[i]
+    }
+
+    /// The next prepared frame of a `Means` or `Mean` stage (frame `i`, in order).
+    pub fn add_prepped(&mut self, i: usize, prep: &[f32]) -> Result<(), String> {
+        if !matches!(self.stage, SpreadStage::Means | SpreadStage::Mean(_)) {
+            return Err(format!(
+                "the spread template takes no prepared frame now ({:?})",
+                self.stage
+            ));
+        }
+        if i != self.next || prep.len() != self.acc.len() {
+            return Err(format!("prepared frame {i} out of order or of the wrong size"));
+        }
+        for (a, v) in self.acc.iter_mut().zip(prep) {
+            *a += v;
+        }
+        self.next += 1;
+        let n = self.frames.len();
+        if self.stage == SpreadStage::Means {
+            let k = self.means.len();
+            if self.next == self.ends[k] {
+                let count = (self.ends[k] - if k == 0 { 0 } else { self.ends[k - 1] }) as f32;
+                self.means.push(self.acc.iter().map(|&v| v / count).collect());
+                self.acc.fill(0.0);
+            }
+            if self.next == n {
+                let best = best_chunk(&self.means);
+                let img = std::mem::take(&mut self.means)[best].clone();
+                self.current = Some(Motion::from_image(
+                    self.correlator(),
+                    img,
+                    2 * self.p.motion_max_shift,
+                ));
+                self.begin(SpreadStage::Estimate(1));
+            }
+        } else if let SpreadStage::Mean(r) = self.stage {
+            if self.next == n {
+                let nf = n as f32;
+                let img: Vec<f32> = self.acc.iter().map(|&v| v / nf).collect();
+                if r == 1 {
+                    let search = 2 * self.p.motion_max_shift;
+                    self.current = Some(Motion::from_image(self.correlator(), img, search));
+                    self.begin(SpreadStage::Estimate(2));
+                } else {
+                    let m = Motion::from_image(self.correlator(), img, self.p.motion_max_shift);
+                    self.done = Some(m);
+                    self.current = None;
+                    self.begin(if self.p.template_fill() {
+                        SpreadStage::Fill
+                    } else {
+                        SpreadStage::Done
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Shift and normalised correlation peak (`Motion::estimate_peak` against the template
+    /// `current_image()` rebuilds) of frame `i` in an `Estimate` stage.
+    pub fn set_estimate(&mut self, i: usize, shift: [f64; 2], peak: f32) -> Result<(), String> {
+        let SpreadStage::Estimate(r) = self.stage else {
+            return Err(format!(
+                "the spread template takes no estimate now ({:?})",
+                self.stage
+            ));
+        };
+        if i >= self.est.len() || self.est[i].is_some() {
+            return Err(format!(
+                "estimate of template frame {i} out of range or given twice"
+            ));
+        }
+        self.est[i] = Some((shift, peak));
+        self.got += 1;
+        if self.got == self.est.len() {
+            let est: Vec<([f64; 2], f32)> = self.est.iter().map(|e| e.unwrap()).collect();
+            let peaks: Vec<f32> = est.iter().map(|e| e.1).collect();
+            let thres = 0.5 * median_f32(&peaks);
+            let mut ok: Vec<[f64; 2]> = est.iter().filter(|e| e.1 >= thres).map(|e| e.0).collect();
+            if ok.is_empty() {
+                ok = est.iter().map(|e| e.0).collect();
+            }
+            let c = reachable_median(&ok, self.p.motion_max_shift);
+            self.shifts = est.iter().map(|e| [e.0[0] - c[0], e.0[1] - c[1]]).collect();
+            self.begin(SpreadStage::Mean(r));
+        }
+        Ok(())
+    }
+
+    /// Fill sums of some template frames against the final template (`fill_frame`).
+    pub fn add_fill(&mut self, sums: &FillSum) -> Result<(), String> {
+        if self.stage != SpreadStage::Fill {
+            return Err(format!(
+                "the spread template takes no fill sums now ({:?})",
+                self.stage
+            ));
+        }
+        self.fill.merge(sums);
+        if self.fill.n as usize > self.frames.len() {
+            return Err("more fill frames than template frames".into());
+        }
+        if self.fill.n as usize == self.frames.len() {
+            self.stage = SpreadStage::Done;
+        }
+        Ok(())
+    }
+
+    fn begin(&mut self, stage: SpreadStage) {
+        self.stage = stage;
+        self.next = 0;
+        self.got = 0;
+        self.acc.fill(0.0);
+        self.est.iter_mut().for_each(|e| *e = None);
+    }
+
+    /// The template (search `motion_max_shift`) and, with `motion_fill = "template"`, the fill image.
+    pub fn finish(self) -> Result<(Motion, Option<Vec<u8>>), String> {
+        if self.stage != SpreadStage::Done {
+            return Err(format!("the spread template is not done ({:?})", self.stage));
+        }
+        let fill = self.p.template_fill().then(|| self.fill.image());
+        Ok((self.done.expect("done"), fill))
+    }
+}
+
+/// `pass1.with_fill` for one raw frame (`h * w`): the frame's shift against `tmpl` (the final
+/// template), its denoised image warped with the edge pixels replicated, tophat-filtered (or the
+/// tophat warped, with `motion_before_tophat` off), and the rectangle that holds data.
+pub fn fill_frame(raw: &[u8], tmpl: &Motion, p: &MotionParams) -> (Vec<u8>, Rect) {
+    let (h, w) = (p.h, p.w);
+    let den = median_blur(raw, h, w, p.median_ksize);
+    let [dy, dx] = tmpl.estimate(&registration_from_denoised(&den, p));
+    let (dy32, dx32) = (dy as f32, dx as f32);
+    let top = if p.motion_before_tophat {
+        tophat(&shift_replicate(&den, h, w, dy32, dx32), h, w, p.tophat_wnd)
+    } else {
+        shift_replicate(&tophat(&den, h, w, p.tophat_wnd), h, w, dy32, dx32)
+    };
+    (top, valid_rect(dy, dx, h, w))
+}
+
+/// The template and the fill image for a session of `t` frames (`pass1.build_template`), on
+/// one thread: `raw(t)` reads session frame `t`. With `template_source = "first"` the first
+/// `template_frames` frames of the session (of segment 0: `seg0` frames) are used.
+pub fn build_session_template(
+    p: &MotionParams,
+    t: usize,
+    seg0: usize,
+    raw: &mut dyn FnMut(usize) -> Result<Vec<u8>, String>,
+) -> Result<(Motion, Option<Vec<u8>>), String> {
+    p.check()?;
+    if !p.spread() {
+        let n = p.template_frames.min(seg0);
+        let m = Motion::build(p, n, &mut |i| Ok(registration_image(&raw(i)?, p)))?;
+        if !p.template_fill() {
+            return Ok((m, None));
+        }
+        let mut sums = FillSum::new(p.h * p.w);
+        for i in 0..n {
+            let (top, r) = fill_frame(&raw(i)?, &m, p);
+            sums.add(&top, p.h, p.w, r);
+        }
+        return Ok((m, Some(sums.image())));
+    }
+    let mut b = SpreadBuilder::new(p, t)?;
+    let frames = b.frames().to_vec();
+    let (h, w) = (p.h, p.w);
+    loop {
+        match b.stage() {
+            SpreadStage::Means => {
+                let corr = Correlator::new(h, w, p.motion_down)?;
+                for (i, &f) in frames.iter().enumerate() {
+                    b.add_prepped(i, &corr.prep(&registration_image(&raw(f)?, p)))?;
+                }
+            }
+            SpreadStage::Estimate(_) => {
+                let img = b.current_image().expect("estimate stage").to_vec();
+                let m =
+                    Motion::from_image(Correlator::new(h, w, p.motion_down)?, img, 2 * p.motion_max_shift);
+                for (i, &f) in frames.iter().enumerate() {
+                    let (s, peak) = m.estimate_peak(&registration_image(&raw(f)?, p));
+                    b.set_estimate(i, s, peak)?;
+                }
+            }
+            SpreadStage::Mean(_) => {
+                let corr = Correlator::new(h, w, p.motion_down)?;
+                for (i, &f) in frames.iter().enumerate() {
+                    let [dy, dx] = b.warp_shift(i);
+                    let reg = registration_image(&raw(f)?, p);
+                    b.add_prepped(i, &corr.prep(&reg.shifted(h, w, dy as f32, dx as f32)))?;
+                }
+            }
+            SpreadStage::Fill => {
+                let img = b.current_image().expect("fill stage").to_vec();
+                let m = Motion::from_image(Correlator::new(h, w, p.motion_down)?, img, p.motion_max_shift);
+                let mut sums = FillSum::new(h * w);
+                for &f in &frames {
+                    let (top, r) = fill_frame(&raw(f)?, &m, p);
+                    sums.add(&top, h, w, r);
+                }
+                b.add_fill(&sums)?;
+            }
+            SpreadStage::Done => return b.finish(),
         }
     }
 }
@@ -700,6 +1233,9 @@ mod tests {
             template_frames: 200,
             motion_before_tophat: true,
             motion_bandpass: [1.0, 6.0],
+            template_source: "first".into(),
+            template_chunks: 10,
+            motion_fill: "zero".into(),
         }
     }
 

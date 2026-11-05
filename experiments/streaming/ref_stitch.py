@@ -112,6 +112,7 @@ def stream_meta(params: Params, H: int, W: int) -> dict:
         "median_ksize": params.median_ksize,
         "tophat_wnd": params.tophat_wnd,
         "motion_before_tophat": params.motion_before_tophat,
+        "motion_fill": params.motion_fill,
         "dl_wnd": params.dl_wnd,
         "sparse_snr": params.sparse_snr,
         "size_thres": list(params.size_thres),
@@ -145,6 +146,8 @@ def write_session(
     (d / "session.json").write_text(json.dumps(session, indent=1))
     np.save(d / "shifts.npy", np.ascontiguousarray(sc.shifts, dtype=np.float32))
     np.save(d / "template.npy", sc.template.astype(np.float32))
+    if sc.fill is not None:
+        np.save(d / "fill.npy", sc.fill)
     for p2 in sorted((s.root / "processed" / "stream").glob("ref_pass2_*_*")):
         t0 = int(p2.name.split("_")[2])
         for f in sorted((p2 / "inputs").glob("omega_*.npy")):
@@ -159,16 +162,19 @@ def main() -> None:
     ap.add_argument("--n", type=int, default=None, help="first n windows only")
     ap.add_argument("--session-inputs", dest="session", action="store_true")
     ap.add_argument("--stream", action="store_true", help="streaming pass after the stitch")
+    ap.add_argument("--baseline", default="baseline", help="the batch run (sidecar, params)")
+    ap.add_argument("--t1", default="t1_fresh", help="t1_discovery.py's output folder")
+    ap.add_argument("--name", default="ref_stitch", help="output folder prefix")
     a = ap.parse_args()
 
-    s = st.Session(a.root)
-    src = s.out("t1_fresh") / f"w{a.length}"
-    cos_thres = float(json.loads((s.out("t1_fresh") / "summary.json").read_text())["cos"])
+    s = st.Session(a.root, baseline=a.baseline)
+    src = s.out(a.t1) / f"w{a.length}"
+    cos_thres = float(json.loads((s.out(a.t1) / "summary.json").read_text())["cos"])
     paths = sorted(src.glob("win_*_*.npz"))
     paths = [p for p in paths if not p.name.endswith(".A.npz")][: a.n]
     units = [st.WindowUnits.load(p) for p in paths]
     H, W, _ = s.shape()
-    out = s.out(f"ref_stitch_w{a.length}" + (f"_n{a.n}" if a.n else ""))
+    out = s.out(f"{a.name}_w{a.length}" + (f"_n{a.n}" if a.n else ""))
     inp, ref = out / "inputs", out / "ref"
     for d in (inp, ref):
         shutil.rmtree(d, ignore_errors=True)
