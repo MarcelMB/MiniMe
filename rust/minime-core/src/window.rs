@@ -74,44 +74,15 @@ fn usize_of(m: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result
         .ok_or_else(|| format!("session.json: {key} is not a whole number"))
 }
 
-/// Per-pixel energy of the window's frames: the saved `energy.npy` when the folder has one,
-/// else `|W|^2 + T sigma^2` (the compressed part plus white noise at the pixel's noise level),
-/// which is what `FactorCorr` needs to size the discarded residual.
-fn energy_of(
-    saved: Option<Vec<f64>>,
-    grid: &[crate::pass1::Tile],
-    wf: &[f32],
-    rank: &[usize],
-    sigma: &[f32],
-    t: usize,
-) -> Vec<f64> {
-    if let Some(e) = saved {
-        return e;
-    }
-    let mut out = Vec::with_capacity(sigma.len());
-    let (mut ow, mut op) = (0, 0);
-    for (g, &r) in grid.iter().zip(rank) {
-        let p = g.pixels();
-        for l in 0..p {
-            let wsq: f64 = wf
-                .get(ow + l * r..ow + (l + 1) * r)
-                .unwrap_or(&[])
-                .iter()
-                .map(|&a| f64::from(a) * f64::from(a))
-                .sum();
-            let s = f64::from(sigma.get(op + l).copied().unwrap_or(0.0));
-            out.push(wsq + t as f64 * s * s);
-        }
-        ow += p * r;
-        op += p;
-    }
-    out
+/// The refusal for a window folder that lacks a file only newer runs save.
+fn missing(name: &str) -> String {
+    format!("this run was made before auto-tune: run it again to tune or rerun it (factors/wNN/{name} is missing)")
 }
 
 impl WindowSession {
     /// The window `[t0, t1)` of the run whose `session.json` is `run_session`, from the files of
     /// its `factors/wNN/` folder (`get(name)`: `W.npy`, `V.npy`, `mean.npy`, `sigma.npy`,
-    /// `rank.npy`, `block_max.npy`, `max_proj.npy`, and `energy.npy` when saved).
+    /// `rank.npy`, `block_max.npy`, `max_proj.npy`, `energy.npy`).
     pub fn new(
         run_session: &[u8],
         t0: usize,
@@ -131,22 +102,13 @@ impl WindowSession {
         let wf = crate::npy::read_f32(&get("W.npy")?)?.data;
         let vf = crate::npy::read_f32(&get("V.npy")?)?.data;
         let mean = crate::npy::read_f32(&get("mean.npy")?)?.data;
-        let sigma = match get("sigma.npy") {
-            Ok(b) => crate::npy::read_f32(&b)?.data,
-            Err(_) => {
-                return Err("this run was made before auto-tune: run it again to tune or rerun it (factors/wNN/sigma.npy is missing)".into());
-            }
-        };
+        let sigma = crate::npy::read_f32(&get("sigma.npy").map_err(|_| missing("sigma.npy"))?)?.data;
         let rank: Vec<usize> = crate::npy::read_i64(&get("rank.npy")?)?
             .data
             .iter()
             .map(|&r| r as usize)
             .collect();
-        let saved = match get("energy.npy") {
-            Ok(b) => Some(crate::npy::read_f64(&b)?.data),
-            Err(_) => None,
-        };
-        let energy = energy_of(saved, &grid, &wf, &rank, &sigma, t);
+        let energy = crate::npy::read_f64(&get("energy.npy").map_err(|_| missing("energy.npy"))?)?.data;
         let tiles = Factors::split_flat(&grid, t, &wf, &vf, &mean, &sigma, &energy, &rank)?;
         let max_proj = crate::npy::read_u8(&get("max_proj.npy")?)?.data;
         let block_max = crate::npy::read_u8(&get("block_max.npy")?)?.data;
@@ -511,6 +473,10 @@ mod tests {
             "sigma.npy".into(),
             crate::npy::write(&[tf.sigma.len()], &tf.sigma),
         );
+        files.insert(
+            "energy.npy".into(),
+            crate::npy::write(&[tf.energy.len()], &tf.energy),
+        );
         files.insert("rank.npy".into(), crate::npy::write(&[1], &[tf.rank as i64]));
         files.insert("k.npy".into(), crate::npy::write(&[1], &[tf.k as i64]));
         files.insert(
@@ -613,14 +579,20 @@ mod tests {
     }
 
     #[test]
-    fn a_window_without_sigma_is_refused() {
-        let (session, t0, t1, mut files) = tiny();
-        files.remove("sigma.npy");
-        let e = WindowSession::new(&session, t0, t1, &mut |n| {
-            files.get(n).cloned().ok_or(format!("no {n}"))
-        })
-        .err()
-        .unwrap();
-        assert!(e.contains("sigma.npy"));
+    fn a_window_without_sigma_or_energy_is_refused() {
+        for name in ["sigma.npy", "energy.npy"] {
+            let (session, t0, t1, mut files) = tiny();
+            files.remove(name);
+            let e = WindowSession::new(&session, t0, t1, &mut |n| {
+                files.get(n).cloned().ok_or(format!("no {n}"))
+            })
+            .err()
+            .unwrap();
+            assert!(
+                e.starts_with("this run was made before auto-tune")
+                    && e.contains(&format!("factors/wNN/{name} is missing")),
+                "{e}"
+            );
+        }
     }
 }
