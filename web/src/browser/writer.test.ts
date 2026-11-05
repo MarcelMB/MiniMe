@@ -285,7 +285,9 @@ const SPEC_FILES = [
   "factors/meta.json",
   "factors/max_proj.npy",
   "factors/sn.npy",
-  ...["W", "V", "s", "mean", "sigma", "k", "rank", "block_max", "max_proj"].map((k) => `factors/w00/${k}.npy`),
+  ...["W", "V", "s", "mean", "sigma", "energy", "k", "rank", "block_max", "max_proj"].map(
+    (k) => `factors/w00/${k}.npy`,
+  ),
   "cnmf/A.npz",
   "cnmf/C.npy",
   "cnmf/YrA.npy",
@@ -330,7 +332,9 @@ describe("window folders", () => {
     const out = await new NodeDir(mkdtempSync(join(tmpdir(), "writer-"))).dir("run", { create: true });
     await writeWindow(out, 7, windowFiles());
     expect(await listAll(out as NodeDir)).toEqual(
-      ["W", "V", "s", "mean", "sigma", "k", "rank", "block_max", "max_proj"].map((k) => `factors/w07/${k}.npy`).sort(),
+      ["W", "V", "s", "mean", "sigma", "energy", "k", "rank", "block_max", "max_proj"]
+        .map((k) => `factors/w07/${k}.npy`)
+        .sort(),
     );
     await expect(writeWindow(out, 8, new Map())).rejects.toThrow(/W\.npy/);
   });
