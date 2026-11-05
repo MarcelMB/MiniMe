@@ -457,3 +457,42 @@ def test_shot_noise_grows_with_brightness():
     sd = np.diff(movie, axis=0).std(axis=0) / np.sqrt(2)
     mean = movie.mean(axis=0)
     assert sd[mean > np.quantile(mean, 0.9)].mean() > 1.5 * sd[mean < np.quantile(mean, 0.1)].mean()
+
+
+def test_given_shifts_replace_the_walk_and_keep_the_cells():
+    walk = synth.synth_setup(48, 40, 60, seed=2)
+    sh = np.zeros((60, 2), np.int64)
+    sh[30:] = [3, -5]
+    given = synth.synth_setup(48, 40, 60, seed=2, shifts=sh)
+    assert np.array_equal(given.shifts, sh)
+    assert np.array_equal(given.ys, walk.ys) and np.array_equal(given.C, walk.C)
+    # frames 29 and 30 are crops of the canvas at (0, 0) and at (3, -5)
+    mg = given.margin
+    canvas = np.arange((48 + 2 * mg) * (40 + 2 * mg), dtype=np.float32).reshape(48 + 2 * mg, -1)
+    out = synth._crop_frames(given, np.stack([canvas, canvas]), 29, 48, 40)
+    assert np.array_equal(out[0], canvas[mg : mg + 48, mg : mg + 40])
+    assert np.array_equal(out[1], canvas[mg + 3 : mg + 51, mg - 5 : mg + 35])
+    for bad, msg in [
+        (sh[:10], r"\(60, 2\)"),
+        (sh + 0.5, "whole pixels"),
+        (sh * 10, "motion_margin"),
+    ]:
+        with pytest.raises(ValueError, match=msg):
+            synth.synth_setup(48, 40, 60, seed=2, shifts=bad)
+
+
+def test_write_session_with_shifts_keeps_them_in_the_truth(tmp_path):
+    from minime import score
+
+    sh = np.tile([[2, -1]], (60, 1))
+    meta = synth.write_session(tmp_path / "raw", 60 / 30 / 60, 30, 30, 0, 32, shifts=sh)
+    assert (
+        meta["shifts_given"]
+        and not synth.write_session(tmp_path / "w" / "raw", 60 / 30 / 60, 30, 30, 0, 32)[
+            "shifts_given"
+        ]
+    )
+    assert np.array_equal(score.load_truth(tmp_path / "meta.json")["shifts"], sh)
+    (tmp_path / "truth.npz").unlink()  # cannot be regenerated from meta.json alone
+    with pytest.raises(FileNotFoundError, match="given shifts"):
+        score.load_truth(tmp_path / "meta.json")

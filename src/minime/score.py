@@ -18,6 +18,7 @@ from minime.testing import synth
 
 MAX_DIST_PX = 5.0
 SELF_CHECK_PX = 1.5
+EDGE_BAND_PX = 15  # unmatched units centred this close to a frame edge: "false edge units"
 
 
 # --- matching --------------------------------------------------------------------------
@@ -115,6 +116,8 @@ def load_truth(meta_path: Path) -> dict[str, np.ndarray]:
     if npz.is_file():
         with np.load(npz) as z:
             return {k: z[k] for k in z.files if not k.startswith("A_")}
+    if meta.get("shifts_given"):
+        raise FileNotFoundError(f"{npz} is missing: its session's given shifts are only there")
     options = synth.SynthOptions.from_dict(meta.get("options"))
     h, w = meta["height"], meta["width"]
     return synth.truth_arrays(synth.synth_setup(h, w, meta["frames"], meta["seed"], options), h, w)
@@ -145,6 +148,18 @@ def units_on_out_of_focus(
     u = unit_c[free & np.isfinite(unit_c).all(axis=1)]
     d = np.hypot(u[:, None, 0] - oc[None, :, 0], u[:, None, 1] - oc[None, :, 1])
     return int((d < 1.5 * truth["oof_sigma"][None]).any(axis=1).sum())
+
+
+def false_edge_units(
+    unit_c: np.ndarray, ui: np.ndarray, H: int, W: int, band: float = EDGE_BAND_PX
+) -> int:
+    """Unmatched units centred within ``band`` px of a frame edge: what a motion border
+    that comes and goes (the warp's zero fill) turns into."""
+    free = np.ones(len(unit_c), bool)
+    free[ui] = False
+    y, x = np.asarray(unit_c, float).reshape(-1, 2).T
+    edge = np.minimum.reduce([y, H - 1 - y, x, W - 1 - x])
+    return int((free & (edge < band)).sum())
 
 
 def row_corr(traces: np.ndarray, truth: np.ndarray) -> np.ndarray:
@@ -214,6 +229,7 @@ def score_run(
         n_detectable=int(det.sum()),
         recall_by_category=by_category(truth, ti),
         units_on_out_of_focus=units_on_out_of_focus(unit_c, ui, truth, mult * c),
+        false_edge_units=false_edge_units(unit_c, ui, H, W),
     )
     if not out["alignment_ok"]:
         print(

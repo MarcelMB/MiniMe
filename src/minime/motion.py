@@ -61,7 +61,8 @@ class Template:
     shape: tuple[int, int]  # full-resolution (h, w) of the frames it was built from
     # (h, w) of the prepared (downsampled) template image; cv2.resize rounds h / 2 up
     prep_shape: tuple[int, int]
-    # (h, w) float32 mean tophat image of the template frames in template coordinates: what
+    # (h, w) uint8 mean corrected (tophat) image of the template frames at the template's
+    # position, over the frames holding data at each pixel (``fill_image``): what
     # ``motion_fill = "template"`` puts where a shifted frame has no data
     fill: np.ndarray | None = None
 
@@ -106,23 +107,12 @@ def estimate(frames: np.ndarray, tmpl: Template, max_shift: int = 20) -> np.ndar
     return _peaks(corr, max_shift, tmpl.down)[0]
 
 
-def template_offset(a: Template, b: Template, max_shift: int = 20) -> np.ndarray:
-    """(dy, dx) that ``estimate`` would give a frame looking like template ``a`` vs ``b``."""
-    h, w = b.prep_shape
-    corr = np.fft.irfft2(a.fft * np.conj(b.fft), s=(h, w))[None]
-    return _peaks(corr, max_shift, b.down)[0][0]
-
-
-def refine(reg: np.ndarray, shifts: np.ndarray, tmpl: Template, max_shift: int = 20) -> np.ndarray:
-    """Shifts of the batch ``reg`` re-estimated against the batch's own mean (its frames warped
-    by ``shifts``), which matches their current look (focus, bleaching, activity) better than
-    a template from another part of the session; the batch template is tied back to ``tmpl``
-    by its own offset, so the result stays in ``tmpl``'s coordinates."""
-    b = _mean_template(apply_shifts(reg, shifts), tmpl.down)
-    return estimate(reg, b, max_shift) + template_offset(b, tmpl, max_shift)
-
-
-FILLS = {"zero": cv2.BORDER_CONSTANT, "replicate": cv2.BORDER_REPLICATE}
+def at_max_shift(shifts: np.ndarray, max_shift: int, down: int) -> np.ndarray:
+    """(n,) bool: frames whose correlation peak sits on the edge of ``estimate``'s search
+    window (|dy| or |dx| at least ``down * (max_shift // down - 0.5)``, 19 px for 20 and 2):
+    their motion may be larger than the shift they got."""
+    s = np.asarray(shifts, np.float64).reshape(-1, 2)
+    return (np.abs(s) >= down * (max_shift // down - 0.5)).any(axis=1)
 
 
 def _valid_rects(shifts: np.ndarray, h: int, w: int) -> tuple[np.ndarray, ...]:
@@ -138,58 +128,43 @@ def _valid_rects(shifts: np.ndarray, h: int, w: int) -> tuple[np.ndarray, ...]:
 
 def fill_outside(frames: np.ndarray, shifts: np.ndarray, fill: np.ndarray) -> np.ndarray:
     """``frames`` (warped by ``shifts``) with the pixels read from outside the frame set to
-    ``fill`` (h, w), in place."""
+    ``fill`` (h, w), in place: the rows above ``y0`` and from ``y1`` on, then the columns
+    left of ``x0`` and from ``x1`` on (``_valid_rects``)."""
     n, h, w = frames.shape
-    f = fill.astype(frames.dtype) if frames.dtype == np.uint8 else fill
     for i, (y0, y1, x0, x1) in enumerate(zip(*_valid_rects(shifts, h, w), strict=True)):
-        frames[i, :y0] = f[:y0]
-        frames[i, y1:] = f[y1:]
-        frames[i, :, :x0] = f[:, :x0]
-        frames[i, :, x1:] = f[:, x1:]
+        frames[i, :y0] = fill[:y0]
+        frames[i, y1:] = fill[y1:]
+        frames[i, :, :x0] = fill[:, :x0]
+        frames[i, :, x1:] = fill[:, x1:]
     return frames
 
 
 def fill_image(frames: np.ndarray, shifts: np.ndarray) -> np.ndarray:
-    """(h, w) float32 mean of ``frames`` warped by ``shifts`` over the frames that hold data
-    at each pixel (the edge-replicated mean where none does)."""
+    """(h, w) uint8: per pixel, the floor of the mean of uint8 ``frames`` (n, h, w), already
+    warped by ``shifts``, over the frames that read it from inside the frame (exact integer
+    sum // count); over all frames where none does. The warp's replicated border is not
+    data: averaged in, it would make the fill differ from the data next to it."""
     n, h, w = frames.shape
-    warped = apply_shifts(frames.astype(np.float32), shifts, "replicate")
-    inside = np.zeros((n, h, w), bool)
+    total = np.zeros((h, w), np.uint32)
+    count = np.zeros((h, w), np.uint32)
     for i, (y0, y1, x0, x1) in enumerate(zip(*_valid_rects(shifts, h, w), strict=True)):
-        inside[i, y0:y1, x0:x1] = True
-    cnt = inside.sum(axis=0)
-    mean = np.where(inside, warped, 0).sum(axis=0) / np.maximum(cnt, 1)
-    return np.where(cnt > 0, mean, warped.mean(axis=0)).astype(np.float32)
+        total[y0:y1, x0:x1] += frames[i, y0:y1, x0:x1]
+        count[y0:y1, x0:x1] += 1
+    every = frames.sum(axis=0, dtype=np.uint32) // np.uint32(n)
+    return np.where(count > 0, total // np.maximum(count, 1), every).astype(np.uint8)
 
 
-def apply_shifts(frames: np.ndarray, shifts: np.ndarray, fill: str = "zero") -> np.ndarray:
-    """Warp each frame by its (dy, dx); works for uint8 and float32 input. ``fill``: what the
-    pixels read from outside the frame get, 0 or the nearest edge pixel ("replicate")."""
+def apply_shifts(frames: np.ndarray, shifts: np.ndarray, replicate: bool = False) -> np.ndarray:
+    """Warp each frame by its (dy, dx); works for uint8 and float32 input. The pixels read
+    from outside the frame get 0, or with ``replicate`` the nearest edge pixel (the tophat
+    then sees no step at the border; ``fill_outside`` overwrites them afterwards)."""
     n, h, w = frames.shape
     out = np.empty_like(frames)
-    border = FILLS[fill]
+    border = cv2.BORDER_REPLICATE if replicate else cv2.BORDER_CONSTANT
     for i in range(n):
         m = np.array([[1, 0, -shifts[i, 1]], [0, 1, -shifts[i, 0]]], dtype=np.float32)
         out[i] = cv2.warpAffine(frames[i], m, (w, h), flags=cv2.INTER_LINEAR, borderMode=border)
     return out
-
-
-def coverage(shifts: np.ndarray, h: int, w: int) -> np.ndarray:
-    """(h, w) float32: fraction of frames whose ``apply_shifts`` reads the pixel from inside
-    the frame (source position ``(y + dy, x + dx)`` within ``[0, h - 1] x [0, w - 1]``); the
-    rest of the frames hold the warp's zero fill there."""
-    s = np.asarray(shifts, np.float64).reshape(-1, 2)
-    if not len(s):
-        return np.ones((h, w), np.float32)
-    y0, y1, x0, x1 = _valid_rects(s, h, w)  # [y0, y1) x [x0, x1)
-    keep = (y1 > y0) & (x1 > x0)
-    y0, y1, x0, x1 = y0[keep], y1[keep], x0[keep], x1[keep]
-    d = np.zeros((h + 1, w + 1), np.int64)  # 2-D difference array of the valid rectangles
-    np.add.at(d, (y0, x0), 1)
-    np.add.at(d, (y0, x1), -1)
-    np.add.at(d, (y1, x0), -1)
-    np.add.at(d, (y1, x1), 1)
-    return (d.cumsum(0).cumsum(1)[:h, :w] / len(s)).astype(np.float32)
 
 
 def _mean_template(pre_frames: np.ndarray, down: int) -> Template:
@@ -209,6 +184,18 @@ def _best_chunk(pre_frames: np.ndarray, chunks: int, down: int) -> np.ndarray:
     return parts[int(np.argmax(c.sum(axis=1) - np.diag(c)))]
 
 
+def _reachable_median(s: np.ndarray, max_shift: int) -> np.ndarray:
+    """(2,) the median of the shifts ``s`` (n, 2), moved per axis only as far as needed to
+    keep the frames between their 2nd and 98th percentile within ``0.75 * max_shift`` px of
+    it (to their middle when they span more): frames later estimated against a template put
+    there stay inside ``estimate``'s search window, with a margin for frames the sample
+    missed. Positions spanning less than that around the median (every recording surveyed
+    in Nov 2026: at most 10.7 px) get the plain median."""
+    lim = 0.75 * max_shift
+    lo, hi = np.percentile(s, 98, axis=0) - lim, np.percentile(s, 2, axis=0) + lim
+    return np.where(lo <= hi, np.clip(np.median(s, axis=0), lo, hi), (lo + hi) / 2)
+
+
 def make_template(
     pre_frames: np.ndarray,
     down: int = 2,
@@ -221,31 +208,23 @@ def make_template(
 
     ``iters``: align-and-average rounds. ``chunks > 1`` (frames sampled in that many runs
     across a session): start from the run that agrees best with the others, not from the mean
-    of all, which blurs when the runs sit at different positions. ``centre="median"``: put
-    the template at the frames' median position (shifts minus their median) instead of the
-    position the alignment lands on. The defaults are the first-frames template.
+    of all, which blurs when the runs sit at different positions, and align with twice the
+    ``max_shift`` search (runs can sit farther from each other than a frame from the
+    template). ``centre="median"``: put the template at the median position of the frames
+    that match it (correlation peak at least half the median; ``_reachable_median``) instead
+    of the position the alignment lands on. The defaults are the first-frames template.
     """
     t = _mean_template(_best_chunk(pre_frames, chunks, down) if chunks > 1 else pre_frames, down)
+    search = 2 * max_shift if chunks > 1 else max_shift
     for _ in range(iters):
-        s = estimate(pre_frames, t, max_shift)
-        if centre == "median":
-            s = s - np.median(s, axis=0)
+        if centre == "median":  # position of the frames that match (not black / corrupt)
+            s, peak = estimate_peak(pre_frames, t, search)
+            ok = peak >= 0.5 * np.median(peak)
+            s = s - _reachable_median(s[ok] if ok.any() else s, max_shift)
+        else:
+            s = estimate(pre_frames, t, search)
         t = _mean_template(apply_shifts(pre_frames, s), down)
     return t
-
-
-def recentre(
-    pre_frames: np.ndarray, tmpl: Template, probe: np.ndarray, max_shift: int = 20
-) -> tuple[Template, np.ndarray]:
-    """``tmpl`` (built from ``pre_frames``) moved to the median position of the ``probe``
-    frames (sampled across the session), and that median shift ``(dy, dx)``.
-
-    Frames estimated against the result get ``shift - median`` (up to the rebuilt template's
-    noise): the warp's zero fill is then split between opposite borders instead of piling up
-    on the side the session drifted away from."""
-    m = np.median(estimate(probe, tmpl, max_shift), axis=0)
-    s = estimate(pre_frames, tmpl, max_shift) - m
-    return _mean_template(apply_shifts(pre_frames, s), tmpl.down), m
 
 
 def fix_outliers(

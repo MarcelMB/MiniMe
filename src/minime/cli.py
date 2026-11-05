@@ -78,9 +78,11 @@ def run(
         typer.echo(line)
     prm = Params.from_json(params) if params is not None else Params()
     out = pipeline.run(raw_dir, prm, run_name=name, keep_store=keep_store, workers=workers, fps=fps)
-    counts = json.loads((out / "report.json").read_text(encoding="utf-8"))["counts"]
+    rep = json.loads((out / "report.json").read_text(encoding="utf-8"))
     typer.echo(str(out))
-    typer.echo(json.dumps(counts, indent=1))
+    typer.echo(json.dumps(rep["counts"], indent=1))
+    if "warning" in rep.get("motion", {}):
+        typer.echo(f"warning: {rep['motion']['warning']}", err=True)
 
 
 @app.command()

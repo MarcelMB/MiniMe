@@ -140,18 +140,6 @@ def count_local_maxima(
     return count
 
 
-def drop_near_masked(seeds: pd.DataFrame, max_proj: np.ndarray, radius: int = 3) -> pd.DataFrame:
-    """``seeds`` without those within ``radius`` px of a pixel the border mask zeroed
-    (``max_proj == 0``): next to the zeros every pixel is a local maximum with a big
-    difference, and those noise seeds also shift the "auto" PNR threshold."""
-    zero = (max_proj == 0).astype(np.uint8)
-    if not zero.any() or not len(seeds):
-        return seeds
-    near = cv2.dilate(zero, np.ones((2 * radius + 1, 2 * radius + 1), np.uint8)) > 0
-    keep = ~near[seeds["height"].to_numpy(int), seeds["width"].to_numpy(int)]
-    return seeds[keep].reset_index(drop=True)
-
-
 def seeds_from_count(count: np.ndarray) -> np.ndarray:
     """(n, 3) int64 (height, width, count) for pixels with count > 0, row-major order."""
     h, w = np.nonzero(count)

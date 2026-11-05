@@ -36,6 +36,15 @@ TINY_PARAMS = dict(
 TINY = Params(**TINY_PARAMS)
 
 
+@pytest.fixture
+def estimate_from_few_units(monkeypatch):
+    """Let auto-tune estimate the cell diameter from ``tiny_run``'s units: it finds the toy
+    session's 7 cells (before Nov 2026: 15 units, 7 of the 8 false ones border strips)."""
+    from minime.autotune import run as at
+
+    monkeypatch.setattr(at, "MIN_UNITS_FOR_ESTIMATE", 5)
+
+
 @pytest.fixture(scope="session")
 def tiny_run(tmp_path_factory):
     """One finished run (tile store kept) on a 300-frame 64 x 64 synthetic session.
