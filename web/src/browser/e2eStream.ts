@@ -14,6 +14,8 @@ export type StreamOptions = {
   /** `ToWorker.device` and `gpuTest`. */
   device?: Device;
   gpuTest?: string;
+  /** Run parameters over the defaults (a `params.json`'s values, e.g. an auto-tune proposal). */
+  params?: Record<string, unknown>;
 };
 export type StreamResult = {
   files: { name: string; size: number }[];
@@ -67,6 +69,7 @@ async function stream(avis: File[], inputs: File[], opts: StreamOptions): Promis
       // one scratch folder for these runs, cleared by the next one (reference runs return their
       // traces from it, so it stays until then)
       const params = {
+        ...(opts.params ?? {}),
         ...(opts.workers ? { workers: opts.workers } : {}),
         ...(opts.tileCrc ? { tile_crc: true } : {}),
       };
