@@ -153,7 +153,7 @@ def test_autotune_writes_a_rerun_whose_score_matches(tiny_w2_run):
     assert len(flags) == A.shape[0] and "good" in flags
 
 
-def test_cli_autotune(tiny_w2_run, monkeypatch):
+def test_cli_autotune(tiny_w2_run, monkeypatch, estimate_from_few_units):
     monkeypatch.setattr(at, "DEFAULT_GRIDS", SMALL)
     res = CliRunner().invoke(
         cli.app, ["autotune", str(tiny_w2_run), "--diameter", "7", "--name", "auto_cli"]

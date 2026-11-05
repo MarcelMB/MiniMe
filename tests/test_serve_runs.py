@@ -76,6 +76,14 @@ def test_fps_from_miniscope_metadata(tmp_path):
     assert fps_from_files(raw) == 30.0
 
 
+def test_changed_params_shows_legacy_motion_of_old_runs():
+    """A run's params.json from before Nov 2026 lacks template_source / motion_fill: that
+    run used the first-frames template and zero fill, which differ from today's defaults."""
+    old = changed_params({"tile": 64, "raw_dir": "/x", "minime_version": "0.0.1"})
+    assert old["template_source"] == {"value": "first", "default": "spread"}
+    assert old["motion_fill"] == {"value": "zero", "default": "template"}
+
+
 def test_changed_params_compares_tuples_as_lists():
     assert changed_params({"size_thres": [25, None], "tile": 32}) == {
         "tile": {"value": 32, "default": 64}
