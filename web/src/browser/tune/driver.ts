@@ -3,15 +3,31 @@
  * its inputs mode, the outputs into `reruns/<name>/`. */
 import type { ProgressEvent, StageProgress } from "../../launch/params";
 import type { FromWorker, ToWorker } from "../../stream/protocol";
-import { sessionFor } from "../../stream/session";
+import { DEFAULTS, sessionFor } from "../../stream/session";
+import type { Checks, Pairs } from "../../types";
 import { type Dir, fileAt, walk } from "../dir";
 import type { Folders } from "../folders";
 import { readNpz } from "../npz";
 import { HttpError } from "../router";
 import type { Registry, RunInfo } from "../runs";
 import { wasm } from "../wasm";
+import { type AutotuneDoc, atEdge, type PairCounts, sweepCsv } from "./doc";
 import { loadWindowFiles, windowBytes, windowsOf } from "./factors";
-import { checkWindow2, type Params } from "./params";
+import {
+  checkWindow2,
+  DERIVED,
+  derivedKeys,
+  derivedParams,
+  MIN_DIST_FRAC,
+  norm,
+  type Params,
+  SEARCHED,
+  TUNE_FRAMES,
+  type TuneArgs,
+} from "./params";
+import { checkDiameter, estimateDiameter, scoreRun } from "./score";
+import { KNEE_RATIO, KNEE_WINDOWS, LocalSearch, middleWindows } from "./search";
+import type { Trial, TrialRunner, Values } from "./types";
 import { TuneWorkers } from "./windows";
 import { type RerunParts, rerunReport, writeRerun } from "./writer";
 
@@ -75,7 +91,7 @@ export function flatParams(r: RunInfo): Params {
 }
 
 /** A fresh `reruns/<name>/` (an existing one of that name is replaced, as main's does). */
-async function resetRerunDir(run: RunInfo, name: string): Promise<Dir> {
+export async function resetRerunDir(run: RunInfo, name: string): Promise<Dir> {
   const reruns = await walk(run.dir, "reruns", { create: true });
   await reruns.remove(name, { recursive: true }).catch(() => undefined);
   return reruns.dir(name, { create: true });
@@ -218,7 +234,7 @@ export async function rerun(
   progress: Progress,
   workers?: TuneWorkers,
 ): Promise<Dir> {
-  checkRerunName(name);
+  if (!(workers && name === AUTO)) checkRerunName(name); // auto-tune's own rerun may use the reserved name
   checkWindow2(params);
   const t0 = now();
   const base = flatParams(run);
@@ -332,5 +348,175 @@ export async function rerun(
     throw e;
   } finally {
     if (own) tw.close();
+  }
+}
+
+/** `autotune.run.StepLog`: one stage row per search step (`tune_seeds` ...), `n` settings each, and
+ * one `tune_rerun` row for the final rerun's stages. */
+export class StepLog {
+  private step: string | null = null;
+  private n = 0;
+  constructor(private stages: Stages) {}
+  private switchTo(step: string) {
+    if (step === this.step) return;
+    this.close();
+    this.step = step;
+    this.n = 0;
+    this.stages.start(`tune_${step}`);
+  }
+  trial(t: Trial) {
+    this.switchTo(t.step);
+    this.n += 1;
+    this.stages.note(`${this.n} settings`, this.n);
+  }
+  stage(name: string) {
+    this.switchTo(name);
+  }
+  close(error = false) {
+    if (this.step === null) return;
+    this.stages.end(error, this.n);
+    this.step = null;
+  }
+}
+
+/** `seeds.contrast_knee` (the Rust one lives in the worker; the summed histogram is judged here). */
+export function contrastKnee(hist: number[], ratio: number): number | null {
+  for (let c = 1; c < hist.length - 2; c++)
+    if (hist[c + 1] > 0 && hist[c + 2] > 0 && hist[c] / hist[c + 1] < ratio && hist[c + 1] / hist[c + 2] < ratio)
+      return c;
+  return null;
+}
+
+/** `TrialRunner` over the tune workers: the explored windows, then all of them for `decide`. */
+export class WorkersRunner implements TrialRunner {
+  private current: "segment" | "all" | null = null;
+  constructor(
+    private tw: TuneWorkers,
+    private run: RunInfo,
+    private checks: Checks,
+    private segment: { from: number; to: number } | null,
+    private log: (m: string) => void,
+  ) {}
+  async use(set: "segment" | "all") {
+    if (set === this.current) return;
+    const n = windowsOf(this.run).length;
+    const [from, to] = set === "segment" && this.segment ? [this.segment.from, this.segment.to] : [0, n];
+    const loads = [];
+    for (let i = from; i < to; i++) loads.push(await loadWindowFiles(this.run, i));
+    await this.tw.load(loads, await windowBytes(this.run));
+    this.log(`${to - from} windows on the tune workers (${set})`);
+    this.current = set;
+  }
+  async trial(params: Params, reference: boolean) {
+    const { H, W } = this.run.meta;
+    const r = await this.tw.trial(enc(sessionFor(H, W, params)), this.checks, reference);
+    return { counts: r.counts, score: r.score, error: r.error, size10Median: r.size10Median, seconds: r.seconds };
+  }
+  async startDiffThres(params: Params) {
+    const hist = await this.tw.contrastHist(
+      Number(params.seeds_wnd),
+      Number(params.seeds_stp),
+      Number(params.seeds_max_wnd),
+      KNEE_WINDOWS,
+    );
+    return contrastKnee(hist, KNEE_RATIO);
+  }
+}
+
+const counts = (p: Pairs): PairCounts => ({
+  n_near: p.n_near,
+  n_near_above: p.n_near_above,
+  n_closer: p.n_closer,
+  far_p99: p.far_p99,
+});
+
+/** `autotune.run.autotune`: the search, the final rerun into `reruns/auto`, `sweep.csv`,
+ * `unit_flags.csv` and `autotune.json`. */
+export async function autotune(ctx: Ctx, run: RunInfo, args: TuneArgs, progress: Progress): Promise<Dir> {
+  const t0 = now();
+  const { H, W, T } = run.meta;
+  const source = args.diameter !== undefined ? "given" : "footprints";
+  const diameter = args.diameter ?? (await estimateDiameter(run));
+  checkDiameter(diameter, H, W);
+  const checks: Checks = {
+    diameter,
+    pnr_min: 12,
+    piece_frac: 0.9,
+    size_lo: 0.3,
+    size_hi: 3,
+    dup_corr: args.dup_corr ?? 0.6,
+    keep_dist: 0.5,
+  };
+  const minDistFrac = args.min_dist_frac ?? MIN_DIST_FRAC;
+  const tuneFrames = args.tune_frames ?? TUNE_FRAMES;
+  const runParams: Params = { ...DEFAULTS, ...flatParams(run) }; // a run's params.json may leave defaults out
+  const base = derivedParams(runParams, diameter, minDistFrac);
+  const runValues = Object.fromEntries(SEARCHED.map((k) => [k, runParams[k] as number | string])) as Values;
+  const mid = middleWindows(windowsOf(run), tuneFrames);
+  const out = await resetRerunDir(run, AUTO);
+  const stages = new Stages(progress, out);
+  const log = new StepLog(stages);
+  const tw = new TuneWorkers(ctx.makeTuneWorker, enc(sessionFor(H, W, runParams)), ctx.maxWorkers);
+  try {
+    const runner = new WorkersRunner(tw, run, checks, mid, progress.log);
+    const search = new LocalSearch(runner, {
+      base,
+      runParams,
+      runValues,
+      integerDiff: true,
+      segment: mid !== null,
+      onTrial: (t) => {
+        checkCancel(progress);
+        log.trial(t);
+      },
+    });
+    const proposed = await search.run();
+    // a header row: the rerun's own stage rows (window2 ... write_outputs) follow it and end the log
+    log.stage("rerun");
+    log.close();
+    const params = { ...base, ...proposed };
+    const changed = Object.fromEntries(Object.entries(params).filter(([k, v]) => norm(v) !== norm(runParams[k])));
+    await rerun(ctx, run, changed, AUTO, progress, tw); // the workers hold every window by now
+    const auto = await ctx.registry.open(`${run.vpath}/reruns/${AUTO}`);
+    const runScored = await scoreRun(run, checks, minDistFrac, []);
+    const proposal = await scoreRun(auto, checks, minDistFrac, runScored.good);
+    await out.write("sweep.csv", sweepCsv(search.trials));
+    await out.write("unit_flags.csv", proposal.csv);
+    const kept = derivedKeys(runParams, diameter);
+    const doc: AutotuneDoc = {
+      strategy: "local",
+      passes: search.passes,
+      start: search.start,
+      diameter,
+      diameter_source: source,
+      min_dist_frac: minDistFrac,
+      tune_frames: tuneFrames,
+      segment: mid ? mid.segment : null,
+      frames: T,
+      pairs: { run: counts(runScored.pairs), proposal: counts(proposal.pairs) },
+      checks,
+      grids: search.grids,
+      derived: Object.fromEntries(DERIVED.map((k) => [k, params[k]])),
+      kept: DERIVED.filter((k) => !kept.includes(k)),
+      proposed,
+      run_values: Object.fromEntries([...SEARCHED, ...DERIVED].map((k) => [k, runParams[k]])),
+      at_edge: SEARCHED.filter((k) => atEdge(proposed[k], search.grids[k] ?? [])),
+      score: proposal.summary,
+      run_score: search.runTrial?.score ?? null,
+      better_than_run: search.betterThanRun,
+      search_error: search.searchError,
+      n_trials: search.trials.length,
+      wall_s: Math.round((now() - t0) * 10) / 10,
+      wasm_heap_peak_mb: Math.round(tw.heapPeakMb),
+    };
+    await out.write("autotune.json", JSON.stringify(doc, null, 1));
+    return out;
+  } catch (e) {
+    log.close(true);
+    const text = e instanceof RerunCancelled ? "cancelled" : e instanceof Error ? e.message : String(e);
+    await out.write("error.txt", text).catch(() => undefined);
+    throw e;
+  } finally {
+    tw.close();
   }
 }
