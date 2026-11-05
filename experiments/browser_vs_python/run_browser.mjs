@@ -26,6 +26,7 @@ const { values: a } = parseArgs({
     dest: { type: "string" },
     profile: { type: "string" },
     log: { type: "string" },
+    tune: { type: "boolean" },
   },
 });
 const { chromium } = createRequire(join(a.web, "package.json"))("@playwright/test");
@@ -49,6 +50,7 @@ await page.locator("input[type=file]").setInputFiles(a.raw);
 await page.getByText("Read in this order").waitFor({ timeout: 600_000 });
 await page.getByLabel("Frame rate of the recording (Hz)").fill(a.fps);
 await page.getByLabel("Run name").fill(a.name);
+if (a.tune) await page.getByLabel(/^Auto-tune the seed, init and CNMF parameters/).check();
 const t0 = Date.now();
 await page.getByRole("button", { name: "Start run" }).click();
 await page.waitForURL(/#\/job\//, { timeout: 120_000 });

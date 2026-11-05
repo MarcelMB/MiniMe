@@ -812,6 +812,37 @@ preprocessing use it. WebGPU works in nested workers in Chrome and WebKit, so ev
 Run it: `STREAM_DEVICE=auto|cpu|gpu|both [STREAM_GPU_TEST=...] STREAM_RAW=... STREAM_OUT=... npm run e2e:stream`;
 the speed test alone: `e2e/speed.spec.ts` with the stream config's server.
 
+## Auto-tune and reruns (2026-11-05, branch `autotune-browser`)
+
+What runs where: the run's windows are kept in OPFS; `New run` with "auto-tune after the run" chains a tune job.
+The tune workers (`TuneWorkers`, one `WindowEngine` per worker, windows spread over the pool) run each trial on
+all 12 windows (seeds, init, CNMF, stitch not included) and the per-window scores are summed; `LocalSearch` walks
+the grids one parameter at a time. Then the 12 windows are rerun with the proposal (`window2`), stitched and
+streamed once (`stream`, the scored traces) into `reruns/auto/`. `flags`/`pairs` (the unit table and pair counts)
+are computed by one `score_units` wasm call on the main thread with the 202 pattern (the spec said "in the tune
+worker"; the plan moved it: K x T float32 takes well under a second on grin30).
+
+Layout: `reruns/<name>/` is a full run folder (`cnmf/A.npz`, `C.npy`, `YrA.npy`, `params.json`, `report.json`)
+plus `autotune.json`, `sweep.csv`, `unit_flags.csv`. A rerun reads the run's `factors/` and needs `sigma.npy`;
+runs made before 2026-11-05 have none and must be run again to be tuned.
+
+| `synth_v4_grin30` | browser | Python auto-tune |
+|---|---|---|
+| run F1 (YrA) | 0.757 (C: 0.757) | 0.680 |
+| proposal F1 | 0.755 | 0.682 |
+| auto-tune wall | 64 s (rerun + stream 31 s) | 192 s |
+| trials | 14 | 16 |
+| per-setting cost | 1.2 to 3 s (12 windows, parallel) | |
+| wasm heap peak | 173 MB | |
+| Chromium tree RSS peak | 3.89 GiB (upper bound) | |
+| run time (main run) | 116 s of 181 s click to done | 95.5 s |
+
+Result: the search kept nothing (`kept: []`, `better_than_run: false`): sparse_snr 0.714, which Python picks
+(score 209 vs 188), scores 1493 vs the run's 1674 on the summed window scores (167 low-PNR units); the proposal
+equals the run's values, and its window params are re-derived from the 11.2 px diameter (seeds_max_wnd 11 vs 15,
+merge_min_dist 4.5 vs 0), which moves F1 by -0.0015 (365 vs 366 units). Open: the RSS target, and a tie-break
+for the segment where Python saw a gain (`tune_frames` 0 explores on all windows).
+
 ## Next
 0. Rerun the 8 h and 24 h streaming pass with the traces in OPFS (8 h scale run above);
    machine-hours, so overnight.
