@@ -126,8 +126,7 @@ fn run_motion(args: &[String]) -> Result<(), String> {
     let s = Instant::now();
     let total = *frames.starts.last().unwrap();
     let seg0 = frames.starts[1];
-    let (m, fill) =
-        motion::build_session_template(&p, total, seg0, &mut |t| frames.get(t))?;
+    let (m, fill) = motion::build_session_template(&p, total, seg0, &mut |t| frames.get(t))?;
     let t_template = s.elapsed().as_secs_f64();
 
     let (mut t_read, mut t_reg, mut t_est, mut t_qual) = (0.0, 0.0, 0.0, 0.0);

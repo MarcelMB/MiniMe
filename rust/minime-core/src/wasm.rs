@@ -9,8 +9,8 @@ use crate::avi::{self, AviIndex, ReadAt};
 use crate::cnmf::{self, CnmfParams, CnmfResult};
 use crate::compress::{self, Gaussian, Normals, Pass2Params, Recorded, TileFactors};
 use crate::factors::Factors;
-use crate::init::{self, InitParams, InitResult};
 use crate::fill::FillSum;
+use crate::init::{self, InitParams, InitResult};
 use crate::motion::{self, Motion, MotionParams, Reg, SpreadBuilder, SpreadStage, TemplateBuilder};
 use crate::npy;
 use crate::pass1::{self, Pass1, Pass1Params};
@@ -402,7 +402,10 @@ impl MotionEngine {
         if let Some(s) = self.spread.as_mut() {
             return s.add_fill(&sums).map_err(err);
         }
-        let acc = self.fill_sums.as_mut().ok_or(JsError::new("no fill sums wanted"))?;
+        let acc = self
+            .fill_sums
+            .as_mut()
+            .ok_or(JsError::new("no fill sums wanted"))?;
         acc.merge(&sums);
         if acc.n as usize > self.tmpl_n {
             return Err(JsError::new("more fill frames than template frames"));
@@ -463,7 +466,9 @@ impl MotionEngine {
         if let Some(f) = &self.fill {
             files.push(("fill.npy".into(), npy::write(&[self.p.h, self.p.w], f)));
         } else if self.p.template_fill() {
-            return Err(JsError::new("motion_fill is \"template\" but the fill image was not built"));
+            return Err(JsError::new(
+                "motion_fill is \"template\" but the fill image was not built",
+            ));
         }
         if !self.reg_chk.is_empty() {
             files.push((

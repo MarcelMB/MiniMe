@@ -162,16 +162,19 @@ def main() -> None:
     ap.add_argument("--n", type=int, default=None, help="first n windows only")
     ap.add_argument("--session-inputs", dest="session", action="store_true")
     ap.add_argument("--stream", action="store_true", help="streaming pass after the stitch")
+    ap.add_argument("--baseline", default="baseline", help="the batch run (sidecar, params)")
+    ap.add_argument("--t1", default="t1_fresh", help="t1_discovery.py's output folder")
+    ap.add_argument("--name", default="ref_stitch", help="output folder prefix")
     a = ap.parse_args()
 
-    s = st.Session(a.root)
-    src = s.out("t1_fresh") / f"w{a.length}"
-    cos_thres = float(json.loads((s.out("t1_fresh") / "summary.json").read_text())["cos"])
+    s = st.Session(a.root, baseline=a.baseline)
+    src = s.out(a.t1) / f"w{a.length}"
+    cos_thres = float(json.loads((s.out(a.t1) / "summary.json").read_text())["cos"])
     paths = sorted(src.glob("win_*_*.npz"))
     paths = [p for p in paths if not p.name.endswith(".A.npz")][: a.n]
     units = [st.WindowUnits.load(p) for p in paths]
     H, W, _ = s.shape()
-    out = s.out(f"ref_stitch_w{a.length}" + (f"_n{a.n}" if a.n else ""))
+    out = s.out(f"{a.name}_w{a.length}" + (f"_n{a.n}" if a.n else ""))
     inp, ref = out / "inputs", out / "ref"
     for d in (inp, ref):
         shutil.rmtree(d, ignore_errors=True)

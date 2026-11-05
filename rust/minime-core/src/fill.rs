@@ -125,7 +125,7 @@ impl FillSum {
             .iter()
             .zip(&self.count)
             .zip(&self.every)
-            .map(|((&t, &c), &e)| if c > 0 { t / c } else { e / n } as u8)
+            .map(|((&t, &c), &e)| t.checked_div(c).unwrap_or(e / n) as u8)
             .collect()
     }
 }
@@ -158,12 +158,52 @@ mod tests {
     fn valid_rect_matches_numpy() {
         // frame 1 of tests/test_motion.py's example: (3, -4) on 20 x 30 reads rows 17-19 and
         // columns 0-3 from outside
-        assert_eq!(valid_rect(3.0, -4.0, 20, 30), Rect { y0: 0, y1: 17, x0: 4, x1: 30 });
-        assert_eq!(valid_rect(-2.0, 2.0, 20, 30), Rect { y0: 2, y1: 20, x0: 0, x1: 28 });
-        assert_eq!(valid_rect(0.0, 0.0, 5, 6), Rect { y0: 0, y1: 5, x0: 0, x1: 6 });
+        assert_eq!(
+            valid_rect(3.0, -4.0, 20, 30),
+            Rect {
+                y0: 0,
+                y1: 17,
+                x0: 4,
+                x1: 30
+            }
+        );
+        assert_eq!(
+            valid_rect(-2.0, 2.0, 20, 30),
+            Rect {
+                y0: 2,
+                y1: 20,
+                x0: 0,
+                x1: 28
+            }
+        );
+        assert_eq!(
+            valid_rect(0.0, 0.0, 5, 6),
+            Rect {
+                y0: 0,
+                y1: 5,
+                x0: 0,
+                x1: 6
+            }
+        );
         // fractional: a pixel whose source leaves the frame by any amount is outside
-        assert_eq!(valid_rect(0.25, -0.25, 5, 6), Rect { y0: 0, y1: 4, x0: 1, x1: 6 });
-        assert_eq!(valid_rect(99.0, -99.0, 5, 6), Rect { y0: 0, y1: 0, x0: 6, x1: 6 });
+        assert_eq!(
+            valid_rect(0.25, -0.25, 5, 6),
+            Rect {
+                y0: 0,
+                y1: 4,
+                x0: 1,
+                x1: 6
+            }
+        );
+        assert_eq!(
+            valid_rect(99.0, -99.0, 5, 6),
+            Rect {
+                y0: 0,
+                y1: 0,
+                x0: 6,
+                x1: 6
+            }
+        );
     }
 
     #[test]

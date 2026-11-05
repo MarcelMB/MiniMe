@@ -119,7 +119,7 @@ describe("run routes", () => {
     });
     expect(runs.find((r) => r.name === "t")).toMatchObject({
       id: expect.stringMatching(/^[0-9a-f]{12}$/),
-      units: 15,
+      units: 7,
       T: 300,
     });
     // no root given: the first one, the most recently used

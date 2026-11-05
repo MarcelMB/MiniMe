@@ -5,8 +5,8 @@
 //! float32 mean). numpy's float32 pocketfft is not reproduced, so the correlation, and with
 //! it the sub-pixel shift, agrees to float32 rounding (the integer peak should match).
 
-use crate::filters::{area_down2_f32, area_down2_u8, gauss_f32, gauss_u8, resize_up2_f32};
 use crate::fill::{valid_rect, FillSum, Rect};
+use crate::filters::{area_down2_f32, area_down2_u8, gauss_f32, gauss_u8, resize_up2_f32};
 use crate::preprocess::{check_median_ksize, median_blur, shift_f32, shift_replicate, tophat};
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
@@ -731,9 +731,8 @@ fn best_chunk(means: &[Vec<f32>]) -> usize {
         })
         .collect();
     let k = rows.len();
-    let dot = |a: &[f32], b: &[f32]| -> f64 {
-        a.iter().zip(b).map(|(&x, &y)| f64::from(x) * f64::from(y)).sum()
-    };
+    let dot =
+        |a: &[f32], b: &[f32]| -> f64 { a.iter().zip(b).map(|(&x, &y)| f64::from(x) * f64::from(y)).sum() };
     let mut best = (0, f64::NEG_INFINITY);
     for i in 0..k {
         let score: f64 = (0..k).filter(|&j| j != i).map(|j| dot(&rows[i], &rows[j])).sum();
@@ -855,7 +854,10 @@ impl SpreadBuilder {
     /// The next prepared frame of a `Means` or `Mean` stage (frame `i`, in order).
     pub fn add_prepped(&mut self, i: usize, prep: &[f32]) -> Result<(), String> {
         if !matches!(self.stage, SpreadStage::Means | SpreadStage::Mean(_)) {
-            return Err(format!("the spread template takes no prepared frame now ({:?})", self.stage));
+            return Err(format!(
+                "the spread template takes no prepared frame now ({:?})",
+                self.stage
+            ));
         }
         if i != self.next || prep.len() != self.acc.len() {
             return Err(format!("prepared frame {i} out of order or of the wrong size"));
@@ -909,10 +911,15 @@ impl SpreadBuilder {
     /// `current_image()` rebuilds) of frame `i` in an `Estimate` stage.
     pub fn set_estimate(&mut self, i: usize, shift: [f64; 2], peak: f32) -> Result<(), String> {
         let SpreadStage::Estimate(r) = self.stage else {
-            return Err(format!("the spread template takes no estimate now ({:?})", self.stage));
+            return Err(format!(
+                "the spread template takes no estimate now ({:?})",
+                self.stage
+            ));
         };
         if i >= self.est.len() || self.est[i].is_some() {
-            return Err(format!("estimate of template frame {i} out of range or given twice"));
+            return Err(format!(
+                "estimate of template frame {i} out of range or given twice"
+            ));
         }
         self.est[i] = Some((shift, peak));
         self.got += 1;
@@ -920,8 +927,7 @@ impl SpreadBuilder {
             let est: Vec<([f64; 2], f32)> = self.est.iter().map(|e| e.unwrap()).collect();
             let peaks: Vec<f32> = est.iter().map(|e| e.1).collect();
             let thres = 0.5 * median_f32(&peaks);
-            let mut ok: Vec<[f64; 2]> =
-                est.iter().filter(|e| e.1 >= thres).map(|e| e.0).collect();
+            let mut ok: Vec<[f64; 2]> = est.iter().filter(|e| e.1 >= thres).map(|e| e.0).collect();
             if ok.is_empty() {
                 ok = est.iter().map(|e| e.0).collect();
             }
@@ -935,7 +941,10 @@ impl SpreadBuilder {
     /// Fill sums of some template frames against the final template (`fill_frame`).
     pub fn add_fill(&mut self, sums: &FillSum) -> Result<(), String> {
         if self.stage != SpreadStage::Fill {
-            return Err(format!("the spread template takes no fill sums now ({:?})", self.stage));
+            return Err(format!(
+                "the spread template takes no fill sums now ({:?})",
+                self.stage
+            ));
         }
         self.fill.merge(sums);
         if self.fill.n as usize > self.frames.len() {
@@ -1017,7 +1026,8 @@ pub fn build_session_template(
             }
             SpreadStage::Estimate(_) => {
                 let img = b.current_image().expect("estimate stage").to_vec();
-                let m = Motion::from_image(Correlator::new(h, w, p.motion_down)?, img, 2 * p.motion_max_shift);
+                let m =
+                    Motion::from_image(Correlator::new(h, w, p.motion_down)?, img, 2 * p.motion_max_shift);
                 for (i, &f) in frames.iter().enumerate() {
                     let (s, peak) = m.estimate_peak(&registration_image(&raw(f)?, p));
                     b.set_estimate(i, s, peak)?;

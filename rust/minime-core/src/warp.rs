@@ -101,14 +101,7 @@ fn columns(w: usize, dx: f32) -> Cols {
 
 /// `out(y, x) = src(y + dy, x + dx)` by fused bilinear lerps, zeros outside (the edge pixels
 /// with `replicate`), one float32 row at a time to `put(y, row)`.
-fn warp<R: Rows>(
-    src: &R,
-    h: usize,
-    dy: f32,
-    dx: f32,
-    replicate: bool,
-    mut put: impl FnMut(usize, &[f32]),
-) {
+fn warp<R: Rows>(src: &R, h: usize, dy: f32, dx: f32, replicate: bool, mut put: impl FnMut(usize, &[f32])) {
     let w = src.width();
     if w == 0 {
         return;

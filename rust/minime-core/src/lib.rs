@@ -13,8 +13,8 @@ pub mod compress_ref;
 pub mod corr;
 pub mod factors;
 pub mod fastmath;
-pub mod filters;
 pub mod fill;
+pub mod filters;
 pub mod fsimd;
 pub mod gmm;
 #[cfg(target_arch = "wasm32")]
