@@ -1,0 +1,35 @@
+{
+ "rule": "base",
+ "rows": [
+  {
+   "windows": 4,
+   "units": 308,
+   "matched": 270,
+   "duplicate": 7,
+   "piece": 1,
+   "out_of_focus": 26,
+   "nothing": 4,
+   "single_window": 92
+  },
+  {
+   "windows": 8,
+   "units": 349,
+   "matched": 294,
+   "duplicate": 11,
+   "piece": 2,
+   "out_of_focus": 37,
+   "nothing": 5,
+   "single_window": 75
+  },
+  {
+   "windows": 12,
+   "units": 378,
+   "matched": 318,
+   "duplicate": 13,
+   "piece": 2,
+   "out_of_focus": 40,
+   "nothing": 5,
+   "single_window": 65
+  }
+ ]
+}

@@ -139,7 +139,7 @@ def write_session(
         "seeds": {k: v for k, v in seeds_meta(params, H, W, 0).items() if k not in drop},
         "init": {k: v for k, v in init_meta(params, H, W, 0).items() if k not in drop},
         "cnmf": {k: v for k, v in cnmf_meta(params, H, W, 0).items() if k not in drop},
-        "stitch": {"cos_thres": cos_thres},
+        "stitch": {"cos_thres": cos_thres, "min_dist": params.merge_min_dist},
     }
     if stream:
         session["stream"] = stream_meta(params, H, W)

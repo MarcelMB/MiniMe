@@ -158,6 +158,10 @@ pub fn stream_params(session: &[u8], t: usize) -> Result<Vec<u8>, String> {
 #[derive(Debug, Clone, Deserialize)]
 pub struct StitchParams {
     pub cos_thres: f64,
+    /// Groups whose mean footprints' centroids are closer than this (px) are joined
+    /// (`init.unit_merge`'s `min_dist`, the session's `merge_min_dist`); 0, the default, off.
+    #[serde(default)]
+    pub min_dist: f64,
     #[serde(rename = "H")]
     pub h: usize,
     #[serde(rename = "W")]
@@ -224,10 +228,113 @@ pub struct StitchResult {
     pub a: Csr, // (groups, P) float32, rows with maximum 1, indices ascending
     pub bright: Vec<f64>,
     pub n_windows: Vec<usize>,
+    pub joined: usize, // groups the `min_dist` rule joined into another group
+}
+
+/// `M @ A`: each group's mean, members in order (scipy's `csr_matmat` order: one value per
+/// pixel per member, each row in reverse order of first appearance, zero sums dropped).
+fn group_means(a: &[Row], members: &[Vec<usize>], p: usize) -> Vec<Row> {
+    let mut mean: Vec<Row> = Vec::with_capacity(members.len());
+    let mut sums = vec![0f64; p];
+    let mut used = vec![false; p];
+    for m in members {
+        let v = 1.0 / m.len() as f64;
+        let mut order = Vec::new();
+        for &i in m {
+            for &(px, x) in &a[i] {
+                if !used[px] {
+                    used[px] = true;
+                    sums[px] = 0.0;
+                    order.push(px);
+                }
+                sums[px] = v.mul_add(x, sums[px]);
+            }
+        }
+        let row: Row = order
+            .iter()
+            .rev()
+            .map(|&px| {
+                used[px] = false;
+                (px, sums[px])
+            })
+            .filter(|&(_, s)| s != 0.0)
+            .collect();
+        mean.push(row);
+    }
+    mean
+}
+
+fn members_of(group: &[usize], n_g: usize) -> Vec<Vec<usize>> {
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); n_g];
+    for (i, &g) in group.iter().enumerate() {
+        members[g].push(i);
+    }
+    members
+}
+
+/// `stream._close_groups`: the new label of every group. Groups whose mean footprints (rows
+/// scaled to maximum 1) have centroids closer than `min_dist` px are adjacent, and each joins
+/// its brightest adjacent group brighter than itself (`brightest_parent` on `bright`, each
+/// group's brightest unit), so chains of close groups cannot percolate into neighbouring cells.
+fn close_groups(means: &[Row], bright: &[f64], w: usize, min_dist: f64) -> Vec<usize> {
+    let cent: Vec<Option<(f64, f64)>> = means
+        .iter()
+        .map(|r| {
+            let (mut m, mut sy, mut sx) = (0f64, 0f64, 0f64);
+            for &(px, v) in r {
+                m += v;
+                sy += v * (px / w) as f64;
+                sx += v * (px % w) as f64;
+            }
+            (m > 0.0).then(|| (sy / m, sx / m))
+        })
+        .collect();
+    // pairs closer than min_dist: grid cells of side min_dist, neighbours in the 3 x 3 block
+    let cell = |v: f64| (v / min_dist).floor() as i64;
+    let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> = std::collections::HashMap::new();
+    for (g, c) in cent.iter().enumerate() {
+        if let Some((y, x)) = c {
+            grid.entry((cell(*y), cell(*x))).or_default().push(g);
+        }
+    }
+    let mut edges = Vec::new();
+    for (g, c) in cent.iter().enumerate() {
+        let Some((y, x)) = *c else { continue };
+        let (cy, cx) = (cell(y), cell(x));
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                for &h in grid.get(&(cy + dy, cx + dx)).map_or(&[][..], |v| &v[..]) {
+                    let (hy, hx) = cent[h].expect("a centroid");
+                    if h > g && (y - hy).hypot(x - hx) < min_dist {
+                        edges.push([g, h]);
+                    }
+                }
+            }
+        }
+    }
+    let root = roots(&brightest_parent(means.len(), &edges, bright));
+    let mut uniq = root.clone();
+    uniq.sort_unstable();
+    uniq.dedup();
+    root.iter()
+        .map(|r| uniq.binary_search(r).expect("a root"))
+        .collect()
 }
 
 /// `stream.stitch` of `windows` (in time order).
 pub fn stitch(windows: &[Window], cos_thres: f64, p: usize) -> Result<StitchResult, String> {
+    stitch_with(windows, cos_thres, 0.0, 0, p)
+}
+
+/// `stream.stitch` of `windows` (in time order) with `min_dist` (px; 0 = off) on frames `w`
+/// pixels wide.
+pub fn stitch_with(
+    windows: &[Window],
+    cos_thres: f64,
+    min_dist: f64,
+    w: usize,
+    p: usize,
+) -> Result<StitchResult, String> {
     let mut rows: Vec<Row> = Vec::new();
     let (mut win, mut bright) = (Vec::new(), Vec::new());
     for (w, u) in windows.iter().enumerate() {
@@ -320,46 +427,38 @@ pub fn stitch(windows: &[Window], cos_thres: f64, p: usize) -> Result<StitchResu
     }
     let parent = brightest_parent(n, &edges, &bright);
     let root = roots(&parent);
-    let mut uniq = root.clone();
-    uniq.sort_unstable();
-    uniq.dedup();
-    let group: Vec<usize> = root
-        .iter()
-        .map(|r| uniq.binary_search(r).expect("a root"))
-        .collect();
-    let n_g = uniq.len();
-    let mut members: Vec<Vec<usize>> = vec![Vec::new(); n_g];
-    for (i, &g) in group.iter().enumerate() {
-        members[g].push(i);
-    }
-    // M @ A: each group's mean, members in order (one value per pixel per member)
-    let mut mean: Vec<Row> = Vec::with_capacity(n_g);
-    let mut sums = vec![0f64; p];
-    let mut used = vec![false; p];
-    for m in &members {
-        let v = 1.0 / m.len() as f64;
-        let mut order = Vec::new();
-        for &i in m {
-            for &(px, x) in &a[i] {
-                if !used[px] {
-                    used[px] = true;
-                    sums[px] = 0.0;
-                    order.push(px);
-                }
-                sums[px] = v.mul_add(x, sums[px]);
-            }
-        }
-        let row: Row = order
+    let compact = |labels: &[usize]| -> Vec<usize> {
+        let mut uniq = labels.to_vec();
+        uniq.sort_unstable();
+        uniq.dedup();
+        labels
             .iter()
-            .rev()
-            .map(|&px| {
-                used[px] = false;
-                (px, sums[px])
-            })
-            .filter(|&(_, s)| s != 0.0)
+            .map(|r| uniq.binary_search(r).expect("a label"))
+            .collect()
+    };
+    let mut group = compact(&root);
+    let mut n_g = group.iter().max().map_or(0, |&g| g + 1);
+    let mut joined = 0;
+    if min_dist > 0.0 && n_g > 1 {
+        if w == 0 || !p.is_multiple_of(w) {
+            return Err(format!(
+                "min_dist needs the frame width ({w} does not divide {p} pixels)"
+            ));
+        }
+        let members = members_of(&group, n_g);
+        let means = group_means(&a, &members, p);
+        let bg: Vec<f64> = members
+            .iter()
+            .map(|m| m.iter().fold(f64::NEG_INFINITY, |b, &i| b.max(bright[i])))
             .collect();
-        mean.push(row);
+        let comp = close_groups(&scale_rows(&means, &inv_row_max(&means)), &bg, w, min_dist);
+        let n_c = comp.iter().max().map_or(0, |&c| c + 1);
+        joined = n_g - n_c;
+        group = group.iter().map(|&g| comp[g]).collect();
+        n_g = n_c;
     }
+    let members = members_of(&group, n_g);
+    let mean = group_means(&a, &members, p);
     let scaled = scale_rows(&mean, &inv_row_max(&mean));
     let mut out = Csr {
         k: n_g,
@@ -397,6 +496,7 @@ pub fn stitch(windows: &[Window], cos_thres: f64, p: usize) -> Result<StitchResu
         a: out,
         bright: bright_g,
         n_windows,
+        joined,
     })
 }
 
@@ -500,6 +600,7 @@ pub fn outputs(r: &StitchResult, mut summary: serde_json::Value) -> Vec<(String,
     summary["pairs"] = r.pairs.len().into();
     summary["edges"] = r.edges.len().into();
     summary["units_out"] = r.a.k.into();
+    summary["joined_min_dist"] = r.joined.into();
     summary["found_in_n_windows"] = found.into();
     out.push((
         "summary.json".into(),
@@ -603,5 +704,39 @@ mod tests {
         assert_eq!(r.n_windows, vec![1, 2]);
         assert_eq!(r.bright, vec![1.0, 5.0]);
         assert_eq!(r.a.row(1), (&[0usize, 1][..], &[1.0f32, 0.5][..]));
+    }
+
+    #[test]
+    fn min_dist_joins_groups_whose_centres_are_too_close_for_two_cells() {
+        // 4 x 4 frame: a cell at (0, 0)-(0, 1) in window 0 and a shifted, worse copy at
+        // (0, 1)-(1, 1) in window 1 (cosine 0.5: no link); a far unit at (3, 3) in window 1
+        let px = |y: usize, x: usize| y * 4 + x;
+        let w0 = Window {
+            t: [0, 10],
+            a: csr(&[&[(px(0, 0), 1.0), (px(0, 1), 1.0)]], 16),
+            bright: vec![4.0],
+        };
+        let w1 = Window {
+            t: [10, 20],
+            a: csr(&[&[(px(0, 1), 1.0), (px(1, 1), 1.0)], &[(px(3, 3), 1.0)]], 16),
+            bright: vec![2.0, 1.0],
+        };
+        let ws = [w0, w1];
+        let off = stitch(&ws, 0.7, 16).unwrap();
+        assert_eq!((off.a.k, off.joined), (3, 0));
+        // centres (0, 0.5) and (0.5, 1): 0.71 px apart; the far unit is 3.5 px from both
+        let on = stitch_with(&ws, 0.7, 1.0, 4, 16).unwrap();
+        assert_eq!((on.a.k, on.joined), (2, 1));
+        assert_eq!(on.group, vec![0, 0, 1]);
+        assert_eq!(on.n_windows, vec![2, 1]);
+        assert_eq!(on.bright, vec![4.0, 1.0]);
+        // the mean of the two footprints, rows scaled to maximum 1
+        assert_eq!(
+            on.a.row(0),
+            (&[px(0, 0), px(0, 1), px(1, 1)][..], &[0.5f32, 1.0, 0.5][..])
+        );
+        // a threshold below the distance changes nothing
+        assert_eq!(stitch_with(&ws, 0.7, 0.7, 4, 16).unwrap().group, off.group);
+        assert!(stitch_with(&ws, 0.7, 1.0, 0, 16).is_err());
     }
 }

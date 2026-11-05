@@ -1,0 +1,35 @@
+{
+ "rule": "mindist5",
+ "rows": [
+  {
+   "windows": 4,
+   "units": 301,
+   "matched": 268,
+   "duplicate": 4,
+   "piece": 1,
+   "out_of_focus": 25,
+   "nothing": 3,
+   "single_window": 83
+  },
+  {
+   "windows": 8,
+   "units": 331,
+   "matched": 290,
+   "duplicate": 4,
+   "piece": 2,
+   "out_of_focus": 31,
+   "nothing": 4,
+   "single_window": 59
+  },
+  {
+   "windows": 12,
+   "units": 353,
+   "matched": 312,
+   "duplicate": 4,
+   "piece": 2,
+   "out_of_focus": 32,
+   "nothing": 3,
+   "single_window": 47
+  }
+ ]
+}

@@ -1,6 +1,7 @@
-import { appendFileSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { expect, type Page, test } from "@playwright/test";
+import { test as base, chromium, expect, type Page } from "@playwright/test";
 
 // Runs the browser pipeline on raw AVIs and saves its outputs for the
 // experiments/streaming/check_*.py scripts:
@@ -17,6 +18,21 @@ const raw = process.env.STREAM_RAW;
 const inputs = process.env.STREAM_INPUTS;
 const out = process.env.STREAM_OUT;
 const CHUNK = 8 * 2 ** 20; // bytes per CDP message when a file is copied out of the page
+
+// The page runs in a persistent profile on disk (a new one in the temp folder, or STREAM_PROFILE,
+// emptied first), as in a normal browser window. Playwright's default context is a private one,
+// whose browser storage lives in memory and refuses writes past ~1.8 GiB: a 2 h run folder.
+const test = base.extend({
+  context: async ({ channel, headless, baseURL }, use) => {
+    const dir = process.env.STREAM_PROFILE ?? mkdtempSync(join(tmpdir(), "minime-stream-"));
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    const context = await chromium.launchPersistentContext(dir, { channel, headless, baseURL });
+    await use(context);
+    await context.close();
+    rmSync(dir, { recursive: true, force: true });
+  },
+});
 
 /** Copy the files of OPFS `runs/<name>/` (the one run the page wrote) to `dest`. */
 async function exportRun(page: Page, dest: string): Promise<string[]> {
@@ -115,13 +131,22 @@ test("streams raw AVIs in the browser and saves the outputs", async ({ page }) =
   // STREAM_DEVICE: auto (default), cpu, gpu or both; STREAM_GPU_TEST: the GPU test hooks (nogpu, mismatch, lost)
   const device = (process.env.STREAM_DEVICE || undefined) as "auto" | "cpu" | "gpu" | "both" | undefined;
   const gpuTest = process.env.STREAM_GPU_TEST || undefined;
+  // STREAM_PARAMS: a JSON file of run parameters over the defaults (e.g. an auto-tune proposal)
+  const params = process.env.STREAM_PARAMS ? JSON.parse(readFileSync(process.env.STREAM_PARAMS, "utf8")) : undefined;
   // resolves when the run is done (hours on a long session); a failed run rejects with its message
   const done = await page.evaluate(
-    ({ keepStore, workers, tileCrc, device, gpuTest }) => {
+    ({ keepStore, workers, tileCrc, device, gpuTest, params }) => {
       const files = (id: string) => [...((document.getElementById(id) as HTMLInputElement | null)?.files ?? [])];
-      return window.__minimeStream!(files("avis"), files("inputs"), { keepStore, workers, tileCrc, device, gpuTest });
+      return window.__minimeStream!(files("avis"), files("inputs"), {
+        keepStore,
+        workers,
+        tileCrc,
+        device,
+        gpuTest,
+        params,
+      });
     },
-    { keepStore, workers, tileCrc, device, gpuTest },
+    { keepStore, workers, tileCrc, device, gpuTest, params },
   );
   await saveOutputs(page, done.files, out!);
   console.log(`done in ${done.seconds.toFixed(0)} s: ${done.files.length} output files -> ${out}`);

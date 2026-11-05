@@ -1,0 +1,52 @@
+{
+ "n_true": 461,
+ "n_detectable": 423,
+ "offset_px": [
+  0.1142759225554953,
+  5.268662761301332
+ ],
+ "browser": {
+  "units": 339,
+  "matched": 296,
+  "duplicate": 2,
+  "piece": 3,
+  "out_of_focus": 33,
+  "nothing": 5
+ },
+ "python": {
+  "units": 269,
+  "matched": 249,
+  "duplicate": 0,
+  "piece": 6,
+  "out_of_focus": 14,
+  "nothing": 0
+ },
+ "true_found_by_both": 246,
+ "true_only_browser": {
+  "n": 50,
+  "detectable": 43,
+  "dim": 8,
+  "edge": 0,
+  "late": 0,
+  "near_out_of_focus": 10,
+  "near_vessel": 0,
+  "overlap": 8,
+  "small": 20
+ },
+ "true_only_python": {
+  "n": 3,
+  "detectable": 2,
+  "dim": 0,
+  "edge": 0,
+  "late": 0,
+  "near_out_of_focus": 0,
+  "near_vessel": 0,
+  "overlap": 1,
+  "small": 0
+ },
+ "late_recall": {
+  "n": 20,
+  "browser": 0.85,
+  "python": 0.85
+ }
+}

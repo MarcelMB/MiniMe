@@ -1060,8 +1060,14 @@ impl StitchEngine {
 
     /// Stitch the windows added so far; returns the number of stitched units.
     pub fn run(&mut self) -> Result<usize, JsError> {
-        let r = stitch::stitch(&self.windows, self.p.cos_thres, self.p.h * self.p.w)
-            .map_err(|e| JsError::new(&e))?;
+        let r = stitch::stitch_with(
+            &self.windows,
+            self.p.cos_thres,
+            self.p.min_dist,
+            self.p.w,
+            self.p.h * self.p.w,
+        )
+        .map_err(|e| JsError::new(&e))?;
         let n = r.a.k;
         self.res = Some(r);
         Ok(n)
