@@ -24,6 +24,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy import sparse
+
 from minime.score import (
     MAX_DIST_PX,
     footprint_centroids,
@@ -32,12 +34,9 @@ from minime.score import (
     score_pipeline_dir,
     score_run,
 )
-from scipy import sparse
 
 PY_COLOR, BR_COLOR = "#2a78d6", "#eb6834"  # categorical slots 1 and 2 (validated)
-COS_AGREE = (
-    0.7  # the stitch's footprint rule: same unit when the cosine is at least this
-)
+COS_AGREE = 0.7  # the stitch's footprint rule: same unit when the cosine is at least this
 
 # Python stages that correspond to a browser stage; everything else is listed on its own.
 STAGE_MAP = {
@@ -95,16 +94,8 @@ def match_footprints(py: dict, br: dict) -> dict:
     cos = np.asarray(Ap[ip].multiply(Ab[ib]).sum(axis=1)).ravel()
     dist = np.hypot(*(cp[ip] - cb[ib]).T)
     cross = (Ap @ Ab.T).tocsr()  # (Kp, Kb) cosines, sparse: footprints rarely overlap
-    best_p = (
-        cross.max(axis=1).toarray().ravel()
-        if cross.shape[1]
-        else np.zeros(cross.shape[0])
-    )
-    best_b = (
-        cross.max(axis=0).toarray().ravel()
-        if cross.shape[0]
-        else np.zeros(cross.shape[1])
-    )
+    best_p = cross.max(axis=1).toarray().ravel() if cross.shape[1] else np.zeros(cross.shape[0])
+    best_b = cross.max(axis=0).toarray().ravel() if cross.shape[0] else np.zeros(cross.shape[1])
     Kp, Kb = py["A"].shape[0], br["A"].shape[0]
     return {
         "ip": ip,
@@ -130,9 +121,7 @@ def match_footprints(py: dict, br: dict) -> dict:
             )
             if Kb
             else None,
-            "centroid_offset_px_median": [
-                float(v) for v in np.median(cp[ip] - cb[ib], axis=0)
-            ]
+            "centroid_offset_px_median": [float(v) for v in np.median(cp[ip] - cb[ib], axis=0)]
             if len(ip)
             else None,
         },
@@ -145,21 +134,14 @@ def quantiles(x: np.ndarray) -> dict | None:
     q = np.quantile(x, [0.1, 0.25, 0.5, 0.75, 0.9])
     return {
         "mean": float(x.mean()),
-        **{
-            k: float(v)
-            for k, v in zip(["q10", "q25", "median", "q75", "q90"], q, strict=True)
-        },
+        **{k: float(v) for k, v in zip(["q10", "q25", "median", "q75", "q90"], q, strict=True)},
     }
 
 
-def trace_agreement(
-    py: dict, br: dict, ip: np.ndarray, ib: np.ndarray
-) -> tuple[np.ndarray, dict]:
+def trace_agreement(py: dict, br: dict, ip: np.ndarray, ib: np.ndarray) -> tuple[np.ndarray, dict]:
     if not len(ip):
         return np.zeros(0), {"trace_corr": None}
-    r = row_corr(
-        np.asarray(py["C"][ip], np.float32), np.asarray(br["C"][ib], np.float32)
-    )
+    r = row_corr(np.asarray(py["C"][ip], np.float32), np.asarray(br["C"][ib], np.float32))
     return r, {
         "trace_corr": quantiles(r[np.isfinite(r)]),
         "trace_corr_ge_0.9": float((r >= 0.9).mean()),
@@ -177,9 +159,7 @@ def motion_agreement(py: dict, br: dict) -> dict:
             "max_abs_diff_px": [float(v) for v in np.abs(d).max(axis=0)],
             "median_abs_diff_px": [float(v) for v in np.median(np.abs(d), axis=0)],
             "mean_diff_px": [float(v) for v in d.mean(axis=0)],
-            "corr": [
-                float(np.corrcoef(sp[:, k], sb[:, k])[0, 1]) for k in range(sp.shape[1])
-            ],
+            "corr": [float(np.corrcoef(sp[:, k], sb[:, k])[0, 1]) for k in range(sp.shape[1])],
             "python_max_abs_shift_px": float(np.abs(sp).max()),
             "browser_max_abs_shift_px": float(np.abs(sb).max()),
         }
@@ -189,11 +169,7 @@ def motion_agreement(py: dict, br: dict) -> dict:
 def params_diff(py: dict, br: dict) -> dict:
     a, b = py["params"], br["params"]
     keys = sorted((set(a) | set(b)) - PARAMS_IGNORED)
-    return {
-        k: {"python": a.get(k), "browser": b.get(k)}
-        for k in keys
-        if a.get(k) != b.get(k)
-    }
+    return {k: {"python": a.get(k), "browser": b.get(k)} for k in keys if a.get(k) != b.get(k)}
 
 
 # --- scores -----------------------------------------------------------------------------
@@ -243,9 +219,7 @@ def speed_table(py: dict, br: dict) -> list[dict]:
     for stage, names in STAGE_MAP.items():
         p = sum(sp.get(n, 0.0) for n in names) if any(n in sp for n in names) else None
         used.update(names)
-        rows.append(
-            row(stage, "+".join(n for n in names if n in sp), p, sb.get(stage), T)
-        )
+        rows.append(row(stage, "+".join(n for n in names if n in sp), p, sb.get(stage), T))
     for stage in ("stitch", "stream"):
         rows.append(row(stage, "", None, sb.get(stage), T, note="browser only"))
     for name, sec in sp.items():
@@ -284,13 +258,9 @@ def memory(py: dict, br: dict, mem_py: dict | None, mem_br: dict | None) -> dict
     return {
         "python_peak_rss_main_gib": gib(rp.get("peak_rss")),
         "python_peak_rss_children_gib": gib(rp.get("peak_rss_children")),
-        "python_tree_peak_rss_gib (sampled)": gib(
-            mem_py and mem_py["peak_rss_tree_bytes"]
-        ),
+        "python_tree_peak_rss_gib (sampled)": gib(mem_py and mem_py["peak_rss_tree_bytes"]),
         "browser_wasm_heap_peak_mb": rb.get("wasm_heap_peak_mb"),
-        "browser_chromium_peak_rss_gib (sampled)": gib(
-            mem_br and mem_br["peak_rss_tree_bytes"]
-        ),
+        "browser_chromium_peak_rss_gib (sampled)": gib(mem_br and mem_br["peak_rss_tree_bytes"]),
         "python_workers": rp.get("workers"),
         "browser_workers": rb.get("workers"),
     }
@@ -428,9 +398,7 @@ def pair(v: list[float], nd: int) -> str:
 def readme(m: dict, args: argparse.Namespace) -> str:
     fm, tr, mo, mem = m["footprints"], m["traces"], m["motion"], m["memory"]
     raw = (
-        [
-            f"- raw (scored against the truth in `{args.raw.parent}/meta.json`): `{args.raw}`"
-        ]
+        [f"- raw (scored against the truth in `{args.raw.parent}/meta.json`): `{args.raw}`"]
         if args.raw
         else []
     )
@@ -455,8 +423,9 @@ def readme(m: dict, args: argparse.Namespace) -> str:
             f"{fmt(100 * (fm['matched_fraction_of_browser'] or 0))} % of the browser's."
         ),
         (
-            f"- Matched pairs: centroid distance median {q(fm['centroid_dist_px'], 'median', 2)} px, "
-            f"footprint cosine median {q(fm['footprint_cosine'], 'median', 3)}; "
+            "- Matched pairs: centroid distance median "
+            f"{q(fm['centroid_dist_px'], 'median', 2)} px, footprint cosine median "
+            f"{q(fm['footprint_cosine'], 'median', 3)}; "
             f"{agree} pairs with cosine ≥ {COS_AGREE}."
         ),
         (
@@ -471,9 +440,7 @@ def readme(m: dict, args: argparse.Namespace) -> str:
             f"median |Δ| {pair(mo['median_abs_diff_px'], 4)} px, r {pair(mo['corr'], 4)}."
         )
     if m["params_diff"]:
-        lines.append(
-            f"- Parameters that differ: {', '.join(m['params_diff'])} (metrics.json)."
-        )
+        lines.append(f"- Parameters that differ: {', '.join(m['params_diff'])} (metrics.json).")
     if m.get("scores"):
         lines += [
             "",
@@ -485,9 +452,7 @@ def readme(m: dict, args: argparse.Namespace) -> str:
         for k, s in m["scores"].items():
             cells = [s[c] for c in ("f1", "recall", "precision", "recall_detectable")]
             cells.append(s["trace_corr_median"])
-            lines.append(
-                f"| {k} | {' | '.join(fmt(c, 3) for c in cells)} | {s['n_units']} |"
-            )
+            lines.append(f"| {k} | {' | '.join(fmt(c, 3) for c in cells)} | {s['n_units']} |")
     lines += [
         "",
         "## Speed per stage (seconds)",
@@ -543,9 +508,7 @@ def main() -> None:
         "params_diff": params_diff(py, br),
         "scores": scores(py, br, args.raw) if args.raw else None,
         "stages": speed_table(py, br),
-        "memory": memory(
-            py, br, read_json(args.mem_python), read_json(args.mem_browser)
-        ),
+        "memory": memory(py, br, read_json(args.mem_python), read_json(args.mem_browser)),
         "wall_measured_s": {
             "python": (read_json(args.mem_python) or {}).get("wall_s"),
             "browser_click_to_done": (read_json(args.job_browser) or {}).get(
@@ -558,9 +521,7 @@ def main() -> None:
             "browser": br["report"].get("counts"),
         },
     }
-    m["figure_pairs"] = figure(
-        py, br, fm["ip"], fm["ib"], r, fps, args.out / "figure.png"
-    )
+    m["figure_pairs"] = figure(py, br, fm["ip"], fm["ib"], r, fps, args.out / "figure.png")
     (args.out / "metrics.json").write_text(json.dumps(m, indent=1, default=str))
     write_stages_csv(m["stages"], args.out / "stages.csv")
     (args.out / "README.md").write_text(readme(m, args))

@@ -122,6 +122,7 @@ impl StreamSolver {
             p.median_ksize,
             p.tophat_wnd,
             p.motion_before_tophat,
+            p.motion_fill == "template",
             None,
         ))
     }

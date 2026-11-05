@@ -2,10 +2,12 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "@playwright/test";
 
-// Same look: main's `minime serve` (port 8799) and the browser build (port 8797) show the same run
-// folder, and e2e/look.spec.ts compares their pages screenshot by screenshot. Both servers are
-// started here and never reused. Needs the e2e run `playwright.config.ts` makes; set
-// `MINIME_PYTHON` if the venv is not `../.venv`.
+// Same look: main's `minime serve` (port 8799 or LOOK_PY_PORT) and the browser build (port 8797 or
+// LOOK_BR_PORT) show the same run folder, and e2e/look.spec.ts compares their pages screenshot by
+// screenshot. Both servers are started here and never reused. Needs the e2e run
+// `playwright.config.ts` makes; set `MINIME_PYTHON` if the venv is not `../.venv`.
+const pyPort = Number(process.env.LOOK_PY_PORT ?? 8799);
+const brPort = Number(process.env.LOOK_BR_PORT ?? 8797);
 const here = fileURLToPath(new URL(".", import.meta.url));
 const py = process.env.MINIME_PYTHON ?? resolve(here, "../.venv/bin/python");
 const data = resolve(here, "e2e/.data");
@@ -19,15 +21,14 @@ export default defineConfig({
   use: { browserName: "chromium", viewport: { width: 1280, height: 900 } },
   webServer: [
     {
-      command: `"${py}" e2e/make_run.py "${data}" && MINIME_CACHE="${data}/look-cache" "${py}" -m minime serve "${data}" --no-browser --port 8799 --token e2e`,
-      url: "http://127.0.0.1:8799/",
+      command: `"${py}" e2e/make_run.py "${data}" && MINIME_CACHE="${data}/look-cache" "${py}" -m minime serve "${data}" --no-browser --port ${pyPort} --token e2e`,
+      url: `http://127.0.0.1:${pyPort}/`,
       timeout: 300_000,
       reuseExistingServer: false,
     },
     {
-      command:
-        "npx vite build --mode browser && npx vite preview --mode browser --outDir dist-browser --port 8797 --strictPort",
-      url: "http://127.0.0.1:8797/",
+      command: `npx vite build --mode browser && npx vite preview --mode browser --outDir dist-browser --port ${brPort} --strictPort --host 127.0.0.1`,
+      url: `http://127.0.0.1:${brPort}/`,
       timeout: 300_000,
       reuseExistingServer: false,
     },

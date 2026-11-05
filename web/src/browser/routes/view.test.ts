@@ -68,13 +68,14 @@ describe("view routes on the e2e run", () => {
   it("answers seeds and units with one entry per footprint", async () => {
     const seeds = await getJSON<Record<string, number[][]>>(`/runs/${rid}/seeds`);
     expect(Object.keys(seeds)).toEqual(["init", "pnr", "merged"]);
-    expect(seeds.init.length).toBe(66);
+    // the e2e run's counts since the Nov 2026 motion defaults (its 7 cells; 15 units before)
+    expect(seeds.init.length).toBe(56);
     expect(seeds.merged[0]).toHaveLength(2);
     const fin = await getJSON<Units>(`/runs/${rid}/units`);
-    expect(fin.units.map((u) => u.id)).toEqual(Array.from({ length: 15 }, (_, k) => k));
+    expect(fin.units.map((u) => u.id)).toEqual(Array.from({ length: 7 }, (_, k) => k));
     expect(fin.units.every((u) => typeof u.peak === "number")).toBe(true);
     const init = await getJSON<Units>(`/runs/${rid}/units?stage=init`);
-    expect([init.stage, init.units.length, init.units[0].peak]).toEqual(["init", 17, null]);
+    expect([init.stage, init.units.length, init.units[0].peak]).toEqual(["init", 7, null]);
   });
 
   it("checks the stage, the source and the frame number like main", async () => {
@@ -147,7 +148,7 @@ describe("a run folder without its optional files", () => {
   it("still answers what the folder holds", async () => {
     const r = `/runs/${rid}`;
     expect((await getArray(`${r}/image/rank`)).shape).toEqual([64, 64]);
-    expect((await getJSON<Units>(`${r}/units`)).units).toHaveLength(15);
+    expect((await getJSON<Units>(`${r}/units`)).units).toHaveLength(7);
   });
 });
 

@@ -10,7 +10,7 @@
 
 use crate::filters::bandpass_taps;
 use crate::motion::{registration_from_denoised, Correlator, MotionParams};
-use crate::preprocess::{median_blur, shift, tophat};
+use crate::preprocess::{median_blur, shift, shift_replicate, tophat};
 use serde::Serialize;
 
 /// Settings of the GPU kernels for one stage (`web/src/gpu/kernels.ts`).
@@ -28,6 +28,9 @@ pub struct Kernels {
     /// `hi / 2` on the half-resolution image); empty for a stage without it (the streaming pass).
     pub u8taps: Vec<u32>,
     pub f32taps: Vec<f32>,
+    /// The warp of the denoised frame replicates the edge pixels (`motion_fill = "template"`; the
+    /// CPU puts the fill image in after the top-hat).
+    pub replicate: bool,
 }
 
 /// The kernels of a stage, or why the GPU cannot give the CPU's bits for it. `band`: the
@@ -38,6 +41,7 @@ pub fn kernels(
     median: usize,
     tophat_wnd: usize,
     before_tophat: bool,
+    replicate: bool,
     band: Option<([f64; 2], usize)>,
 ) -> Result<Kernels, String> {
     if !before_tophat {
@@ -72,17 +76,20 @@ pub fn kernels(
         tophat: tophat_wnd,
         u8taps,
         f32taps,
+        replicate,
     })
 }
 
 /// The kernels of a pass-1 or template stage (its motion parameters).
 pub fn motion_kernels(p: &MotionParams) -> Result<Kernels, String> {
+    p.check()?;
     kernels(
         p.h,
         p.w,
         p.median_ksize,
         p.tophat_wnd,
         p.motion_before_tophat,
+        p.template_fill(),
         Some((p.motion_bandpass, p.motion_down)),
     )
 }
@@ -104,7 +111,12 @@ pub fn reference(raw: &[u8], p: &MotionParams, dy: f32, dx: f32) -> Result<Vec<(
     let den = median_blur(raw, h, w, p.median_ksize);
     let reg = registration_from_denoised(&den, p);
     let down = corr.downsample(&reg);
-    let blk = tophat(&shift(&den, h, w, dy, dx), h, w, p.tophat_wnd);
+    let warped_den = if p.template_fill() {
+        shift_replicate(&den, h, w, dy, dx)
+    } else {
+        shift(&den, h, w, dy, dx)
+    };
+    let blk = tophat(&warped_den, h, w, p.tophat_wnd);
     let warped_down = corr.downsample(&reg.shifted(h, w, dy, dx));
     let full = match &reg {
         crate::motion::Reg::F32(x) => f32_bytes(x),
@@ -155,10 +167,11 @@ mod tests {
         let (u8t, f32t) = bandpass_taps(1.0, 6.0);
         assert_eq!(u8t, vec![1, 14, 62, 102, 62, 14, 1]);
         assert_eq!(f32t.len(), 25);
-        assert!(kernels(100, 100, 7, 15, false, None).is_err());
-        assert!(kernels(100, 101, 7, 15, true, Some(([1.0, 6.0], 2))).is_err());
-        assert!(kernels(100, 100, 7, 15, true, Some(([1.0, 6.0], 1))).is_err());
-        assert_eq!(kernels(100, 100, 0, 0, true, None).unwrap().median, 1);
+        assert!(kernels(100, 100, 7, 15, false, false, None).is_err());
+        assert!(kernels(100, 101, 7, 15, true, false, Some(([1.0, 6.0], 2))).is_err());
+        assert!(kernels(100, 100, 7, 15, true, false, Some(([1.0, 6.0], 1))).is_err());
+        assert_eq!(kernels(100, 100, 0, 0, true, false, None).unwrap().median, 1);
+        assert!(kernels(100, 100, 7, 15, true, true, None).unwrap().replicate);
     }
 
     /// The split the GPU path takes (downsampled estimate and quality, `fold_corrected`) gives

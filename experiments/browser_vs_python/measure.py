@@ -80,9 +80,7 @@ def main() -> int:
             }
         )
     )
-    print(
-        f"exit {proc.returncode}, wall {wall:.0f} s, peak tree RSS {peak / 2**30:.2f} GiB"
-    )
+    print(f"exit {proc.returncode}, wall {wall:.0f} s, peak tree RSS {peak / 2**30:.2f} GiB")
     return proc.returncode
 
 

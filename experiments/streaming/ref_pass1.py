@@ -18,6 +18,7 @@ frames ``[t0, t1)`` and writes, under ``processed/stream/ref_pass1_<t0>_<t1>/``:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import time
 import zlib
@@ -42,6 +43,9 @@ def pass1_meta(params: Params, H: int, W: int, t0: int, t1: int) -> dict:
         "tile": params.tile,
         "seeds_wnd": params.seeds_wnd,
         "seeds_stp": params.seeds_stp,
+        "template_source": params.template_source,
+        "template_chunks": params.template_chunks,
+        "motion_fill": params.motion_fill,
     }
 
 
@@ -59,15 +63,17 @@ def tile_crcs(store: TileStore) -> np.ndarray:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--session", type=Path, default=st.DEFAULT_SESSION)
+    ap.add_argument("--baseline", default="baseline", help="the batch run whose sidecar to use")
+    ap.add_argument("--name", default="ref_pass1", help="output folder prefix")
     ap.add_argument("--t0", type=int, default=0)
     ap.add_argument("--t1", type=int, default=3000)
     a = ap.parse_args()
 
-    s = st.Session(a.session)
+    s = st.Session(a.session, baseline=a.baseline)
     params = s.params()
     sc = s.sidecar()
     full = io.probe(s.raw)
-    out = s.out(f"ref_pass1_{a.t0}_{a.t1}")
+    out = s.out(f"{a.name}_{a.t0}_{a.t1}")
     inp, ref = out / "inputs", out / "ref"
     inp.mkdir(exist_ok=True)
     ref.mkdir(exist_ok=True)
@@ -77,8 +83,12 @@ def main() -> None:
     (inp / "params.json").write_text(json.dumps(pass1_meta(params, H, W, a.t0, a.t1), indent=1))
     np.save(inp / "shifts.npy", shifts)
     np.save(inp / "template.npy", sc.template.astype(np.float32))
-
     template = pipeline._template_from_sidecar(sc, info, params)
+    if params.motion_fill == "template":  # the session's fill image, as pipeline.run uses it
+        if sc.fill is None:
+            raise SystemExit("the baseline's sidecar holds no fill image (run it again)")
+        np.save(inp / "fill.npy", sc.fill)
+        template = dataclasses.replace(template, fill=sc.fill)
     store = TileStore(ref / "tiles", tile_grid(H, W, params.tile), 1)
     store.remove()
     t = time.perf_counter()

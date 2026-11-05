@@ -9,8 +9,9 @@ use crate::avi::{self, AviIndex, ReadAt};
 use crate::cnmf::{self, CnmfParams, CnmfResult};
 use crate::compress::{self, Gaussian, Normals, Pass2Params, Recorded, TileFactors};
 use crate::factors::Factors;
+use crate::fill::FillSum;
 use crate::init::{self, InitParams, InitResult};
-use crate::motion::{self, Motion, MotionParams, Reg, TemplateBuilder};
+use crate::motion::{self, Motion, MotionParams, Reg, SpreadBuilder, SpreadStage, TemplateBuilder};
 use crate::npy;
 use crate::pass1::{self, Pass1, Pass1Params};
 use crate::preview;
@@ -199,6 +200,12 @@ pub struct MotionEngine {
     stride: usize,
     tmpl_n: usize,
     pub(crate) builder: Option<TemplateBuilder>,
+    /// `template_source = "spread"`: the template's builder (instead of `builder`)
+    spread: Option<SpreadBuilder>,
+    /// the fill image (`motion_fill = "template"`) once built; `fill_sums` while a first-frames
+    /// template's fill is being added up
+    fill: Option<Vec<u8>>,
+    fill_sums: Option<FillSum>,
     motion: Option<Motion>,
     shifts: Vec<f64>,
     quality: Vec<f32>,
@@ -210,9 +217,10 @@ pub struct MotionEngine {
 #[wasm_bindgen]
 impl MotionEngine {
     /// `files`: `params.json` (`ref_motion.py`'s inputs) and optionally `check_frames.npy`;
-    /// `seg0_frames`: frames in the first segment (the template is built from those).
+    /// `seg0_frames`: frames in the first segment (a first-frames template is built from those);
+    /// `total_frames`: the session's frames (a spread template samples them).
     #[wasm_bindgen(constructor)]
-    pub fn new(files: &Map, seg0_frames: usize) -> Result<MotionEngine, JsError> {
+    pub fn new(files: &Map, seg0_frames: usize, total_frames: usize) -> Result<MotionEngine, JsError> {
         let err = |e: String| JsError::new(&e);
         let meta: serde_json::Value = serde_json::from_slice(&map_bytes(files, "params.json").map_err(err)?)
             .map_err(|e| JsError::new(&format!("params.json: {e}")))?;
@@ -232,8 +240,15 @@ impl MotionEngine {
                 .collect(),
             Err(_) => Vec::new(),
         };
-        let n = p.template_frames.min(seg0_frames);
-        let builder = TemplateBuilder::new(&p, n).map_err(err)?;
+        p.check().map_err(err)?;
+        let (builder, spread, n) = if p.spread() {
+            let s = SpreadBuilder::new(&p, total_frames).map_err(err)?;
+            let n = s.frames().len();
+            (None, Some(s), n)
+        } else {
+            let n = p.template_frames.min(seg0_frames);
+            (Some(TemplateBuilder::new(&p, n).map_err(err)?), None, n)
+        };
         Ok(MotionEngine {
             stride: p.w,
             p,
@@ -241,7 +256,10 @@ impl MotionEngine {
             t1,
             check,
             tmpl_n: n,
-            builder: Some(builder),
+            builder,
+            spread,
+            fill: None,
+            fill_sums: None,
             motion: None,
             shifts: Vec::new(),
             quality: Vec::new(),
@@ -289,15 +307,122 @@ impl MotionEngine {
         Ok(())
     }
 
-    /// Finish the template once all its frames are in (returns its frame count).
+    /// Finish the template once all its frames are in (returns its frame count). A first-frames
+    /// template with `motion_fill = "template"` then wants its fill sums (`fill_pending`).
     pub fn build_template(&mut self) -> Result<usize, JsError> {
+        let err = |e: String| JsError::new(&e);
+        if let Some(s) = self.spread.take() {
+            let n = s.frames().len();
+            let (m, fill) = s.finish().map_err(err)?;
+            self.motion = Some(m);
+            self.fill = fill;
+            return Ok(n);
+        }
         let b = self
             .builder
             .take()
             .ok_or(JsError::new("template already built"))?;
         let n = b.pushed() / 2;
-        self.motion = Some(b.finish().map_err(|e| JsError::new(&e))?);
+        self.motion = Some(b.finish().map_err(err)?);
+        if self.p.template_fill() {
+            self.fill_sums = Some(FillSum::new(self.p.h * self.p.w));
+        }
         Ok(n)
+    }
+
+    /// `template_source = "spread"`.
+    pub fn spread(&self) -> bool {
+        self.spread.is_some()
+    }
+    /// The session frames of the template, in the order its stages take them.
+    pub fn template_frames(&self) -> Vec<u32> {
+        match &self.spread {
+            Some(s) => s.frames().iter().map(|&f| f as u32).collect(),
+            None => (0..self.tmpl_n as u32).collect(),
+        }
+    }
+    /// The spread template's stage: 0 means of the runs (`spread_add_prepped`), 1 estimates
+    /// (`spread_set_estimates` against `spread_image` with `spread_search`), 2 aligned means
+    /// (`spread_add_prepped` of the frames warped by `spread_warps`), 3 fill sums (`add_fill`
+    /// against `spread_image`), 4 done (`build_template`); 4 without a spread template.
+    pub fn spread_stage(&self) -> u32 {
+        match self.spread.as_ref().map(SpreadBuilder::stage) {
+            Some(SpreadStage::Means) => 0,
+            Some(SpreadStage::Estimate(_)) => 1,
+            Some(SpreadStage::Mean(_)) => 2,
+            Some(SpreadStage::Fill) => 3,
+            Some(SpreadStage::Done) | None => 4,
+        }
+    }
+    /// The template the current stage aligns to (its source image), empty if none.
+    pub fn spread_image(&self) -> Vec<f32> {
+        if let Some(s) = &self.spread {
+            return s.current_image().map(<[f32]>::to_vec).unwrap_or_default();
+        }
+        match (&self.motion, &self.fill_sums) {
+            (Some(m), Some(_)) => m.source_image().to_vec(),
+            _ => Vec::new(),
+        }
+    }
+    /// The search of `spread_image`'s template: twice `motion_max_shift` for the estimates,
+    /// `motion_max_shift` for the fill.
+    pub fn spread_search(&self) -> usize {
+        match self.spread.as_ref().map(SpreadBuilder::stage) {
+            Some(SpreadStage::Estimate(_)) => 2 * self.p.motion_max_shift,
+            _ => self.p.motion_max_shift,
+        }
+    }
+    /// The shifts the aligned-means stage warps the template frames by, `(n, 2)` flat.
+    pub fn spread_warps(&self) -> Vec<f64> {
+        match &self.spread {
+            Some(s) if matches!(s.stage(), SpreadStage::Mean(_)) => {
+                (0..s.frames().len()).flat_map(|i| s.warp_shift(i)).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+    /// Template frame `i`'s prepared image (stages 0 and 2, in frame order).
+    pub fn spread_add_prepped(&mut self, i: usize, prep: &[f32]) -> Result<(), JsError> {
+        let s = self.spread.as_mut().ok_or(JsError::new("no spread template"))?;
+        s.add_prepped(i, prep).map_err(|e| JsError::new(&e))
+    }
+    /// `[dy, dx, peak]` of template frames `i0, i0 + 1, ...` (stage 1, any order of calls).
+    pub fn spread_set_estimates(&mut self, i0: usize, est: &[f64]) -> Result<(), JsError> {
+        let s = self.spread.as_mut().ok_or(JsError::new("no spread template"))?;
+        for (k, e) in est.chunks_exact(3).enumerate() {
+            s.set_estimate(i0 + k, [e[0], e[1]], e[2] as f32)
+                .map_err(|e| JsError::new(&e))?;
+        }
+        Ok(())
+    }
+    /// Whether the template's fill sums are still wanted (`add_fill` against `spread_image`).
+    pub fn fill_pending(&self) -> bool {
+        self.spread_stage() == 3 || self.fill_sums.is_some()
+    }
+    /// A `SpreadWorker`'s fill sums (`take_fill`) of some template frames.
+    pub fn add_fill(&mut self, flat: &[u32]) -> Result<(), JsError> {
+        let err = |e: String| JsError::new(&e);
+        let sums = FillSum::from_flat(flat).map_err(err)?;
+        if let Some(s) = self.spread.as_mut() {
+            return s.add_fill(&sums).map_err(err);
+        }
+        let acc = self
+            .fill_sums
+            .as_mut()
+            .ok_or(JsError::new("no fill sums wanted"))?;
+        acc.merge(&sums);
+        if acc.n as usize > self.tmpl_n {
+            return Err(JsError::new("more fill frames than template frames"));
+        }
+        if acc.n as usize == self.tmpl_n {
+            self.fill = Some(acc.image());
+            self.fill_sums = None;
+        }
+        Ok(())
+    }
+    /// The fill image (`h * w` uint8), empty without one.
+    pub fn fill_image(&self) -> Vec<u8> {
+        self.fill.clone().unwrap_or_default()
     }
 
     /// Shift and quality of the next frame of `t0..t1`.
@@ -342,6 +467,13 @@ impl MotionEngine {
             ("frames_t.npy".into(), npy::write(&[k], &self.chk_t)),
             ("prep.npy".into(), npy::write(&[k, ph, pw], &self.prep_chk)),
         ];
+        if let Some(f) = &self.fill {
+            files.push(("fill.npy".into(), npy::write(&[self.p.h, self.p.w], f)));
+        } else if self.p.template_fill() {
+            return Err(JsError::new(
+                "motion_fill is \"template\" but the fill image was not built",
+            ));
+        }
         if !self.reg_chk.is_empty() {
             files.push((
                 "reg.npy".into(),
@@ -395,7 +527,9 @@ impl Pass1Engine {
             }
         }
         let m = Motion::from_template_image(&p.motion, template).map_err(err)?;
-        let pass = Pass1::new(&p, Some(m));
+        let mut pass = Pass1::new(&p, Some(m));
+        let fill = map_bytes(files, "fill.npy").ok();
+        crate::pass1::attach_fill(&mut pass, &p, fill.as_deref()).map_err(err)?;
         Ok(Pass1Engine {
             stride: p.motion.w,
             p,

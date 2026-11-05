@@ -16,7 +16,8 @@
 //! - pass 2: a worker compresses any tile of the window's tile store (`compress_at`), the
 //!   window's engine takes the factors in tile order (`set_tile`).
 
-use crate::motion::{registration_image, Correlator, Motion, MotionParams};
+use crate::fill::FillSum;
+use crate::motion::{fill_frame, registration_image, Correlator, Motion, MotionParams};
 use crate::npy;
 use crate::stream::{lane_ranges, FoldLane, LaneRange, Support, TraceModel};
 use crate::wasm::{
@@ -130,16 +131,24 @@ impl StreamSolver {
     }
 
     /// Solve `n` frames from `t` on whose pixels were preprocessed elsewhere (the GPU path:
-    /// `prep().frame` of each, `n * H * W` uint8).
+    /// `prep().frame` of each without the template fill, `n * H * W` uint8; the fill goes in here).
     pub fn solve_prepped(&mut self, t: usize, n: usize, y8: &[u8]) -> Result<(), JsError> {
-        let px = self.inp.params.h * self.inp.params.w;
+        let (h, w) = (self.inp.params.h, self.inp.params.w);
+        let px = h * w;
         if t + n > self.inp.params.t || y8.len() != n * px {
             return Err(JsError::new(
                 "prepared frames past the inputs' T or of the wrong size",
             ));
         }
-        for f in y8.chunks_exact(px) {
-            self.solve_y8(f);
+        for (i, f) in y8.chunks_exact(px).enumerate() {
+            if self.inp.fill.is_some() {
+                let (dy, dx) = (self.inp.shifts[2 * (t + i)], self.inp.shifts[2 * (t + i) + 1]);
+                let mut f = f.to_vec();
+                self.inp.prep().fill_border(&mut f, h, w, dy, dx);
+                self.solve_y8(&f);
+            } else {
+                self.solve_y8(f);
+            }
         }
         Ok(())
     }
@@ -336,6 +345,90 @@ impl TemplateWorker {
         Ok(self
             .corr
             .prep(&reg.shifted(self.p.h, self.p.w, dy as f32, dx as f32)))
+    }
+}
+
+/// A worker's share of a spread template (`motion::SpreadBuilder`, which the run's `MotionEngine`
+/// holds): per session frame `prep` (the means), `estimate` against the template `set_template`
+/// gave (the alignment rounds), `prep_warped` (the warped means) and `fill_add` (the fill sums,
+/// handed over with `take_fill`). The run's worker uses one too when it has no pool.
+#[wasm_bindgen]
+pub struct SpreadWorker {
+    p: MotionParams,
+    corr: Correlator,
+    tmpl: Option<Motion>,
+    fill: FillSum,
+    stride: usize,
+}
+
+#[wasm_bindgen]
+impl SpreadWorker {
+    /// `params_json`: the stage's `params.json` (the motion parameters; extra keys are ignored).
+    #[wasm_bindgen(constructor)]
+    pub fn new(params_json: &[u8]) -> Result<SpreadWorker, JsError> {
+        let err = |e: String| JsError::new(&e);
+        let p: MotionParams =
+            serde_json::from_slice(params_json).map_err(|e| JsError::new(&format!("params.json: {e}")))?;
+        p.check().map_err(err)?;
+        crate::preprocess::check_median_ksize(p.median_ksize).map_err(err)?;
+        let corr = Correlator::new(p.h, p.w, p.motion_down).map_err(err)?;
+        Ok(SpreadWorker {
+            stride: p.w,
+            fill: FillSum::new(p.h * p.w),
+            p,
+            corr,
+            tmpl: None,
+        })
+    }
+    pub fn set_stride(&mut self, stride: usize) {
+        self.stride = stride;
+    }
+    /// The template the next frames align to: its source image (`MotionEngine::spread_image`) and
+    /// search (`spread_search`).
+    pub fn set_template(&mut self, image: &[f32], search: usize) -> Result<(), JsError> {
+        let corr = Correlator::new(self.p.h, self.p.w, self.p.motion_down).map_err(|e| JsError::new(&e))?;
+        let (ph, pw) = corr.prep_shape();
+        if image.len() != ph * pw {
+            return Err(JsError::new("the template image has the wrong size"));
+        }
+        self.tmpl = Some(Motion::from_image(corr, image.to_vec(), search));
+        Ok(())
+    }
+    fn raw(&self, chunk: &[u8]) -> Vec<u8> {
+        unpad(chunk, self.p.h, self.p.w, self.stride)
+    }
+    fn template(&self) -> Result<&Motion, JsError> {
+        self.tmpl.as_ref().ok_or(JsError::new("set_template first"))
+    }
+    /// The frame's registration image, prepared (a run's mean).
+    pub fn prep(&self, chunk: &[u8]) -> Vec<f32> {
+        self.corr.prep(&registration_image(&self.raw(chunk), &self.p))
+    }
+    /// `[dy, dx, peak]`: the frame's shift and normalised correlation peak against the template.
+    pub fn estimate(&self, chunk: &[u8]) -> Result<Vec<f64>, JsError> {
+        let ([dy, dx], peak) = self
+            .template()?
+            .estimate_peak(&registration_image(&self.raw(chunk), &self.p));
+        Ok(vec![dy, dx, f64::from(peak)])
+    }
+    /// The frame's registration image warped by `(dy, dx)`, prepared (an aligned mean).
+    pub fn prep_warped(&self, chunk: &[u8], dy: f64, dx: f64) -> Vec<f32> {
+        let (h, w) = (self.p.h, self.p.w);
+        let reg = registration_image(&self.raw(chunk), &self.p);
+        self.corr.prep(&reg.shifted(h, w, dy as f32, dx as f32))
+    }
+    /// Add the frame's corrected image to this worker's fill sums (template: the final one).
+    pub fn fill_add(&mut self, chunk: &[u8]) -> Result<(), JsError> {
+        let raw = self.raw(chunk);
+        let (top, r) = fill_frame(&raw, self.template()?, &self.p);
+        self.fill.add(&top, self.p.h, self.p.w, r);
+        Ok(())
+    }
+    /// The fill sums since the last call (flat, `MotionEngine::spread_add_fill`), reset.
+    pub fn take_fill(&mut self) -> Vec<u32> {
+        let out = self.fill.to_flat();
+        self.fill = FillSum::new(self.p.h * self.p.w);
+        out
     }
 }
 

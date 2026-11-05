@@ -86,13 +86,13 @@ decoded once more at startup to count its frames.
 | path | content |
 |---|---|
 | `params.json` | every parameter used, raw folder and content hash, frame rate given with `--fps`, package version |
-| `motion/` | shifts (T, 2), template (the prepared half-resolution image, about H/2 x W/2), per-frame quality; reused on a rerun with the same raw data and motion params |
+| `motion/` | shifts (T, 2), template (the prepared half-resolution image, about H/2 x W/2), per-frame quality, the fill image (H x W uint8, with `motion_fill: "template"`); reused on a rerun with the same raw data and motion params |
 | `factors/` | per-tile factors `W, V, mean, sigma, energy`, max projection, block maxima |
 | `cnmf/A.npz` | footprints, scipy CSR (K, H*W) float32; row maximum 1, except units merged after the last spatial update (mean of the merged rows, maximum can be below 1) |
 | `cnmf/C.npy`, `cnmf/YrA.npy` | (K, T) float32: trace fed to the last spatial update; final residual trace |
 | `cnmf/b.npy`, `cnmf/f.npy` | background footprint (H, W) and trace (T,) |
 | `cnmf/units.csv` | unit_id, centroid_h, centroid_w, size_px, peak |
-| `report.json` | wall seconds per stage, seed/unit counts per stage, bytes, peak RSS |
+| `report.json` | wall seconds per stage, seed/unit counts per stage, bytes, peak RSS; `motion` holds the largest shift, the median quality, the frames at `motion_max_shift` and a `warning` when they are more than 0.1 % (also printed by `minime run`) |
 
 The temporary tile store (`tiles/`, same size as the raw data) is deleted after pass 2.
 
@@ -110,7 +110,7 @@ the rest come from `RUN_DIR/params.json`. Output: `RUN_DIR/reruns/NAME/` with `p
 footprints after initA, init merge and every spatial update and merge) and symlinks
 `factors`, `motion` to the source run, so the tools that read a run work on it.
 Parameters that shaped the factors (`median_ksize`, `tophat_wnd`, `motion_*`,
-`template_frames`, `tile`, `svd_*`, `rank_*`, `noise_freq`) are refused; `seeds_wnd` / `seeds_stp` only
+`template_*`, `tile`, `svd_*`, `rank_*`, `noise_freq`) are refused; `seeds_wnd` / `seeds_stp` only
 if their windows fall on the block edges pass 1 stored. Same parameters give the same result
 as the full run (tested).
 
@@ -221,12 +221,21 @@ To change some, write a JSON file with only those keys and pass `--params`:
     {"pnr_thres": 2.5, "gmm_refine": true, "workers": 6}
 
 A run's own `params.json` can be passed back to `--params` to reproduce it (its `raw_dir`,
-`raw_hash` and `minime_version` entries are ignored; `--workers` still overrides).
+`raw_hash` and `minime_version` entries are ignored; `--workers` still overrides). A run from
+before Nov 2026 has no `template_source` / `motion_fill`: it is read back with the values it
+used, `"first"` and `"zero"`.
 
 Defaults that differ from the Minian notebook: `gmm_refine` is off (Minian's reference run also skipped
 it), and `motion_before_tophat` is on: shifts are estimated on a band-passed copy of the
 denoised frame, then the frame is warped and tophat-filtered (on a real session the tophat
-removed the vessels registration needs). Other defaults were checked on synthetic data only.
+removed the vessels registration needs). The motion template is built from frames spread
+over the session (`template_source: "spread"`: 10 runs of 20 frames, aligned twice, put at
+their median position) instead of the first 200 frames, and the border a shifted frame has
+no data for gets the template frames' mean corrected image (`motion_fill: "template"`)
+instead of 0: a first-frames template sits where the field was in the first seconds, often
+pixels away from where it is for the rest of the session, and a zero band that comes and goes
+with the motion turned into false units along the edges. `"first"` and `"zero"` give the
+runs from before Nov 2026. Other defaults were checked on synthetic data only.
 
 Minian's `sparse_penal` is `sparse_snr` here, with `sparse_snr = sparse_penal * sqrt(T)` for
 the session length `T` it was tuned on (0.01 on a 10,000-frame session is `sparse_snr: 1`,
@@ -256,7 +265,8 @@ Peak disk = raw size (tile store) + factors (52 MB / 93 MB).
 `minime synth OUT --minutes 5 --side 600 --scenario realistic` writes a session with known
 truth (`meta.json`, `truth.npz`); `minime score RUN` scores a run against it, with recall
 per category of hard cells (overlapping, near a vessel, late-active, small, dim, edge, under
-an out-of-focus cell) and the false units on out-of-focus cells. Scenarios
+an out-of-focus cell), the false units on out-of-focus cells and the false units within
+15 px of a frame edge (`false_edge_units`). Scenarios
 (`minime.testing.synth.SCENARIOS`): `clean`, one per effect (`background`, `neuropil`,
 `overlap`, `late_active`, `bleach`, `vessels`, `large_motion`, `nonrigid`, `dropped`,
 `cell_variation`, `low_snr`, `bursts`, `hemo`, `edge`, `out_of_focus`), `realistic` (all
@@ -266,7 +276,9 @@ lens: lens vignetting, shot noise, dim and mostly quiet cells, fitted to a real 
 `--minutes 30 --fps 20 --scenario grin_v4`, 13 GB). `truth.npz` holds the scoring arrays and the
 footprints, so a downloaded session scores without regenerating it.
 In Python, `SynthOptions` sets any combination; the defaults reproduce the legacy session
-byte for byte. The truth (`synth_setup`) has per-cell size, amplitude, spikes, first active
+byte for byte. `write_session(..., shifts=...)` replaces the random walk with a given integer
+(T, 2) motion trace, same cells; `minime.testing.motion_traces` has an offset, a drift and
+sustained jumps (`tests/test_motion_scenarios.py` counts their false edge units). The truth (`synth_setup`) has per-cell size, amplitude, spikes, first active
 frame and overlap group, the background and neuropil components, the vessel mask, the warp,
 the bleaching envelope and the frame map; `detectable` marks the cells a pipeline can be
 expected to find. `tests/test_synth_effects.py` shows what the pipeline does with each

@@ -7,6 +7,7 @@ factors: seeds_init, pnr_refine, gmm_refine (opt-in), seeds_merge, initA, initC,
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import shutil
@@ -132,6 +133,7 @@ def _save_sidecar(
     params: Params,
     raw_hash: str,
     workers: int,
+    fill: np.ndarray | None = None,
 ) -> None:
     motion.save_sidecar(
         out / "motion",
@@ -142,6 +144,7 @@ def _save_sidecar(
             params=params.motion_params(),
             raw_hash=raw_hash,
             meta={"workers": workers, "pass1_seconds": p1.seconds},
+            fill=fill,
         ),
     )
 
@@ -354,6 +357,29 @@ def _write_params(
 # ---------------------------------------------------------------------------
 
 
+# share of frames at the motion search's edge above which report.json warns
+MAX_SHIFT_WARN = 0.001
+
+
+def motion_report(p1: pass1.Pass1Result, params: Params, sidecar_reused: bool) -> dict:
+    """report.json's ``motion`` entry, with a ``warning`` when more than ``MAX_SHIFT_WARN``
+    of the frames sit at ``motion_max_shift`` (their motion may be larger)."""
+    bound = motion.at_max_shift(p1.shifts, params.motion_max_shift, params.motion_down)
+    out: dict = {
+        "sidecar_reused": sidecar_reused,
+        "quality_median": float(np.median(p1.quality)),
+        "max_abs_shift_px": float(np.abs(p1.shifts).max()),
+        "frames_at_max_shift": int(bound.sum()),
+    }
+    if bound.mean() > MAX_SHIFT_WARN:
+        out["warning"] = (
+            f"{int(bound.sum())} of {bound.size} frames ({100 * bound.mean():.2f} %) hit "
+            f"motion_max_shift = {params.motion_max_shift} px: their motion may be larger "
+            "(raise motion_max_shift, or check those frames for corruption)"
+        )
+    return out
+
+
 def run(
     raw_dir: Path,
     params: Params,
@@ -393,6 +419,9 @@ def run(
         else:
             template = _template_from_sidecar(sc, info, params)
             template_img = sc.template
+            if params.motion_fill == "template":  # sidecars before Nov 2026 have no fill
+                fill = sc.fill if sc.fill is not None else pass1.build_template(info, params).fill
+                template = dataclasses.replace(template, fill=fill)
     grid = tile_grid(info.height, info.width, params.tile)
     store = TileStore(out / "tiles", grid, pass1.n_parts_for(info, workers))
     try:
@@ -401,7 +430,7 @@ def run(
                 info, store, template, params, workers, shifts=None if sc is None else sc.shifts
             )
         with timer("sidecar_save"):
-            _save_sidecar(out, p1, template_img, params, raw_hash, workers)
+            _save_sidecar(out, p1, template_img, params, raw_hash, workers, template.fill)
         with timer("pass2"):
             tiles = pass2.run_pass2(store, grid, params, workers)
         fac = pass2.build_factors(info, grid, p1, tiles, params)
@@ -429,11 +458,7 @@ def run(
     timer.to_json(
         out / "report.json",
         {
-            "motion": {
-                "sidecar_reused": sc is not None,
-                "quality_median": float(np.median(p1.quality)),
-                "max_abs_shift_px": float(np.abs(p1.shifts).max()),
-            },
+            "motion": motion_report(p1, params, sc is not None),
             "bytes": {
                 "raw": int(sum(p.stat().st_size for p in info.segments)),
                 "store_peak": int(store_peak),

@@ -250,8 +250,15 @@ export type RunParts = {
   windows: WindowParts[];
   /** The per-pixel maximum of the windows' max projections (`foldMaxProj`), H * W values. */
   maxProj: Float32Array;
-  /** The motion stage's `shifts.npy`, `template.npy` and `quality.npy`, and its parameters. */
-  motion: { shifts: Uint8Array; template: Uint8Array; quality: Uint8Array; params: Record<string, unknown> };
+  /** The motion stage's `shifts.npy`, `template.npy`, `quality.npy` and (template fill) `fill.npy`, and
+   * its parameters. */
+  motion: {
+    shifts: Uint8Array;
+    template: Uint8Array;
+    quality: Uint8Array;
+    fill?: Uint8Array;
+    params: Record<string, unknown>;
+  };
   /** The stitch's outputs: `A_{data,indices,indptr}.npy`, `sn.npy`, `bright.npy`. */
   stitch: Map<string, Uint8Array>;
   /** The streaming pass's outputs: `b.npy`, `Amerged_{data,indices,indptr}.npy`. */
@@ -286,10 +293,13 @@ export async function writeRun(out: Dir, r: RunParts): Promise<void> {
   await out.write("progress.jsonl", `${r.progress.join("\n")}\n`);
   const motion = await walk(out, "motion", { create: true });
   await writeJSON(motion, "meta.json", { format_version: 1, params: r.motion.params, raw_hash: "" });
-  await motion.write(
-    "arrays.npz",
-    await npzBlob({ shifts: r.motion.shifts, template: r.motion.template, quality: r.motion.quality }),
-  );
+  const arrays: Record<string, Uint8Array> = {
+    shifts: r.motion.shifts,
+    template: r.motion.template,
+    quality: r.motion.quality,
+  };
+  if (r.motion.fill) arrays.fill = r.motion.fill;
+  await motion.write("arrays.npz", await npzBlob(arrays));
 
   const factors = await walk(out, "factors", { create: true });
   const ranks = r.windows.map((w) => Array.from(readNpy(need(w.files, "rank.npy")).data as ArrayLike<number>));

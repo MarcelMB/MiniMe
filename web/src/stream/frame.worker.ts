@@ -10,12 +10,14 @@ import init, {
   Pass1Engine,
   Pass2Engine,
   SeedsEngine,
+  SpreadWorker,
   StreamLane,
   StreamSolver,
   TemplateWorker,
 } from "./pkg/minime_core.js";
 import type { FromFrameWorker, ToFrameWorker } from "./poolProtocol";
 import { FLUSH, readTile, slabName } from "./slabs";
+import { spreadFrames } from "./spread";
 
 const post = (m: FromFrameWorker, transfer: Transferable[] = []) => self.postMessage(m, transfer);
 
@@ -28,6 +30,8 @@ let lane: StreamLane | null = null;
 let laneBounds: Uint32Array | null = null;
 let pass2: Pass2Engine | null = null;
 let template: TemplateWorker | null = null;
+/** This worker's share of a spread template (`spread.ts`; on the CPU). */
+let spread: SpreadWorker | null = null;
 /** This worker's GPU when the run turned it on (`g0`); its per-frame tasks then run their kernels there. */
 let gpu: WorkerGpu | null = null;
 /** Say once in the run's log that this worker's GPU went off, and why. */
@@ -80,6 +84,23 @@ async function handle(m: ToFrameWorker): Promise<void> {
       template.set_first(m.image);
       return post({ type: "ack", heapMb: heapMb() });
     }
+    case "u0": {
+      spread?.free();
+      spread = new SpreadWorker(m.params);
+      return post({ type: "ack", heapMb: heapMb() });
+    }
+    case "utmpl": {
+      if (!spread) throw new Error("the spread template worker is not built");
+      spread.set_template(m.image, m.search);
+      return post({ type: "ack", heapMb: heapMb() });
+    }
+    case "u1": {
+      const began = performance.now();
+      if (!spread) throw new Error("the spread template worker is not built");
+      const r = spreadFrames(spread, segs, m);
+      const bufs = [r.preps, r.est, r.fill].filter((b) => b !== undefined).map((b) => b.buffer);
+      return post({ type: "done", kind: "u1", id: m.id, ms: performance.now() - began, heapMb: heapMb(), ...r }, bufs);
+    }
     case "f0": {
       const began = performance.now();
       solver?.free();
@@ -108,8 +129,9 @@ async function handle(m: ToFrameWorker): Promise<void> {
       solver?.free();
       pass2?.free();
       template?.free();
+      spread?.free();
       lane?.free();
-      solver = pass2 = template = lane = null;
+      solver = pass2 = template = spread = lane = null;
       laneBounds = null;
       store = null;
       return post({ type: "ack", heapMb: heapMb() });

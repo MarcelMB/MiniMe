@@ -6,6 +6,9 @@
 //! the source column of output column `x` is `x + c` for one constant `c` and both neighbours
 //! are inside the image, four columns are lerped per step from contiguous loads; every other
 //! pixel (the border strips, rows whose source rows leave the image) takes the scalar path.
+//!
+//! Outside the image a tap reads 0 (`BORDER_CONSTANT`) or, with `replicate`, the nearest edge
+//! pixel (`BORDER_REPLICATE`: the tap's row and column clamped into the image), as OpenCV 5 does.
 
 use crate::fsimd::{ld, narrow16, st, sub, widen16, D4};
 use crate::preprocess::fma;
@@ -96,9 +99,9 @@ fn columns(w: usize, dx: f32) -> Cols {
     Cols { ax, x0, c, xa, xb }
 }
 
-/// `out(y, x) = src(y + dy, x + dx)` by fused bilinear lerps, zeros outside, one float32 row at
-/// a time to `put(y, row)`.
-fn warp<R: Rows>(src: &R, h: usize, dy: f32, dx: f32, mut put: impl FnMut(usize, &[f32])) {
+/// `out(y, x) = src(y + dy, x + dx)` by fused bilinear lerps, zeros outside (the edge pixels
+/// with `replicate`), one float32 row at a time to `put(y, row)`.
+fn warp<R: Rows>(src: &R, h: usize, dy: f32, dx: f32, replicate: bool, mut put: impl FnMut(usize, &[f32])) {
     let w = src.width();
     if w == 0 {
         return;
@@ -107,6 +110,7 @@ fn warp<R: Rows>(src: &R, h: usize, dy: f32, dx: f32, mut put: impl FnMut(usize,
     let (mut buf0, mut buf1) = (Vec::new(), Vec::new());
     let mut out = vec![0f32; w];
     let at = |r: Option<&[f32]>, xx: i64| match r {
+        Some(r) if replicate => r[xx.clamp(0, w as i64 - 1) as usize],
         Some(r) if xx >= 0 && xx < w as i64 => r[xx as usize],
         _ => 0.0,
     };
@@ -115,9 +119,10 @@ fn warp<R: Rows>(src: &R, h: usize, dy: f32, dx: f32, mut put: impl FnMut(usize,
         let y0f = sy.floor();
         let (y0, ay) = (y0f as i64, sy - y0f);
         let y1 = y0.saturating_add(1);
-        let inside = |yy: i64| yy >= 0 && yy < h as i64;
-        let r0 = inside(y0).then(|| src.row(y0 as usize, &mut buf0));
-        let r1 = inside(y1).then(|| src.row(y1 as usize, &mut buf1));
+        let inside = |yy: i64| (yy >= 0 && yy < h as i64) || (replicate && h > 0);
+        let clamp = |yy: i64| yy.clamp(0, h as i64 - 1) as usize;
+        let r0 = inside(y0).then(|| src.row(clamp(y0), &mut buf0));
+        let r1 = inside(y1).then(|| src.row(clamp(y1), &mut buf1));
         let pixel = |x: usize| -> f32 {
             let (x0, ax) = (cols.x0[x], cols.ax[x]);
             let (p00, p01, p10, p11) = (at(r0, x0), at(r0, x0 + 1), at(r1, x0), at(r1, x0 + 1));
@@ -148,11 +153,12 @@ fn warp<R: Rows>(src: &R, h: usize, dy: f32, dx: f32, mut put: impl FnMut(usize,
     }
 }
 
-/// `preprocess::shift` (uint8; float32 lerps, round half to even).
-pub fn shift_u8(src: &[u8], h: usize, w: usize, dy: f32, dx: f32) -> Vec<u8> {
+/// `preprocess::shift` (uint8; float32 lerps, round half to even); `replicate`: the edge pixels
+/// outside the image instead of 0.
+pub fn shift_u8(src: &[u8], h: usize, w: usize, dy: f32, dx: f32, replicate: bool) -> Vec<u8> {
     assert_eq!(src.len(), h * w);
     let mut out = vec![0u8; h * w];
-    warp(&U8Rows { src, w }, h, dy, dx, |y, row| {
+    warp(&U8Rows { src, w }, h, dy, dx, replicate, |y, row| {
         let (blocks, rest) = row.as_chunks::<16>();
         let (o, o_rest) = out[y * w..(y + 1) * w].as_chunks_mut::<16>();
         for (b, o) in blocks.iter().zip(o) {
@@ -169,7 +175,7 @@ pub fn shift_u8(src: &[u8], h: usize, w: usize, dy: f32, dx: f32) -> Vec<u8> {
 pub fn shift_f32(src: &[f32], h: usize, w: usize, dy: f32, dx: f32) -> Vec<f32> {
     assert_eq!(src.len(), h * w);
     let mut out = vec![0f32; h * w];
-    warp(&F32Rows { src, w }, h, dy, dx, |y, row| {
+    warp(&F32Rows { src, w }, h, dy, dx, false, |y, row| {
         out[y * w..(y + 1) * w].copy_from_slice(row)
     });
     out

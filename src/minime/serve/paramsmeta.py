@@ -18,6 +18,10 @@ GROUPS: dict[str, list[str]] = {
         "template_frames",
         "motion_before_tophat",
         "motion_bandpass",
+        "template_source",
+        "template_chunks",
+        "motion_fill",
+        "motion_outlier",
     ],
     "Tiling + compression": [
         "tile",
@@ -60,6 +64,13 @@ HELP: dict[str, str] = {
     "template_frames": "Frames averaged into the motion template.",
     "motion_before_tophat": "Estimate motion before the tophat, on band-passed frames.",
     "motion_bandpass": "Difference-of-Gaussians sigmas (px) of the band-pass for motion.",
+    "template_source": "Motion template from frames spread over the session ('spread') or "
+    "from the first frames ('first', before Nov 2026).",
+    "template_chunks": "Runs of frames spread over the session for a 'spread' template.",
+    "motion_fill": "What motion correction puts where a shifted frame has no data: the "
+    "template frames' mean ('template') or 0 ('zero', before Nov 2026).",
+    "motion_outlier": "Replace a shift this many px off its neighbours when the frame matches "
+    "the template badly (0 = off).",
     "tile": "Tile side in px for the low-rank compression.",
     "svd_k0": "Starting rank of each tile's randomized SVD.",
     "svd_power_iter": "Power iterations of the randomized SVD.",
