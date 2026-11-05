@@ -34,6 +34,7 @@ pub mod poolio;
 pub mod preprocess;
 pub mod preview;
 pub mod prof;
+pub mod score;
 pub mod seeds;
 pub mod simd;
 pub mod stitch;
