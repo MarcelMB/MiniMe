@@ -29,8 +29,10 @@ import stream as st
 from minime import io
 
 
-def run_windows(s: st.Session, mode: str, length: int, out: Path) -> list[st.WindowUnits]:
-    """Units of every window (each saved, so an interrupted run resumes)."""
+def run_windows(
+    s: st.Session, mode: str, length: int, out: Path, n: int | None = None
+) -> list[st.WindowUnits]:
+    """Units of every window, or of the first ``n`` (each saved, so an interrupted run resumes)."""
     params = s.params()
     H, W, T = s.shape()
     if mode == "subset":
@@ -39,6 +41,7 @@ def run_windows(s: st.Session, mode: str, length: int, out: Path) -> list[st.Win
     else:
         info, sc = io.probe(s.raw), s.sidecar()
         wins = st.time_windows(T, length, st.segment_starts(info))
+    wins = wins[:n]
     units = []
     for t0, t1 in wins:
         path = out / f"win_{t0:06d}_{t1:06d}.npz"
@@ -81,16 +84,21 @@ def main() -> None:
     ap.add_argument("--mode", choices=("subset", "fresh"), default="subset")
     ap.add_argument("--windows", type=int, nargs="+", default=[1000, 3000, 6000])
     ap.add_argument("--cos", type=float, default=0.7, help="stitch threshold (footprint cosine)")
+    ap.add_argument("--baseline", default="baseline", help="the batch run to start from")
+    ap.add_argument("--name", help="output folder (default t1_<mode>)")
+    ap.add_argument("--n", type=int, help="first n windows only")
     a = ap.parse_args()
 
-    s = st.Session(a.session)
-    root = s.out(f"t1_{a.mode}")
+    s = st.Session(a.session, baseline=a.baseline)
+    name = a.name or f"t1_{a.mode}"
+    root = s.out(name)
     shifts = s.sidecar().shifts
-    summary = {"baseline": st.brief(s.baseline_score()), "cos": a.cos, "runs": {}}
+    base = s.baseline_score() if (s.run_dir / "score.json").exists() else None
+    summary = {"baseline": base and st.brief(base), "cos": a.cos, "runs": {}}
     for length in a.windows:
         print(f"window {length} frames ({a.mode})", flush=True)
-        out = s.out(f"t1_{a.mode}/w{length}")
-        units = run_windows(s, a.mode, length, out)
+        out = s.out(f"{name}/w{length}")
+        units = run_windows(s, a.mode, length, out, a.n)
         if not any(u.A.shape[0] for u in units):
             print("  no units in any window")
             continue

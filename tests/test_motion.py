@@ -127,6 +127,11 @@ def test_sidecar_roundtrip_and_validation(tmp_path):
     )
     assert motion.load_if_valid(tmp_path / "motion", "abc", sc.params, 11) is None
     assert motion.load_if_valid(tmp_path / "nope", "abc", sc.params, 10) is None
+    assert back.fill is None  # zero fill: no fill image stored
+    sc.fill = np.full((8, 8), 7, np.uint8)
+    motion.save_sidecar(tmp_path / "motion", sc)
+    back = motion.load_sidecar(tmp_path / "motion")
+    assert back.fill.dtype == np.uint8 and np.array_equal(back.fill, sc.fill)
 
 
 def test_template_image_shape_for_odd_sizes():
@@ -155,3 +160,132 @@ def test_template_image_shape_for_odd_sizes():
 def test_params_refuse_motion_down_other_than_1_or_2(down):
     with pytest.raises(ValueError, match="motion_down"):
         Params(motion_down=down)
+
+
+def _shifted_movie(shifts: np.ndarray, side: int = 96, seed: int = 0) -> np.ndarray:
+    """Blob texture moved rigidly by integer (dy, dx) per frame, float32 (``estimate`` of a
+    frame at ``d`` vs a template at ``0`` is ``-d``)."""
+    import cv2
+
+    rng = np.random.default_rng(seed)
+    pad = side + 40
+    tex = cv2.GaussianBlur(rng.normal(0, 1, (pad, pad)).astype(np.float32), (0, 0), 2.0)
+    out = np.empty((len(shifts), side, side), np.float32)
+    for t, (dy, dx) in enumerate(shifts.astype(int)):
+        out[t] = tex[20 + dy : 20 + dy + side, 20 + dx : 20 + dx + side]
+        out[t] += rng.normal(0, 0.05, (side, side)).astype(np.float32)
+    return out
+
+
+def test_make_template_defaults_unchanged():
+    """iters=1, chunks=1, centre="mean" is the old align-once-then-average template."""
+    rng = np.random.default_rng(1)
+    f = _shifted_movie(rng.integers(-3, 4, (40, 2)))
+    t0 = motion._mean_template(f, 2)
+    old = motion._mean_template(motion.apply_shifts(f, motion.estimate(f, t0, 20)), 2)
+    assert np.array_equal(motion.make_template(f, 2, 20).fft, old.fft)
+
+
+def test_spread_template_sits_at_median_position():
+    """Chunks at two positions (6 of 10 at (3, 2)): the median-centred template takes the
+    majority position, not the blur between them."""
+    pos = np.repeat([[3, 2]] * 6 + [[-5, -4]] * 4, 10, axis=0)
+    f = _shifted_movie(pos)
+    t = motion.make_template(f, 2, 20, iters=2, chunks=10, centre="median")
+    s = motion.estimate(f, t, 20)
+    assert np.allclose(s[:60], 0, atol=0.3) and np.allclose(s[60:], [8, 6], atol=0.3)
+
+
+def test_best_chunk_skips_corrupt_and_minority_runs():
+    """The spread template starts from the run that agrees best with the others: not a run
+    of corrupted frames, not a run at a minority position."""
+    pos = np.repeat([[0, 0]] + [[2, -3]] * 3 + [[-6, 5]], 8, axis=0)
+    f = _shifted_movie(pos)
+    f[:8] = np.random.default_rng(5).normal(0, 1, f[:8].shape)  # run 0: noise frames
+    best = motion._best_chunk(f, 5, 2)
+    assert any(np.array_equal(best, f[k * 8 : k * 8 + 8]) for k in (1, 2, 3))
+
+
+def test_spread_template_ignores_corrupt_run():
+    """A run of noise frames does not move the spread template off the majority position."""
+    pos = np.repeat([[3, 2]] * 7 + [[-4, -4]] * 3, 10, axis=0)
+    f = _shifted_movie(pos)
+    f[:10] = np.random.default_rng(6).normal(0, 1, f[:10].shape)
+    t = motion.make_template(f, 2, 20, iters=2, chunks=10, centre="median")
+    s = motion.estimate(f, t, 20)
+    assert np.allclose(s[10:70], 0, atol=0.3) and np.allclose(s[70:], [7, 6], atol=0.3)
+
+
+def test_fix_outliers_only_touches_weak_far_frames():
+    s = np.zeros((20, 2))
+    s[5] = [15, -12]  # weak peak: corrupted frame -> replaced
+    s[12] = [6, 0]  # strong peak: fast real motion -> kept
+    peak = np.full(20, 0.5)
+    peak[5] = 0.1
+    out = motion.fix_outliers(s, peak, 3.0)
+    assert np.allclose(out[5], 0) and np.allclose(out[12], [6, 0])
+    assert np.array_equal(motion.fix_outliers(s, peak, 0.0), s)
+
+
+def test_estimate_peak_matches_estimate_and_flags_black_frames():
+    rng = np.random.default_rng(2)
+    f = _shifted_movie(rng.integers(-3, 4, (30, 2)))
+    t = motion.make_template(f, 2, 20)
+    f[7] = 0.0
+    sh, pk = motion.estimate_peak(f, t, 20)
+    assert np.array_equal(sh, motion.estimate(f, t, 20))
+    assert pk[7] == 0.0 and np.median(pk) > 0.5
+
+
+def test_apply_shifts_replicate_has_no_zero_band():
+    f = np.full((2, 20, 30), 50, np.uint8)
+    sh = np.array([[3.0, -4.0], [-2.5, 1.5]])
+    zero = motion.apply_shifts(f, sh)
+    rep = motion.apply_shifts(f, sh, replicate=True)
+    assert (zero == 0).any() and (rep == 50).all()
+    with pytest.raises(ValueError, match="motion_fill"):
+        Params(motion_fill="replicate")
+
+
+def test_fill_outside_sets_exactly_the_pixels_read_from_outside():
+    """``fill_outside`` overwrites the pixels whose bilinear source leaves the frame, which a
+    zero-filled warp of an all-255 frame shows as < 255, and nothing else."""
+    rng = np.random.default_rng(1)
+    h, w, n = 37, 53, 200
+    sh = rng.uniform(-9, 9, (n, 2))
+    sh[:10] = np.round(sh[:10])  # whole-pixel shifts: the far tap has weight 0
+    outside = motion.apply_shifts(np.full((n, h, w), 255, np.uint8), sh) < 255
+    f = rng.integers(40, 60, (n, h, w)).astype(np.uint8)
+    warped = motion.apply_shifts(f, sh, replicate=True)
+    out = motion.fill_outside(warped.copy(), sh, np.full((h, w), 7, np.uint8))
+    assert np.array_equal(out == 7, outside)
+    assert np.array_equal(out[~outside], warped[~outside])
+
+
+def test_fill_outside_example_and_fill_image():
+    rng = np.random.default_rng(4)
+    f = rng.integers(40, 60, (3, 20, 30)).astype(np.uint8)
+    sh = np.array([[0.0, 0.0], [3.0, -4.0], [-2.0, 2.0]])
+    fill = np.full((20, 30), 77, np.uint8)
+    w = motion.apply_shifts(f, sh, replicate=True)
+    out = motion.fill_outside(w.copy(), sh, fill)
+    # frame 1 reads rows y + 3 (rows 17-19 from outside) and columns x - 4 (columns 0-3)
+    assert (out[1, 17:] == 77).all() and (out[1, :, :4] == 77).all()
+    assert (out[1, :17, 4:] == w[1, :17, 4:]).all() and np.array_equal(out[0], f[0])
+    # floor of the exact mean: (10 + 30 + 31) // 3 = 23, (255 * 3) // 3 = 255
+    img = motion.fill_image(np.array([[[10, 255]], [[30, 255]], [[31, 255]]], np.uint8), 0 * sh)
+    assert img.dtype == np.uint8 and img.tolist() == [[23, 255]]
+    # only the frames holding data count: frame 1 (dy = 3) reads rows 17-19 from outside,
+    # frame 2 (dy = -2) rows 0-1, so row 19 averages frames 0 and 2, row 0 frames 0 and 1
+    f = np.stack([np.full((20, 30), v, np.uint8) for v in (10, 200, 31)])
+    img = motion.fill_image(f, sh)
+    assert img[10, 10] == (10 + 200 + 31) // 3
+    assert img[19, 10] == (10 + 31) // 2 and img[0, 10] == (10 + 200) // 2
+    assert img[19, 29] == 10  # frame 1 reads row 19, frame 2 column 29 from outside
+    assert motion.fill_image(f[1:2], sh[1:2])[19, 10] == 200  # no frame holds data
+
+
+def test_at_max_shift_flags_the_search_window_edge():
+    sh = np.array([[0.0, 0.0], [18.9, 0.0], [0.0, -19.0], [21.0, 3.0], [-5.0, 19.4]])
+    assert motion.at_max_shift(sh, 20, 2).tolist() == [False, False, True, True, True]
+    assert motion.at_max_shift(sh, 20, 1).tolist() == [False, False, False, True, False]

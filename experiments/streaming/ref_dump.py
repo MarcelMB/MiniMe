@@ -77,9 +77,11 @@ def main() -> None:
     ap.add_argument("--frames", type=int, help="first frames only (default: all)")
     ap.add_argument("--segment-frames", type=int, default=6000)
     ap.add_argument("--batch", type=int, default=100)
+    ap.add_argument("--baseline", default="baseline", help="the batch run to start from")
+    ap.add_argument("--name", default="ref", help="output folder prefix")
     a = ap.parse_args()
 
-    s = st.Session(a.session)
+    s = st.Session(a.session, baseline=a.baseline)
     params = s.params()
     H, W, T_all = s.shape()
     T = T_all if a.frames is None else a.frames
@@ -87,7 +89,7 @@ def main() -> None:
     fac = s.factors()
     ymean, sn = fac.mean_flat(), fac.sigma_flat()
     del fac
-    out = s.out(f"ref_{a.footprints}_{T}")
+    out = s.out(f"{a.name}_{a.footprints}_{T}")
     inp, ref = out / "inputs", out / "ref"
     inp.mkdir(exist_ok=True)
     ref.mkdir(exist_ok=True)
@@ -108,6 +110,7 @@ def main() -> None:
         "median_ksize": params.median_ksize,
         "tophat_wnd": params.tophat_wnd,
         "motion_before_tophat": params.motion_before_tophat,
+        "motion_fill": params.motion_fill,
         "dl_wnd": params.dl_wnd,
         "sparse_snr": params.sparse_snr,
         "size_thres": list(params.size_thres),
@@ -115,8 +118,10 @@ def main() -> None:
         "loop_merge_corr": params.loop_merge_corr,
     }
     (inp / "params.json").write_text(json.dumps(meta, indent=1))
+    if sc.fill is not None:
+        np.save(inp / "fill.npy", sc.fill)
 
-    frames = FirstFrames(io.probe(s.raw), sc.shifts, params, a.batch, limit=T)
+    frames = FirstFrames(io.probe(s.raw), sc.shifts, params, a.batch, limit=T, fill=sc.fill)
     ft, fr = check_frames(frames, T)
     np.save(ref / "frames_t.npy", ft)
     np.save(ref / "frames.npy", fr)

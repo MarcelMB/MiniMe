@@ -21,11 +21,19 @@ pub struct Params {
     pub median_ksize: usize,
     pub tophat_wnd: usize,
     pub motion_before_tophat: bool,
+    /// "template" (the inputs' `fill.npy` where a frame has no data) or "zero" (missing in
+    /// inputs written before Nov 2026)
+    #[serde(default = "zero_fill")]
+    pub motion_fill: String,
     pub dl_wnd: usize,
     pub sparse_snr: f64,
     pub size_thres: [Option<f64>; 2],
     pub noise_freq: f64,
     pub loop_merge_corr: f64,
+}
+
+fn zero_fill() -> String {
+    "zero".into()
 }
 
 /// CSR matrix, `f64` values.
@@ -811,6 +819,7 @@ mod pool_tests {
             median_ksize: 3,
             tophat_wnd: 3,
             motion_before_tophat: true,
+            motion_fill: "zero".into(),
             dl_wnd: 2,
             sparse_snr: 1.0,
             size_thres: [None, None],
