@@ -39,6 +39,7 @@ pub mod seeds;
 pub mod simd;
 pub mod stitch;
 pub mod stream;
+pub mod tune;
 pub mod warp;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
