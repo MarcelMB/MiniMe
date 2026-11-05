@@ -36,6 +36,50 @@ class Gmm1D:
         """Most likely component of each value in ``x``."""
         return _weighted_log_prob(np.ravel(x), self).argmax(1)
 
+    def upper_cut(self) -> float:
+        """One-sided threshold of a two-component fit: values from it on belong to the top.
+
+        Two clusters (each component wins at its own mean): the crossing of the weighted
+        densities between the means. One hump (one component wins at both means, the two
+        differ in width, as log PNR without edge artefacts): the crossing above the means
+        where the wider component takes over, so the upper tail; ``-inf`` when it wins
+        everywhere. ``predict`` alone is two-sided: a wide top component also claims the
+        lowest values, a narrow one drops the highest, and with near-equal means which one
+        is "top" flips with rounding.
+        """
+        if len(self.means) != 2:
+            raise ValueError(f"upper_cut needs 2 components, got {len(self.means)}")
+        lo, hi = np.argsort(self.means)
+        if self._wins(hi, lo, self.means[hi]) and self._wins(lo, hi, self.means[lo]):
+            r = self._crossings(hi, lo)
+            return float(r[(r > self.means[lo]) & (r < self.means[hi])][0])
+        wide, narrow = np.argsort(self.variances)[::-1]
+        r = self._crossings(wide, narrow)
+        return float(r.max()) if r.size else -np.inf
+
+    def _log_density(self, j: int) -> np.ndarray:
+        """``(a, b, c)``: ``log w_j + log N(x | mu_j, var_j) = a x^2 + b x + c``."""
+        m, v = self.means[j], self.variances[j]
+        return np.array(
+            [
+                -0.5 / v,
+                m / v,
+                np.log(self.weights[j]) - 0.5 * np.log(2 * np.pi * v) - 0.5 * m * m / v,
+            ]
+        )
+
+    def _wins(self, j: int, other: int, x: float) -> bool:
+        a, b, c = self._log_density(j) - self._log_density(other)
+        return bool(a * x * x + b * x + c > 0)
+
+    def _crossings(self, j: int, other: int) -> np.ndarray:
+        """Sorted real ``x`` where components ``j`` and ``other`` are equally likely."""
+        a, b, c = self._log_density(j) - self._log_density(other)
+        if a == 0:
+            return np.array([-c / b]) if b != 0 else np.empty(0)
+        r = np.roots([a, b, c])
+        return np.sort(r[np.isreal(r)].real)
+
 
 def _weighted_log_prob(x: np.ndarray, g: Gmm1D) -> np.ndarray:
     """(n, k) ``log w_k + log N(x | mu_k, var_k)``."""
