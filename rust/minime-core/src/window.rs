@@ -308,7 +308,8 @@ impl WindowSession {
         lap(2, seconds);
         let last = r.last();
         let a = last.merge.a.clone();
-        let yra = last.merge.extra.clone();
+        // the loop merges YrA as `c` and C as `extra` (see `cnmf::outputs`)
+        let yra = last.merge.c.clone();
         counts.insert("units_final".into(), a.k.into());
         let t_ = self.f.t;
         let bright: Vec<f64> = (0..a.k)
