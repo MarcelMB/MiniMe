@@ -122,6 +122,17 @@ export class Stages {
       this.open.n = n;
     }
   }
+  /** A row spanning other rows: its start event now, its end event when the returned function is
+   * called; it does not use the open-row slot, so rows started in between are unaffected. */
+  span(stage: string): (error?: boolean) => void {
+    const t = now();
+    this.emit({ stage, event: "start", t });
+    return (error = false) => {
+      const seconds = now() - t;
+      this.rows.push({ stage, seconds });
+      this.emit({ stage, event: error ? "error" : "end", t: now(), seconds, n: 0 });
+    };
+  }
   end(error = false, n?: number) {
     if (!this.open) return;
     const seconds = now() - this.open.t;
@@ -233,6 +244,7 @@ export async function rerun(
   name: string,
   progress: Progress,
   workers?: TuneWorkers,
+  shared?: Stages,
 ): Promise<Dir> {
   if (!(workers && name === AUTO)) checkRerunName(name); // auto-tune's own rerun may use the reserved name
   checkWindow2(params);
@@ -245,7 +257,8 @@ export async function rerun(
   const runSession = enc(sessionFor(H, W, base));
   const own = !workers;
   const out = own ? await resetRerunDir(run, name) : await walk(run.dir, `reruns/${name}`, { create: true });
-  const stages = new Stages(progress, out);
+  const stages = shared ?? new Stages(progress, out);
+  const rows0 = stages.rows.length; // the report holds this rerun's own rows only
   await out.write(
     "params.json",
     JSON.stringify({
@@ -267,6 +280,7 @@ export async function rerun(
       await tw.load(loads, await windowBytes(run));
     }
     checkCancel(progress);
+    if (workers) workers.clearCaps(); // the final parameters run uncapped
     const trial = await tw.trial(sessionBytes, PLACEHOLDER_CHECKS, false);
     if (trial.error) throw new HttpError(400, trial.error.replace(/^(ValueError|RuntimeError): /, ""));
     stages.end();
@@ -309,7 +323,7 @@ export async function rerun(
     if (!(traces instanceof Blob) || !(yra instanceof Blob))
       throw new Error("the streaming pass gave no C.npy / YrA.npy");
     const report = rerunReport(
-      stages.rows,
+      stages.rows.slice(rows0),
       windowRows,
       dec(stitch.get("summary_stitch.json") ?? enc({})),
       dec((stream.get("summary.json") as Uint8Array | undefined) ?? enc({})),
@@ -356,6 +370,7 @@ export async function rerun(
 export class StepLog {
   private step: string | null = null;
   private n = 0;
+  private endRerun: ((error?: boolean) => void) | null = null;
   constructor(private stages: Stages) {}
   private switchTo(step: string) {
     if (step === this.step) return;
@@ -369,10 +384,16 @@ export class StepLog {
     this.n += 1;
     this.stages.note(`${this.n} settings`, this.n);
   }
+  /** The final rerun's row: spans the stage rows the rerun emits until `close`. */
   stage(name: string) {
-    this.switchTo(name);
+    this.close();
+    this.endRerun = this.stages.span(`tune_${name}`);
   }
   close(error = false) {
+    if (this.endRerun) {
+      this.endRerun(error);
+      this.endRerun = null;
+    }
     if (this.step === null) return;
     this.stages.end(error, this.n);
     this.step = null;
@@ -471,12 +492,11 @@ export async function autotune(ctx: Ctx, run: RunInfo, args: TuneArgs, progress:
       },
     });
     const proposed = await search.run();
-    // a header row: the rerun's own stage rows (window2 ... write_outputs) follow it and end the log
     log.stage("rerun");
-    log.close();
     const params = { ...base, ...proposed };
     const changed = Object.fromEntries(Object.entries(params).filter(([k, v]) => norm(v) !== norm(runParams[k])));
-    await rerun(ctx, run, changed, AUTO, progress, tw); // the workers hold every window by now
+    await rerun(ctx, run, changed, AUTO, progress, tw, stages); // the workers hold every window by now
+    log.close();
     const auto = await ctx.registry.open(`${run.vpath}/reruns/${AUTO}`);
     const runScored = await scoreRun(run, checks, minDistFrac, []);
     const proposal = await scoreRun(auto, checks, minDistFrac, runScored.good);

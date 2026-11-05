@@ -207,7 +207,8 @@ describe("autotune", () => {
     expect(events[0]).toBe("tune_run:start");
     expect(events).toContain("tune_sparse:start");
     expect(events).toContain("tune_rerun:start");
-    expect(events.at(-1)).toBe("write_outputs:end");
+    expect(events.at(-1)).toBe("tune_rerun:end");
+    expect(events.at(-2)).toBe("write_outputs:end");
     const doc = JSON.parse(readFileSync(join(f.run, "reruns/auto/autotune.json"), "utf8"));
     expect(doc).toMatchObject({
       strategy: "local",
