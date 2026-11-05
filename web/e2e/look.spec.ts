@@ -42,6 +42,7 @@ const PATH_TEXTS = [
  * the size of the page around it, so these are taken out of both builds before a screenshot. */
 const BY_DESIGN: { selector: string; text?: string }[] = [
   { selector: '[aria-label="Known folders"]' }, // Home: recent folders (the browser build adds Browser storage)
+  { selector: 'section[aria-label="Your data stays here"]' }, // Home: the browser build's privacy banner
   { selector: '[role="group"][aria-label="Stage"] button', text: "Tune" }, // no Tune in the browser build
   { selector: "label.switch", text: "Auto-tune" }, // New run: the same
   { selector: 'section[aria-label="Reconstruction"]' }, // a Python run's factors are not in the browser's format
