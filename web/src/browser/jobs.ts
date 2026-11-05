@@ -1,5 +1,6 @@
 import type { Device } from "../gpu/plan";
 import { isFinal, type ProgressEvent, type RunPlan, type StageProgress } from "../launch/params";
+import { workerCount } from "../stream/pool";
 import type { FromWorker, ToWorker } from "../stream/protocol";
 import { DEFAULTS, unusedParams, WINDOW_FRAMES } from "../stream/session";
 import type { Job } from "../types";
@@ -9,7 +10,11 @@ import { type Folders, OPFS_NAME } from "./folders";
 import type { KV } from "./kv";
 import { pyFloat, pyRepr } from "./num";
 import { HttpError } from "./router";
+import type { RunInfo } from "./runs";
+import { state } from "./state";
 import { ASSUMED_UNITS, estimateRunBytes, pickDirectory, quotaMessage, RUN_LOCK, support } from "./support";
+import { autotune, type Ctx, type Progress, RerunCancelled, rerun } from "./tune/driver";
+import { checkWindow2, type Params, type TuneArgs, tuneArgs } from "./tune/params";
 import { joinVpath, parentVpath, splitVpath } from "./vpath";
 
 export type JobBody = {
@@ -128,6 +133,12 @@ async function resetOutDir(processed: Dir, name: string, outDir: string, overwri
   return out;
 }
 
+/** What a rerun or auto-tune job runs (`tune/driver.ts`; tests replace it). */
+export type TuneRunner = {
+  rerun(run: RunInfo, params: Params, name: string, progress: Progress): Promise<unknown>;
+  autotune(run: RunInfo, args: TuneArgs, progress: Progress): Promise<unknown>;
+};
+
 /** The part of the browser's Web Locks (`navigator.locks`) the job manager uses. */
 export type Locks = Pick<LockManager, "request" | "query">;
 
@@ -143,6 +154,8 @@ export class JobManager {
   private starting = false;
   /** This tab holds the run lock (from a start's lock to its run's end). */
   private holding = false;
+  /** Per running tune job: what stops its workers at once, and its promise (the lock goes after it settles). */
+  private tunes = new Map<string, { abort: (() => void) | null; settled: Promise<void> }>();
   private history = new Map<string, [string, unknown][]>();
   private listeners = new Map<string, Set<Emit>>();
   /** Per job, each stage's latest counters (the page's rates for the run's time left). */
@@ -166,6 +179,7 @@ export class JobManager {
       index?: Indexer;
       locks?: Locks | null;
       scratch?: () => Promise<Dir | null>;
+      tune?: TuneRunner;
     },
   ) {}
 
@@ -312,9 +326,160 @@ export class JobManager {
     }
   }
 
+  /** The tune runner: the injected one, else `driver.ts` with the app's folders and workers. */
+  private tuneRunner(): TuneRunner {
+    if (this.o.tune) return this.o.tune;
+    const ctx: Ctx = {
+      registry: state.registry,
+      folders: state.folders,
+      makeTuneWorker: () => new Worker(new URL("../stream/tune.worker.ts", import.meta.url), { type: "module" }),
+      makeStreamWorker: this.o.makeWorker,
+      maxWorkers: workerCount({}),
+      scratch: "tune",
+    };
+    return {
+      rerun: (run, params, name, p) => rerun({ ...ctx, onWorkers: p.onWorkers }, run, params, name, p),
+      autotune: (run, args, p) => autotune({ ...ctx, onWorkers: p.onWorkers }, run, args, p),
+    };
+  }
+
+  /** The run a rerun or auto-tune job starts from (a 404 when the folder is none). */
+  private sourceRun(runDir: string): Promise<RunInfo> {
+    return state.registry.open(runDir);
+  }
+
+  /** One job at a time, in this tab and across tabs: `begin` runs with the run lock held and gets
+   * the function that lets it go when the job ends; a refusal lets it go at once. */
+  private async withLock(begin: (unlock: () => void) => Promise<JobRecord>): Promise<JobRecord> {
+    if (this.starting || (this.own && !isFinal(this.own.status)))
+      throw new HttpError(400, "a run is already going in this tab; wait for it or cancel it");
+    this.starting = true;
+    try {
+      const release = await this.lock();
+      if (!release) throw new HttpError(400, "a run is already going in another tab; wait for it or cancel it there");
+      this.holding = true;
+      const unlock = () => {
+        this.holding = false;
+        release();
+      };
+      try {
+        await this.sweepScratch(); // the lock is ours: no run goes anywhere
+        return await begin(unlock);
+      } catch (e) {
+        unlock();
+        throw e;
+      }
+    } finally {
+      this.starting = false;
+    }
+  }
+
+  /** `reruns/<name>` of a run as a job record of `kind`. */
+  private tuneJob(kind: "rerun" | "autotune", runDir: string, name: string, params: Params, args: TuneArgs): JobRecord {
+    return {
+      id: crypto.randomUUID().replaceAll("-", "").slice(0, 10),
+      raw_dir: "",
+      name,
+      params,
+      keep_store: false,
+      status: "running",
+      out_dir: joinVpath(runDir, "reruns", name),
+      created: this.now(),
+      started: this.now(),
+      ended: null,
+      error: "",
+      overwrite: true,
+      pid: null,
+      kind,
+      run_dir: runDir,
+      tune: false,
+      tune_args: args as Record<string, number>,
+      fps: null,
+    };
+  }
+
+  /** Window 2 of the run at `runDir` with `params` into `reruns/<name>`. */
+  async submitRerun(runDir: string, name: string, params: Params): Promise<JobRecord> {
+    checkRunName(name);
+    if (name === "auto") throw new HttpError(400, "run name 'auto' is reserved for auto-tune; pick another name");
+    checkWindow2(params);
+    const run = await this.sourceRun(runDir);
+    return this.withLock(async (unlock) => {
+      const job = this.tuneJob("rerun", runDir, name, params, {});
+      return this.beginTune(job, unlock, (p) => this.tuneRunner().rerun(run, params, name, p));
+    });
+  }
+
+  /** Auto-tune the run at `runDir`, into `reruns/auto`. */
+  async submitAutotune(runDir: string, raw: Record<string, unknown>): Promise<JobRecord> {
+    const args = tuneArgs(raw);
+    const run = await this.sourceRun(runDir);
+    return this.withLock(async (unlock) => {
+      const job = this.tuneJob("autotune", runDir, "auto", {}, args);
+      return this.beginTune(job, unlock, (p) => this.tuneRunner().autotune(run, args, p));
+    });
+  }
+
+  private async beginTune(
+    job: JobRecord,
+    unlock: () => void,
+    go: (p: Progress) => Promise<unknown>,
+  ): Promise<JobRecord> {
+    await this.o.kv.set(job.id, job);
+    this.jobs.set(job.id, job);
+    this.own = job;
+    this.unlock = unlock;
+    this.record(job.id, "status", { ...job });
+    this.startTune(job, go, true);
+    return job;
+  }
+
+  /** Run `go` for the job on its own progress; its end is the job's end, unless a cancel got there
+   * first. `awake` is false for a tune chained after a run (the run took the wake lock). */
+  private startTune(job: JobRecord, go: (p: Progress) => Promise<unknown>, awake: boolean): void {
+    const p: Progress = {
+      stage: (e) => this.record(job.id, "stage", e),
+      live: (s) => this.live(job.id, s),
+      log: (m) => this.record(job.id, "log", m),
+      cancelled: () => isFinal(job.status),
+    };
+    const tune: { abort: (() => void) | null; settled: Promise<void> } = { abort: null, settled: Promise.resolve() };
+    p.onWorkers = (stop) => {
+      tune.abort = stop;
+    };
+    if (awake) this.keepAwake(job);
+    const fail = (e: unknown) =>
+      this.end(job, e instanceof RerunCancelled ? "cancelled" : "failed", e instanceof Error ? e.message : String(e));
+    let cancelledFirst = false;
+    const settled = (end: () => Promise<void>) => {
+      cancelledFirst = isFinal(job.status); // a cancel got there first: `end` will do nothing
+      return end();
+    };
+    tune.settled = Promise.resolve()
+      .then(() => go(p))
+      .then(
+        () => settled(() => this.end(job, "done", "")),
+        (e) => settled(() => fail(e)),
+      )
+      .then(async () => {
+        this.tunes.delete(job.id);
+        // the cancel left the lock to the settled tune
+        if (cancelledFirst && this.own === job) await this.finish(job);
+      })
+      .catch((e) => console.error(`job ${job.id}: could not finish the tune job`, e)); // the status stays as `end` set it
+    this.tunes.set(job.id, tune);
+  }
+
+  private async end(job: JobRecord, status: "done" | "failed" | "cancelled", error: string): Promise<void> {
+    if (isFinal(job.status)) return; // a cancel got there first
+    job.status = status;
+    job.error = error;
+    job.ended = this.now();
+    await this.finish(job);
+  }
+
   /** Start a run (main's `JobManager.submit` checks, in its order, then the browser's own). */
   async submit(b: JobBody): Promise<JobRecord> {
-    if (b.tune) throw new HttpError(400, "auto-tune is not part of the browser app");
     const rawDir = b.raw_dir.split("/").filter(Boolean).join("/"); // "a/raw/" is the folder "a/raw"
     // A raw folder picked on its own asks for the folder to write to. The dialog needs the user
     // activation of the Start click, which lasts a few seconds and not past an await: it comes
@@ -329,27 +494,8 @@ export class JobManager {
     checkRunName(b.name);
     const bad = unusedParams(b.params);
     if (bad.length) throw new HttpError(400, `${bad.join(", ")}: not used by the browser app`);
-    if (this.starting || (this.own && !isFinal(this.own.status)))
-      throw new HttpError(400, "a run is already going in this tab; wait for it or cancel it");
-    this.starting = true;
-    try {
-      const release = await this.lock();
-      if (!release) throw new HttpError(400, "a run is already going in another tab; wait for it or cancel it there");
-      this.holding = true;
-      const unlock = () => {
-        this.holding = false;
-        release();
-      };
-      try {
-        await this.sweepScratch(); // the lock is ours: no run goes anywhere
-        return await this.begin(b, rawDir, raw, listed, picked, dialog !== null, unlock);
-      } catch (e) {
-        unlock();
-        throw e;
-      }
-    } finally {
-      this.starting = false;
-    }
+    if (b.tune) b = { ...b, tune_args: tuneArgs(b.tune_args) as Record<string, number> }; // refused now, not hours in
+    return this.withLock((unlock) => this.begin(b, rawDir, raw, listed, picked, dialog !== null, unlock));
   }
 
   /** The rest of `submit`, with the run lock held (`unlock` lets it go when the run ends). */
@@ -392,8 +538,8 @@ export class JobManager {
       pid: null,
       kind: "run",
       run_dir: "",
-      tune: false,
-      tune_args: {},
+      tune: b.tune,
+      tune_args: b.tune_args,
       fps: b.fps,
     };
     await this.o.kv.set(job.id, job);
@@ -474,11 +620,24 @@ export class JobManager {
       const { type: _, ...plan } = m;
       this.record(job.id, "plan", plan satisfies RunPlan);
     } else if (m.type === "log") this.record(job.id, "log", m.message);
+    else if (m.type === "done" && job.kind === "run" && job.tune) await this.chainTune(job);
     else if (m.type === "done" || m.type === "error") {
       job.status = m.type === "done" ? "done" : "failed";
       job.error = m.type === "error" ? m.message : "";
       job.ended = this.now();
       await this.finish(job);
+    }
+  }
+
+  /** The run is done and asked for a tune: the same job goes on with the auto-tune of its folder. */
+  private async chainTune(job: JobRecord): Promise<void> {
+    this.worker?.terminate();
+    this.worker = null;
+    try {
+      const run = await state.registry.open(job.out_dir);
+      this.startTune(job, (p) => this.tuneRunner().autotune(run, job.tune_args, p), false);
+    } catch (e) {
+      await this.end(job, "failed", e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -508,7 +667,10 @@ export class JobManager {
     if (!isFinal(job.status)) {
       job.status = "cancelled";
       job.ended = this.now();
-      await this.finish(job);
+      const tune = this.tunes.get(job.id);
+      if (tune) {
+        tune.abort?.(); // the workers stop now; the lock goes when the tune has settled
+      } else await this.finish(job);
     }
     return job;
   }

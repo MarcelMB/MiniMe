@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -223,6 +223,7 @@ function runParts(traces: Blob = new Blob([f32([2, T], ...Array.from({ length: 2
       ...csrFiles("Amerged", [1, 1], [0, 1], [0, 2]),
     ]),
     traces,
+    yra: new Blob([f32([2, T], ...new Array(2 * T).fill(0))]),
     progress: ['{"stage":"pass1","event":"start","t":1}', '{"stage":"pass1","event":"end","t":2,"seconds":1}'],
   };
 }
@@ -284,9 +285,12 @@ const SPEC_FILES = [
   "factors/meta.json",
   "factors/max_proj.npy",
   "factors/sn.npy",
-  ...["W", "V", "s", "mean", "k", "rank", "block_max", "max_proj"].map((k) => `factors/w00/${k}.npy`),
+  ...["W", "V", "s", "mean", "sigma", "energy", "k", "rank", "block_max", "max_proj"].map(
+    (k) => `factors/w00/${k}.npy`,
+  ),
   "cnmf/A.npz",
   "cnmf/C.npy",
+  "cnmf/YrA.npy",
   "cnmf/units.csv",
   "cnmf/b.npy",
   "cnmf/Amerged.npz",
@@ -328,7 +332,9 @@ describe("window folders", () => {
     const out = await new NodeDir(mkdtempSync(join(tmpdir(), "writer-"))).dir("run", { create: true });
     await writeWindow(out, 7, windowFiles());
     expect(await listAll(out as NodeDir)).toEqual(
-      ["W", "V", "s", "mean", "k", "rank", "block_max", "max_proj"].map((k) => `factors/w07/${k}.npy`).sort(),
+      ["W", "V", "s", "mean", "sigma", "energy", "k", "rank", "block_max", "max_proj"]
+        .map((k) => `factors/w07/${k}.npy`)
+        .sort(),
     );
     await expect(writeWindow(out, 8, new Map())).rejects.toThrow(/W\.npy/);
   });
@@ -359,6 +365,7 @@ describe("writeRun", () => {
     expect(b.shape).toEqual([H, W]);
     expect(b.data).toBeInstanceOf(Float32Array);
     expect(readNpy(await readBytes(out, "cnmf/C.npy")).shape).toEqual([2, T]);
+    expect(readNpy(await readBytes(out, "cnmf/YrA.npy")).shape).toEqual([2, T]);
     expect(readNpy(await readBytes(out, "factors/sn.npy")).shape).toEqual([H, W]);
     expect(Array.from(readNpy(await readBytes(out, "factors/max_proj.npy")).data)).toEqual(
       Array.from({ length: H * W }, (_, i) => i),
@@ -374,6 +381,14 @@ describe("writeRun", () => {
     const run = await new Registry(folders, memoryKV()).open(`${name}/run`);
     expect(run.meta.T).toBe(T);
     expect(run.report.counts.units_final).toBe(2);
+  });
+
+  it("writes sigma.npy with each window's factors and YrA.npy next to C.npy", async () => {
+    const out = newDir();
+    await writeWindow(out, 0, windowFiles());
+    expect(existsSync(join(out.path, "factors/w00/sigma.npy"))).toBe(true);
+    await writeRun(out, { ...runParts(), yra: new Blob([writeNpy([2, 3], new Float32Array(6))]) });
+    expect(readNpy(new Uint8Array(readFileSync(join(out.path, "cnmf/YrA.npy")))).shape).toEqual([2, 3]);
   });
 
   it("writes report.json last, so a run that failed halfway is never listed", async () => {

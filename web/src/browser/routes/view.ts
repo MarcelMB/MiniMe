@@ -12,6 +12,7 @@ import { pyRound, roundHalfEven } from "../num";
 import { HttpError, router } from "../router";
 import type { RunInfo } from "../runs";
 import { state } from "../state";
+import { runOf } from "./tune";
 
 const f32 = (shape: number[], data: ArrayLike<number>) => ({
   array: { shape, dtype: "float32" as const, data: data instanceof Float32Array ? data : Float32Array.from(data) },
@@ -28,8 +29,8 @@ const IMAGE_FILES: Record<string, string> = {
   noise: "factors/sn.npy",
 };
 
-router.add("GET", "/runs/:rid/image/:name", async (_q, p) => {
-  const r = await state.registry.get(p.rid);
+router.add("GET", "/runs/:rid/image/:name", async (q, p) => {
+  const r = await runOf(p.rid, q.query.get("rerun"));
   const { H, W } = r.meta;
   if (!IMAGES.includes(p.name)) throw new HttpError(404, `unknown image '${p.name}' (one of ${IMAGES.join(", ")})`);
   if (p.name === "rank") return f32([H, W], tileMap(H, W, r.meta.tile, r.meta.ranks));
@@ -67,22 +68,36 @@ router.add("GET", "/runs/:rid/motion/residual", async (_q, p) => {
   return f32(a.shape, a.data);
 });
 
-router.add("GET", "/runs/:rid/seeds", async (_q, p) => {
-  const r = await state.registry.get(p.rid);
-  if (!(await exists(r.dir, "seeds/merged.npy"))) throw notAvailable("the seeds");
+/** A rerun's seed table `stages/seeds_<k>.csv` as (height, width) positions, the PNR one cut to its `mask_pnr` rows. */
+async function stageSeeds(r: RunInfo, k: string): Promise<number[][]> {
+  const [head, ...lines] = (await (await fileAt(r.dir, `stages/seeds_${k}.csv`)).text()).trim().split(/\r?\n/);
+  const cols = head.split(",");
+  const [h, w, m] = ["height", "width", "mask_pnr"].map((c) => cols.indexOf(c));
+  return lines
+    .map((l) => l.split(","))
+    .filter((c) => k !== "pnr" || c[m] === "True")
+    .map((c) => [roundHalfEven(Math.fround(Number(c[h])), 1), roundHalfEven(Math.fround(Number(c[w])), 1)]);
+}
+
+router.add("GET", "/runs/:rid/seeds", async (q, p) => {
+  const r = await runOf(p.rid, q.query.get("rerun"));
   const out: Record<string, number[][]> = {};
-  for (const k of ["init", "pnr", "merged"]) {
-    const a = readNpy(await readBytes(r.dir, `seeds/${k}.npy`));
-    const rows: number[][] = [];
-    for (let i = 0; i < a.shape[0]; i++)
-      rows.push([roundHalfEven(a.data[2 * i], 1), roundHalfEven(a.data[2 * i + 1], 1)]);
-    out[k] = rows;
-  }
+  if (await exists(r.dir, "seeds/merged.npy")) {
+    for (const k of ["init", "pnr", "merged"]) {
+      const a = readNpy(await readBytes(r.dir, `seeds/${k}.npy`));
+      const rows: number[][] = [];
+      for (let i = 0; i < a.shape[0]; i++)
+        rows.push([roundHalfEven(a.data[2 * i], 1), roundHalfEven(a.data[2 * i + 1], 1)]);
+      out[k] = rows;
+    }
+  } else if (await exists(r.dir, "stages/seeds_merged.csv")) {
+    for (const k of ["init", "pnr", "merged"]) out[k] = await stageSeeds(r, k); // a rerun's tables
+  } else throw notAvailable("the seeds");
   return { json: out };
 });
 
 router.add("GET", "/runs/:rid/units", async (q, p) => {
-  const r = await state.registry.get(p.rid);
+  const r = await runOf(p.rid, q.query.get("rerun"));
   const stage = q.query.get("stage") ?? "final";
   if (stage !== "final" && stage !== "init") throw new HttpError(400, `stage must be final or init, got '${stage}'`);
   const file = stage === "final" ? "cnmf/A.npz" : "init/A.npz";

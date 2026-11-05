@@ -13,10 +13,13 @@ let counter = 0;
 /** A `RunInfo` on a fresh folder (a new id each time: the readers cache per run and stamp). */
 function run(meta: Partial<RunInfo["meta"]> = {}): { r: RunInfo; path: string } {
   const path = mkdtempSync(join(tmpdir(), "recon-"));
+  const dir = new NodeDir(path);
   const r: RunInfo = {
     id: `recon-${counter++}`,
     vpath: "x",
-    dir: new NodeDir(path),
+    dir,
+    factors: dir,
+    sourceRun: null,
     params: {},
     report: {},
     meta: { H: 64, W: 64, T: 300, tile: 32, ranks: [1, 1, 1, 1], windows: [{ t0: 0, t1: 300 }], ...meta },

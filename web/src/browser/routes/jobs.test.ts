@@ -1,7 +1,7 @@
 import { cpSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getJSON, postJSON, subscribe } from "../../api";
 import { isFinal } from "../../launch/params";
 import type { FromWorker } from "../../stream/protocol";
@@ -11,7 +11,7 @@ import { type JobBody, JobManager } from "../jobs";
 import { memoryKV } from "../kv";
 import { configure } from "../state";
 import { NodeDir } from "../testing/nodeDir";
-import { setJobs } from "./jobs";
+import { jobs, setJobs } from "./jobs";
 
 class FakeWorker {
   onmessage: ((e: MessageEvent<FromWorker>) => void) | null = null;
@@ -78,9 +78,15 @@ describe("job routes", () => {
     });
   });
 
-  it("keeps the reruns and auto-tune posts answering 404, not as a job id", async () => {
-    await expect(postJSON("/jobs/rerun", {})).rejects.toMatchObject({ status: 404 });
-    await expect(postJSON("/jobs/autotune", {})).rejects.toMatchObject({ status: 404 });
+  it("POST /jobs/rerun and /jobs/autotune take main's bodies", async () => {
+    const m = await jobs();
+    const rerun = vi.spyOn(m, "submitRerun").mockResolvedValue({} as Job as never);
+    const auto = vi.spyOn(m, "submitAutotune").mockResolvedValue({} as Job as never);
+    await postJSON("/jobs/rerun", { run_dir: "r/processed/t", name: "r1", params: { sparse_snr: 0.5 } });
+    expect(rerun).toHaveBeenCalledWith("r/processed/t", "r1", { sparse_snr: 0.5 });
+    await postJSON("/jobs/autotune", { run_dir: "r/processed/t", tune_args: { diameter: "7" } });
+    expect(auto).toHaveBeenCalledWith("r/processed/t", { diameter: "7" });
+    await expect(postJSON("/jobs/rerun", { name: "r1" })).rejects.toMatchObject({ status: 422 });
   });
 });
 

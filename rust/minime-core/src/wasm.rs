@@ -174,6 +174,10 @@ impl Engine {
     pub fn take_traces(&mut self) -> Vec<f32> {
         crate::unit_major(&self.pass.take_c(), self.pass.model.k)
     }
+    /// The YrA pushed since the last call, (K, n) unit-major, as `take_traces`.
+    pub fn take_yra(&mut self) -> Vec<f32> {
+        crate::unit_major(&self.pass.take_yra(), self.pass.model.k)
+    }
 
     /// Footprint update and merge; returns output name -> `.npy`/`.json` bytes (all but
     /// `C.npy`, which the worker writes from `take_traces`).
@@ -1094,5 +1098,176 @@ impl StitchEngine {
             files.push(("sn.npy".into(), npy::write(&[p], &sn)));
         }
         Ok(npy_map(files))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Window reruns and the auto-tune: one window's stages on its saved factors
+// ---------------------------------------------------------------------------
+
+/// A window's seeds → init → CNMF from its saved factors (`factors/wNN/`), for reruns and the
+/// auto-tune search: `trial` per setting, `window_bytes` for the stitch.
+#[wasm_bindgen]
+pub struct WindowEngine {
+    s: crate::window::WindowSession,
+}
+
+#[wasm_bindgen]
+impl WindowEngine {
+    #[wasm_bindgen(constructor)]
+    pub fn new(run_session: &[u8], t0: usize, t1: usize, files: &Map) -> Result<WindowEngine, JsError> {
+        let s = crate::window::WindowSession::new(run_session, t0, t1, &mut |n| map_bytes(files, n))
+            .map_err(|e| JsError::new(&e))?;
+        Ok(WindowEngine { s })
+    }
+
+    /// `checks_json`: a `Checks`; `caps_json`: `{"seeds_pnr": n, "seeds_merged": n}` or "".
+    /// Returns a `TrialOut` as JSON.
+    pub fn trial(
+        &mut self,
+        session: &[u8],
+        checks_json: &str,
+        reference: bool,
+        caps_json: &str,
+    ) -> Result<String, JsError> {
+        let checks: crate::score::Checks =
+            serde_json::from_str(checks_json).map_err(|e| JsError::new(&format!("checks: {e}")))?;
+        let caps: Option<crate::window::Caps> = if caps_json.is_empty() {
+            None
+        } else {
+            let v: serde_json::Value =
+                serde_json::from_str(caps_json).map_err(|e| JsError::new(&format!("caps: {e}")))?;
+            Some(crate::window::Caps {
+                seeds_pnr: v["seeds_pnr"].as_u64().unwrap_or(0) as usize,
+                seeds_merged: v["seeds_merged"].as_u64().unwrap_or(0) as usize,
+            })
+        };
+        let now = || js_sys::Date::now() / 1e3;
+        let out = self
+            .s
+            .trial(session, &checks, reference, caps.as_ref(), 5.0, &now);
+        Ok(serde_json::to_string(&out).unwrap())
+    }
+
+    pub fn window_bytes(&self) -> Result<Vec<u8>, JsError> {
+        self.s.window_bytes().map_err(|e| JsError::new(&e))
+    }
+
+    pub fn contrast_hist(
+        &self,
+        seeds_wnd: usize,
+        seeds_stp: usize,
+        seeds_max_wnd: usize,
+        n_windows: usize,
+    ) -> Result<Vec<i64>, JsError> {
+        self.s
+            .contrast_hist(seeds_wnd, seeds_stp, seeds_max_wnd, n_windows)
+            .map_err(|e| JsError::new(&e))
+    }
+
+    /// Bytes of `W`, `V`, `mean` and `sigma` held.
+    pub fn heap_hint(&self) -> f64 {
+        self.s.bytes() as f64
+    }
+}
+
+fn csr_of(a_data: &[f32], a_indices: &[i32], a_indptr: &[i32], p: usize) -> crate::init::Csr {
+    crate::init::Csr {
+        k: a_indptr.len().saturating_sub(1),
+        p,
+        indptr: a_indptr.iter().map(|&v| v as usize).collect(),
+        indices: a_indices.iter().map(|&v| v as usize).collect(),
+        data: a_data.to_vec(),
+    }
+}
+
+/// The unit checks and pair statistics of a run's final units (`cnmf/A.npz` as CSR parts,
+/// `cnmf/YrA.npy` as `(K, T)` float32): `flags.json`, `pairs.json`, `unit_flags.csv`,
+/// `summary.json` (with `lost` against `reference_json`, `[[y, x], ...]` or `[]`) and `good.json`.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn score_units(
+    a_data: &[f32],
+    a_indices: &[i32],
+    a_indptr: &[i32],
+    p: usize,
+    traces: &[f32],
+    k: usize,
+    t: usize,
+    h: usize,
+    w: usize,
+    checks_json: &str,
+    min_dist_frac: f64,
+    reference_json: &str,
+) -> Result<Map, JsError> {
+    use crate::score;
+    let checks: score::Checks =
+        serde_json::from_str(checks_json).map_err(|e| JsError::new(&format!("checks: {e}")))?;
+    let reference: Vec<[f64; 2]> = if reference_json.is_empty() {
+        vec![]
+    } else {
+        serde_json::from_str(reference_json).map_err(|e| JsError::new(&format!("reference: {e}")))?
+    };
+    let a = csr_of(a_data, a_indices, a_indptr, p);
+    if a.k != k {
+        return Err(JsError::new(&format!("{} traces for {} footprints", k, a.k)));
+    }
+    let f = score::unit_flags(&a, traces, h, w, &checks).map_err(|e| JsError::new(&e))?;
+    let lost = score::lost_units(&reference, &f, checks.keep_dist * checks.diameter);
+    let pairs = score::pair_stats(&a, traces, k, t, h, w, &checks, min_dist_frac);
+    let files = vec![
+        (
+            "flags.json".to_string(),
+            serde_json::to_vec(&score::flags_doc(&f, &checks)).unwrap(),
+        ),
+        (
+            "pairs.json".to_string(),
+            serde_json::to_vec(&score::pairs_doc(&pairs, &checks, min_dist_frac)).unwrap(),
+        ),
+        ("unit_flags.csv".to_string(), score::flags_csv(&f).into_bytes()),
+        (
+            "summary.json".to_string(),
+            serde_json::to_vec(&score::summarize(&f, lost)).unwrap(),
+        ),
+        (
+            "good.json".to_string(),
+            serde_json::to_vec(&score::good_centroids(&f)).unwrap(),
+        ),
+    ];
+    Ok(npy_map(files))
+}
+
+#[wasm_bindgen]
+pub fn estimate_diameter(
+    a_data: &[f32],
+    a_indices: &[i32],
+    a_indptr: &[i32],
+    p: usize,
+) -> Result<f64, JsError> {
+    crate::score::estimate_diameter(&csr_of(a_data, a_indices, a_indptr, p)).map_err(|e| JsError::new(&e))
+}
+
+#[wasm_bindgen]
+impl StitchEngine {
+    /// A window's mean and noise from its saved `mean.npy` and `sigma.npy` (flat, tile after tile
+    /// on the `tile` grid), as `add_pass2` takes them from a live pass 2.
+    pub fn add_mean_noise(
+        &mut self,
+        mean_npy: &[u8],
+        sigma_npy: &[u8],
+        tile: usize,
+        t0: usize,
+        t1: usize,
+    ) -> Result<(), JsError> {
+        let mean = npy::read_f32(mean_npy).map_err(|e| JsError::new(&e))?.data;
+        let sigma = npy::read_f32(sigma_npy).map_err(|e| JsError::new(&e))?.data;
+        let grid = pass1::tile_grid(self.p.h, self.p.w, tile);
+        let rank = vec![0usize; grid.len()];
+        let energy = vec![0f64; mean.len()];
+        let tiles =
+            crate::factors::Factors::split_flat(&grid, t1 - t0, &[], &[], &mean, &sigma, &energy, &rank)
+                .map_err(|e| JsError::new(&e))?;
+        self.mean_noise.add(&grid, &tiles, self.p.w, t1 - t0);
+        Ok(())
     }
 }

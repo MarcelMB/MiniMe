@@ -5,6 +5,7 @@ import { HttpError, type Reply, router } from "../router";
 import type { RunInfo } from "../runs";
 import { state } from "../state";
 import { traceRow, tracesShape } from "../tracefile";
+import { runOf } from "./tune";
 
 type Kind = "C" | "YrA";
 
@@ -27,15 +28,15 @@ type Cached =
   | { r: RunInfo; ov?: undefined; reply: Reply };
 
 /** The run's cached min/max overview, or the "computing" reply that starts it. */
-async function cachedOverview(rid: string, kind: Kind, bins: number): Promise<Cached> {
-  const r = await state.registry.get(rid); // before the cache: it drops the cache of a rewritten run
-  const cache = await state.cache(rid);
+async function cachedOverview(rid: string, rerun: string | null, kind: Kind, bins: number): Promise<Cached> {
+  const r = await runOf(rid, rerun); // before the cache: it drops the cache of a rewritten run
+  const cache = await state.cache(r.id);
   const name = `overview_${kind}_${bins}.npy`;
   if (await cache.has(name)) return { r, ov: await cache.loadNpy(name) };
   const { K, T } = await tracesShape(r, kind);
   return {
     r,
-    reply: computing(`${rid}:${r.stamp}:${name}`, async () => {
+    reply: computing(`${r.id}:${r.stamp}:${name}`, async () => {
       const o = await overview((i) => traceRow(r, kind, i), K, T, bins);
       await cache.saveNpy(name, [K, 2, Math.max(1, Math.min(bins, T))], o);
     }),
@@ -46,13 +47,13 @@ router.add("GET", "/runs/:rid/traces/overview", async (q, p) => {
   const kind = kindOf(q.query.get("kind"));
   const bins = queryNumber(q.query.get("bins") ?? "2000", "bins", true);
   if (!(bins >= 1 && bins <= 20000)) throw new HttpError(400, "bins must be in 1..20000");
-  const o = await cachedOverview(p.rid, kind, bins);
+  const o = await cachedOverview(p.rid, q.query.get("rerun"), kind, bins);
   if (!o.ov) return o.reply;
   return { array: { shape: o.ov.shape, dtype: "float32", data: o.ov.data as Float32Array } };
 });
 
 router.add("GET", "/runs/:rid/traces/:unit", async (q, p) => {
-  const r = await state.registry.get(p.rid);
+  const r = await runOf(p.rid, q.query.get("rerun"));
   const kind = kindOf(q.query.get("kind"));
   const row = await traceRow(r, kind, queryNumber(p.unit, "unit", true));
   const start = queryNumber(q.query.get("start") ?? "0", "start", true);
@@ -62,8 +63,8 @@ router.add("GET", "/runs/:rid/traces/:unit", async (q, p) => {
   return { array: { shape: [y.length], dtype: "float32", data: y } };
 });
 
-router.add("GET", "/runs/:rid/zooms", async (_q, p) => {
-  const o = await cachedOverview(p.rid, "C", 2000);
+router.add("GET", "/runs/:rid/zooms", async (q, p) => {
+  const o = await cachedOverview(p.rid, q.query.get("rerun"), "C", 2000);
   if (!o.ov) return o.reply;
   const [n, , b] = o.ov.shape;
   const peak = new Float32Array(n);

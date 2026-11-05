@@ -73,7 +73,7 @@ export type P1Result = {
   gpuFrames: number;
 };
 /** `parts[j]`: the frames' pixels of fold lane `j`, frame after frame. */
-export type S1Result = { parts: Uint8Array[]; cc: Float64Array; f: Float32Array; gpuFrames: number };
+export type S1Result = { parts: Uint8Array[]; cc: Float64Array; yra: Float64Array; f: Float32Array; gpuFrames: number };
 /** A window's seeds, init and CNMF outputs, its final units for the stitch (`window_bytes`), and each
  * stage's seconds and stage-row note. */
 export type W1Result = { files: FileMap; window: Uint8Array; seconds: number[]; notes: string[] };

@@ -31,10 +31,13 @@ function browserRun(split: number[], params: Record<string, unknown>): RunInfo {
     writeFileSync(join(path, "factors", windowDir(w), "block_max.npy"), writeNpy([n, H, W], part));
     at += n;
   });
+  const dir = new NodeDir(path);
   return {
     id: `resid-${Math.random()}`,
     vpath: "x",
-    dir: new NodeDir(path),
+    dir,
+    factors: dir,
+    sourceRun: null,
     params,
     report: {},
     meta: {

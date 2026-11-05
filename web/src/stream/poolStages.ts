@@ -209,7 +209,7 @@ export async function streamPooled(
     onResult: (i, r) => {
       live.delete(i);
       const s = performance.now();
-      engine.push_traces(r.cc, r.f);
+      engine.push_traces(r.cc, r.yra, r.f);
       storeMs += performance.now() - s;
       for (let j = 0; j < N; j++) {
         const cc = j === N - 1 ? r.cc : r.cc.slice();

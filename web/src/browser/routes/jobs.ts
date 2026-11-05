@@ -55,6 +55,17 @@ router.add("GET", "/jobs", async () => {
   return { json: { jobs: m.list() } };
 });
 router.add("POST", "/jobs", async (q) => ({ json: await (await jobs()).submit(jobBody(q.body)) }));
+router.add("POST", "/jobs/rerun", async (q) => {
+  const b = (q.body ?? {}) as { run_dir?: unknown; name?: unknown; params?: unknown };
+  if (typeof b.run_dir !== "string" || typeof b.name !== "string")
+    throw new HttpError(422, "run_dir and name must be text");
+  return { json: await (await jobs()).submitRerun(b.run_dir, b.name, (b.params ?? {}) as Record<string, unknown>) };
+});
+router.add("POST", "/jobs/autotune", async (q) => {
+  const b = (q.body ?? {}) as { run_dir?: unknown; tune_args?: unknown };
+  if (typeof b.run_dir !== "string") throw new HttpError(422, "run_dir must be text");
+  return { json: await (await jobs()).submitAutotune(b.run_dir, (b.tune_args ?? {}) as Record<string, unknown>) };
+});
 router.add("GET", "/jobs/:jid", async (_q, p) => {
   const m = await jobs();
   await m.refresh();

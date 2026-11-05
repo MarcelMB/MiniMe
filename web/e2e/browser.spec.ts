@@ -118,6 +118,17 @@ test("New run → job page → Open run → every page", async ({ page }) => {
     return JSON.parse(await (await (await d.getFileHandle("params.json")).getFile()).text());
   }, `e2e/${root}/processed/e2e`);
   expect(params).toMatchObject({ raw_dir: `${root}/raw`, fps: 30, tile: 32 });
+  const size = (dir: string, name: string) =>
+    page.evaluate(
+      async ([path, file]) => {
+        let d = await navigator.storage.getDirectory();
+        for (const p of path.split("/")) d = await d.getDirectoryHandle(p);
+        return (await (await d.getFileHandle(file)).getFile()).size;
+      },
+      [dir, name],
+    );
+  expect(await size(`e2e/${root}/processed/e2e/cnmf`, "YrA.npy")).toBeGreaterThan(128);
+  expect(await size(`e2e/${root}/processed/e2e/factors/w00`, "sigma.npy")).toBeGreaterThan(128);
 
   await openRun.click();
   await expectEveryPage(page);

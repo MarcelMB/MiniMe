@@ -7,11 +7,14 @@ import type { FromWorker, ToWorker } from "../stream/protocol";
 import type { Indexer } from "./avi";
 import { type Dir, FileListDir, HandleDir } from "./dir";
 import { Folders } from "./folders";
-import { type JobBody, JobManager } from "./jobs";
+import { type JobBody, JobManager, type TuneRunner } from "./jobs";
 import { memoryKV } from "./kv";
+import { Registry } from "./runs";
+import { configure } from "./state";
 import { ASSUMED_UNITS, estimateRunBytes } from "./support";
 import { diskHandle } from "./testing/diskHandle";
 import { NodeDir } from "./testing/nodeDir";
+import { RerunCancelled } from "./tune/driver";
 
 class FakeWorker {
   onmessage: ((e: MessageEvent<FromWorker>) => void) | null = null;
@@ -31,8 +34,11 @@ class FakeWorker {
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-async function setup(kv = memoryKV()) {
+let lastTop = "";
+
+async function setup(kv = memoryKV(), opts: { tune?: TuneRunner } = {}) {
   const top = mkdtempSync(join(tmpdir(), "jobs-"));
+  lastTop = top;
   cpSync(resolve(__dirname, "../../e2e/.data/raw"), join(top, "raw"), { recursive: true });
   const folders = new Folders(memoryKV(), async () => null);
   const name = await folders.add(new NodeDir(top), "picked");
@@ -42,7 +48,9 @@ async function setup(kv = memoryKV()) {
     workers.push(w);
     return w as unknown as Worker;
   };
-  const m = new JobManager({ kv, folders, makeWorker });
+  const cacheRoot = new NodeDir(mkdtempSync(join(tmpdir(), "cache-")));
+  configure({ folders, registry: new Registry(folders, memoryKV(), async () => cacheRoot), cacheRoot });
+  const m = new JobManager({ kv, folders, makeWorker, tune: opts.tune });
   await m.load();
   const body: JobBody = {
     raw_dir: `${name}/raw`,
@@ -192,11 +200,6 @@ describe("JobManager submit checks (main's JobManager.submit)", () => {
     await tick();
     expect(m.get(first.id).status).toBe("done");
     await expect(m.submit({ ...body, name: "t2" })).resolves.toMatchObject({ status: "running" });
-  });
-
-  it("refuses auto-tune, which the browser app does not have", async () => {
-    const { m, body } = await setup();
-    await expect(m.submit({ ...body, tune: true })).rejects.toMatchObject({ status: 400 });
   });
 
   it("refuses a raw folder that is itself a root: there is nowhere to write", async () => {
@@ -1190,5 +1193,241 @@ describe("JobManager and runs in two tabs (one browser storage, one run at a tim
     const job = await one.m.submit(body);
     expect(await scratchOf(scratch)).toEqual([]);
     expect(one.workers[0].sent[0]).toMatchObject({ scratch: job.id });
+  });
+});
+
+/** The e2e run as `<root>/processed/t`, its `params.json` pointing at the root's raw folder. */
+async function makeE2eRunUnder(name: string): Promise<void> {
+  const dst = join(lastTop, "processed/t");
+  cpSync(resolve(__dirname, "../../e2e/.data/processed/t"), dst, { recursive: true });
+  const pj = join(dst, "params.json");
+  writeFileSync(pj, JSON.stringify({ ...JSON.parse(readFileSync(pj, "utf8")), raw_dir: `${name}/raw` }));
+}
+
+/** A job's run folder on disk (the root is `lastTop`; the vpath's first segment is its name). */
+function workerOut(_m: JobManager, job: { out_dir: string }): string {
+  return join(lastTop, ...job.out_dir.split("/").slice(1));
+}
+
+describe("rerun and auto-tune jobs", () => {
+  const tuned = () => {
+    const calls: string[] = [];
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const tune = {
+      rerun: async (
+        _run: unknown,
+        params: Record<string, unknown>,
+        name: string,
+        p: { stage: (e: unknown) => void; cancelled: () => boolean },
+      ) => {
+        calls.push(`rerun ${name} ${JSON.stringify(params)}`);
+        p.stage({ stage: "window2", event: "start", t: 1 });
+        await gate;
+        if (p.cancelled()) throw new Error("cancelled");
+        p.stage({ stage: "window2", event: "end", t: 2, seconds: 1 });
+      },
+      autotune: async (_run: unknown, args: Record<string, unknown>, p: { stage: (e: unknown) => void }) => {
+        calls.push(`autotune ${JSON.stringify(args)}`);
+        p.stage({ stage: "tune_run", event: "start", t: 3 });
+        p.stage({ stage: "tune_run", event: "end", t: 4, seconds: 1, n: 1 });
+      },
+    } as unknown as TuneRunner;
+    return { tune, calls, release: () => release() };
+  };
+
+  it("cancelling a rerun stops its workers at once and frees the lock only when the tune has settled", async () => {
+    const order: string[] = [];
+    let stopped: () => void = () => undefined;
+    const tune = {
+      rerun: (_r: unknown, _p: unknown, _n: unknown, p: { onWorkers?: (s: () => void) => void }) =>
+        new Promise<void>((_ok, no) => {
+          p.onWorkers?.(() => {
+            order.push("abort");
+            stopped = () => no(new RerunCancelled());
+          });
+        }),
+    } as unknown as TuneRunner;
+    const { m, name } = await setup(memoryKV(), { tune });
+    await makeE2eRunUnder(name);
+    const job = await m.submitRerun(`${name}/processed/t`, "r1", { sparse_snr: 0.5 });
+    await tick();
+    expect((await m.cancel(job.id)).status).toBe("cancelled");
+    order.push("cancel returned");
+    await tick();
+    expect(order).toEqual(["abort", "cancel returned"]); // the tune has not settled: the lock is still held
+    const lock = () => (m as unknown as { holding: boolean }).holding;
+    expect(lock()).toBe(true);
+    stopped();
+    await tick();
+    await tick();
+    expect(lock()).toBe(false);
+    expect((await m.submitRerun(`${name}/processed/t`, "r2", {})).status).toBe("running");
+  });
+
+  it("runs a rerun job into <run>/reruns/<name> with the source run recorded", async () => {
+    const t = tuned();
+    const { m, name } = await setup(memoryKV(), { tune: t.tune });
+    await makeE2eRunUnder(name);
+    const job = await m.submitRerun(`${name}/processed/t`, "r1", { sparse_snr: 0.5 });
+    expect(job).toMatchObject({
+      kind: "rerun",
+      name: "r1",
+      run_dir: `${name}/processed/t`,
+      out_dir: `${name}/processed/t/reruns/r1`,
+      status: "running",
+      overwrite: true,
+    });
+    const seen: string[] = [];
+    m.events(job.id, (n) => seen.push(n));
+    t.release();
+    await tick();
+    await tick();
+    expect(m.get(job.id).status).toBe("done");
+    expect(t.calls).toEqual(['rerun r1 {"sparse_snr":0.5}']);
+    expect(seen).toEqual(["status", "stage", "stage", "status"]);
+  });
+
+  it("refuses a factor parameter, the reserved name and a second job at once", async () => {
+    const t = tuned();
+    const { m, name } = await setup(memoryKV(), { tune: t.tune });
+    await makeE2eRunUnder(name);
+    await expect(m.submitRerun(`${name}/processed/t`, "r1", { tophat_wnd: 5 })).rejects.toMatchObject({
+      status: 400,
+      message: "tophat_wnd: not a window-2 parameter (needs a full run)",
+    });
+    await expect(m.submitRerun(`${name}/processed/t`, "auto", {})).rejects.toMatchObject({
+      status: 400,
+      message: "run name 'auto' is reserved for auto-tune; pick another name",
+    });
+    await expect(m.submitRerun(`${name}/nope`, "r1", {})).rejects.toMatchObject({ status: 404 });
+    const job = await m.submitRerun(`${name}/processed/t`, "r1", {});
+    await expect(m.submitAutotune(`${name}/processed/t`, {})).rejects.toMatchObject({
+      status: 400,
+      message: "a run is already going in this tab; wait for it or cancel it",
+    });
+    t.release();
+    await tick();
+    expect(m.get(job.id).status).toBe("done");
+  });
+
+  it("parses the auto-tune options and runs the job as reruns/auto", async () => {
+    const t = tuned();
+    const { m, name } = await setup(memoryKV(), { tune: t.tune });
+    await makeE2eRunUnder(name);
+    await expect(m.submitAutotune(`${name}/processed/t`, { diameter: "seven" })).rejects.toMatchObject({
+      status: 400,
+      message: "diameter: enter a number",
+    });
+    const job = await m.submitAutotune(`${name}/processed/t`, { diameter: "7", tune_frames: null });
+    expect(job).toMatchObject({
+      kind: "autotune",
+      name: "auto",
+      tune: false,
+      tune_args: { diameter: 7 },
+      out_dir: `${name}/processed/t/reruns/auto`,
+    });
+    await tick();
+    expect(m.get(job.id).status).toBe("done");
+    expect(t.calls).toEqual(['autotune {"diameter":7}']);
+  });
+
+  it("a run with tune chains the auto-tune in the same job and opens the run's Tune page", async () => {
+    const t = tuned();
+    const { m, workers, body } = await setup(memoryKV(), { tune: t.tune });
+    const job = await m.submit({ ...body, tune: true, tune_args: { diameter: 7 } });
+    expect(job.tune).toBe(true);
+    const seen: string[] = [];
+    m.events(job.id, (n, d) => seen.push(n === "stage" ? `stage ${(d as { stage: string }).stage}` : n));
+    workers[0].say({ type: "stage", stage: "pass1", event: "end", t: 1, seconds: 1 });
+    // the fake worker writes nothing: the run folder is a run once it has report.json and the factors' meta
+    mkdirSync(join(workerOut(m, job), "factors"));
+    writeFileSync(
+      join(workerOut(m, job), "factors/meta.json"),
+      JSON.stringify({ H: 1, W: 1, T: 1, tile: 1, ranks: [1] }),
+    );
+    writeFileSync(join(workerOut(m, job), "report.json"), "{}");
+    workers[0].say({ type: "done", files: new Map(), seconds: 3 });
+    await tick();
+    await tick();
+    expect(m.get(job.id).status).toBe("done");
+    expect(t.calls).toEqual(['autotune {"diameter":7}']);
+    expect(seen).toEqual(["status", "stage pass1", "stage tune_run", "stage tune_run", "status"]);
+  });
+
+  it("refuses bad auto-tune options of a run before any worker is made", async () => {
+    const t = tuned();
+    const { m, workers, body } = await setup(memoryKV(), { tune: t.tune });
+    await expect(
+      m.submit({ ...body, tune: true, tune_args: { diameter: "seven" } as unknown as Record<string, number> }),
+    ).rejects.toMatchObject({
+      status: 400,
+      message: "diameter: enter a number",
+    });
+    expect(workers).toEqual([]);
+  });
+
+  it("fails the job when the tune cannot even start", async () => {
+    const t = tuned();
+    t.tune.autotune = () => {
+      throw new Error("no ctx");
+    };
+    const { m, name } = await setup(memoryKV(), { tune: t.tune });
+    await makeE2eRunUnder(name);
+    const job = await m.submitAutotune(`${name}/processed/t`, {});
+    await tick();
+    expect(m.get(job.id)).toMatchObject({ status: "failed", error: "no ctx" });
+  });
+
+  it("reports a tune job whose last save failed, and keeps its status", async () => {
+    const t = tuned();
+    const inner = memoryKV();
+    let failNext = false;
+    const kv = {
+      ...inner,
+      set: async (k: string, v: unknown) => {
+        if (failNext) {
+          failNext = false;
+          throw new Error("disk full");
+        }
+        return inner.set(k, v);
+      },
+    } as ReturnType<typeof memoryKV>;
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { m, name } = await setup(kv, { tune: t.tune });
+    await makeE2eRunUnder(name);
+    const job = await m.submitAutotune(`${name}/processed/t`, {});
+    failNext = true;
+    await tick();
+    await tick();
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(String(spy.mock.calls[0][0])).toContain("could not finish the tune job");
+    expect(m.get(job.id).status).toBe("done");
+    spy.mockRestore();
+  });
+
+  it("a failed run skips the chained auto-tune", async () => {
+    const t = tuned();
+    const { m, workers, body } = await setup(memoryKV(), { tune: t.tune });
+    const job = await m.submit({ ...body, tune: true });
+    workers[0].say({ type: "error", message: "boom" });
+    await tick();
+    expect(m.get(job.id)).toMatchObject({ status: "failed", error: "boom" });
+    expect(t.calls).toEqual([]);
+  });
+
+  it("cancel stops a rerun job and releases the lock", async () => {
+    const t = tuned();
+    const { m, name } = await setup(memoryKV(), { tune: t.tune });
+    await makeE2eRunUnder(name);
+    const job = await m.submitRerun(`${name}/processed/t`, "r1", {});
+    await m.cancel(job.id);
+    t.release();
+    await tick();
+    expect(m.get(job.id).status).toBe("cancelled");
+    const next = await m.submitRerun(`${name}/processed/t`, "r2", {});
+    expect(next).toMatchObject({ kind: "rerun", name: "r2" }); // the gate is open: it may be done already
   });
 });

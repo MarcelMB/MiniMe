@@ -6,7 +6,7 @@ import { defineConfig } from "@playwright/test";
 const port = Number(process.env.BROWSER_PORT ?? 8797);
 export default defineConfig({
   testDir: "e2e",
-  testMatch: /browser\.spec\.ts/,
+  testMatch: /(browser|tune)\.spec\.ts/,
   timeout: 600_000,
   use: { baseURL: `http://127.0.0.1:${port}`, browserName: "chromium" },
   webServer: {

@@ -85,7 +85,7 @@ pub fn window_block_ranges(
 
 /// Offsets `(dy, dx)` by ring: ring `r` holds `(r - 1)^2 < dy^2 + dx^2 <= r^2` (ring 0 is
 /// the centre), so the disk of radius `r` (`seeds.disk`) is rings `0..=r`.
-fn rings(rmax: usize) -> Vec<Vec<(isize, isize)>> {
+pub(crate) fn rings(rmax: usize) -> Vec<Vec<(isize, isize)>> {
     let r = rmax as isize;
     let mut out = vec![Vec::new(); rmax + 1];
     for dy in -r..=r {
