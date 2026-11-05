@@ -1330,7 +1330,9 @@ describe("rerun and auto-tune jobs", () => {
   it("refuses bad auto-tune options of a run before any worker is made", async () => {
     const t = tuned();
     const { m, workers, body } = await setup(memoryKV(), { tune: t.tune });
-    await expect(m.submit({ ...body, tune: true, tune_args: { diameter: "seven" } as never })).rejects.toMatchObject({
+    await expect(
+      m.submit({ ...body, tune: true, tune_args: { diameter: "seven" } as unknown as Record<string, number> }),
+    ).rejects.toMatchObject({
       status: 400,
       message: "diameter: enter a number",
     });
@@ -1347,6 +1349,33 @@ describe("rerun and auto-tune jobs", () => {
     const job = await m.submitAutotune(`${name}/processed/t`, {});
     await tick();
     expect(m.get(job.id)).toMatchObject({ status: "failed", error: "no ctx" });
+  });
+
+  it("reports a tune job whose last save failed, and keeps its status", async () => {
+    const t = tuned();
+    const inner = memoryKV();
+    let failNext = false;
+    const kv = {
+      ...inner,
+      set: async (k: string, v: unknown) => {
+        if (failNext) {
+          failNext = false;
+          throw new Error("disk full");
+        }
+        return inner.set(k, v);
+      },
+    } as ReturnType<typeof memoryKV>;
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { m, name } = await setup(kv, { tune: t.tune });
+    await makeE2eRunUnder(name);
+    const job = await m.submitAutotune(`${name}/processed/t`, {});
+    failNext = true;
+    await tick();
+    await tick();
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(String(spy.mock.calls[0][0])).toContain("could not finish the tune job");
+    expect(m.get(job.id).status).toBe("done");
+    spy.mockRestore();
   });
 
   it("a failed run skips the chained auto-tune", async () => {
