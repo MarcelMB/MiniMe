@@ -103,7 +103,7 @@ export async function pass1Pooled(
 ): Promise<Store> {
   const bounds = chunkBounds(t, pool.size, deal, weights);
   const parts = bounds.length - 1;
-  const stage = pick(files, (n) => n === "params.json" || n === "template.npy" || n === "shifts.npy");
+  const stage = pick(files, (n) => ["params.json", "template.npy", "shifts.npy", "fill.npy"].includes(n));
   const live = new Array<number>(parts).fill(0);
   const began = performance.now();
   let bytes = 0;
@@ -209,7 +209,7 @@ export async function streamPooled(
     onResult: (i, r) => {
       live.delete(i);
       const s = performance.now();
-      engine.push_traces(r.cc, r.f);
+      engine.push_traces(r.cc, r.yra, r.f);
       storeMs += performance.now() - s;
       for (let j = 0; j < N; j++) {
         const cc = j === N - 1 ? r.cc : r.cc.slice();

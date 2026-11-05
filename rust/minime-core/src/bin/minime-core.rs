@@ -124,10 +124,9 @@ fn run_motion(args: &[String]) -> Result<(), String> {
     }
 
     let s = Instant::now();
-    let n_tmpl = p.template_frames.min(frames.starts[1]);
-    let m = Motion::build(&p, n_tmpl, &mut |t| {
-        Ok(motion::registration_image(&frames.get(t)?, &p))
-    })?;
+    let total = *frames.starts.last().unwrap();
+    let seg0 = frames.starts[1];
+    let (m, fill) = motion::build_session_template(&p, total, seg0, &mut |t| frames.get(t))?;
     let t_template = s.elapsed().as_secs_f64();
 
     let (mut t_read, mut t_reg, mut t_est, mut t_qual) = (0.0, 0.0, 0.0, 0.0);
@@ -168,7 +167,11 @@ fn run_motion(args: &[String]) -> Result<(), String> {
         ("quality.npy".into(), npy::write(&[n], &quality)),
         ("frames_t.npy".into(), npy::write(&[chk_t.len()], &chk_t)),
         ("prep.npy".into(), npy::write(&[chk_t.len(), ph, pw], &prep_chk)),
+        ("template_src.npy".into(), npy::write(&[ph, pw], m.source_image())),
     ];
+    if let Some(f) = &fill {
+        files.push(("fill.npy".into(), npy::write(&[p.h, p.w], f)));
+    }
     if !reg_chk.is_empty() {
         files.push(("reg.npy".into(), npy::write(&[chk_t.len(), p.h, p.w], &reg_chk)));
     }
@@ -206,6 +209,7 @@ fn run_pass1(args: &[String]) -> Result<(), String> {
     let mut frames = Frames::open(&raw, h, w)?;
     let m = Motion::from_template_image(&p.motion, template)?;
     let mut p1 = Pass1::new(&p, Some(m));
+    pass1::attach_fill(&mut p1, &p, read("fill.npy").ok().as_deref())?;
     let mut files: Vec<std::fs::File> = (0..p1.grid.len())
         .map(|k| std::fs::File::create(tiles.join(format!("tile_{k:03}.part00"))))
         .collect::<Result<_, _>>()

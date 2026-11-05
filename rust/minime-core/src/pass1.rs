@@ -3,9 +3,10 @@
 //! the seed blocks, frame quality, and the corrected frames buffered tile by tile for the
 //! tile store (`minime.tiles`: one file per 64 x 64 tile, each `(n, th, tw)` uint8).
 
+use crate::fill::{fill_outside, valid_rect};
 use crate::motion::{registration_from_denoised, Motion, MotionParams, Reg};
 use crate::npy;
-use crate::preprocess::{median_blur, shift, tophat};
+use crate::preprocess::{median_blur, shift, shift_replicate, tophat};
 use serde::Deserialize;
 
 /// `ref_pass1.py`'s `params.json`: the motion parameters plus tile size, seed window and
@@ -65,6 +66,17 @@ pub fn seed_block_edges(t: usize, wnd: usize, stp: usize) -> Vec<usize> {
     edges
 }
 
+/// Give `pass` the fill image of `fill_npy` (an `(h, w)` uint8 `.npy`) when the parameters ask
+/// for the template fill (an error if it is missing); nothing for the zero fill.
+pub fn attach_fill(pass: &mut Pass1, p: &Pass1Params, fill_npy: Option<&[u8]>) -> Result<(), String> {
+    p.motion.check()?;
+    if !p.motion.template_fill() {
+        return Ok(());
+    }
+    let bytes = fill_npy.ok_or("motion_fill is \"template\" but the inputs hold no fill.npy")?;
+    pass.set_fill(npy::read_u8(bytes)?.data)
+}
+
 /// `pass1.Pass1` for one worker that starts at the window's first frame.
 pub struct Pass1 {
     p: MotionParams,
@@ -82,6 +94,8 @@ pub struct Pass1 {
     block: usize,
     tiles: Vec<Vec<u8>>, // corrected frames since the last `take_tiles`, per tile
     buffered: usize,
+    /// The template's fill image (`motion_fill = "template"`), `h * w` uint8.
+    fill: Option<Vec<u8>>,
 }
 
 impl Pass1 {
@@ -105,6 +119,36 @@ impl Pass1 {
             t: 0,
             block: 0,
             buffered: 0,
+            fill: None,
+        }
+    }
+
+    /// The fill image for `motion_fill = "template"` (`h * w` uint8): the warp then replicates the
+    /// edge pixels and the pixels read from outside the frame get it after the tophat.
+    pub fn set_fill(&mut self, fill: Vec<u8>) -> Result<(), String> {
+        if fill.len() != self.p.h * self.p.w {
+            return Err(format!(
+                "fill image of {} pixels, expected {} x {}",
+                fill.len(),
+                self.p.h,
+                self.p.w
+            ));
+        }
+        self.fill = Some(fill);
+        Ok(())
+    }
+
+    /// Whether frames get the template fill (the warp then replicates the edge pixels).
+    pub fn fills(&self) -> bool {
+        self.fill.is_some()
+    }
+
+    /// `motion.fill_outside` of one corrected frame warped by `rect_shift` (the float64 shift
+    /// `_valid_rects` sees: the estimate, or the given float32 shift).
+    fn filled(&self, blk: &mut [u8], rect_shift: [f64; 2]) {
+        if let Some(fill) = &self.fill {
+            let (h, w) = (self.p.h, self.p.w);
+            fill_outside(blk, h, w, valid_rect(rect_shift[0], rect_shift[1], h, w), fill);
         }
     }
 
@@ -205,12 +249,21 @@ impl Pass1 {
             }
             _ => return Err("no shift given and no template to estimate it".into()),
         };
+        let warp = |f: &[u8]| {
+            if self.fills() {
+                shift_replicate(f, h, w, dy, dx)
+            } else {
+                shift(f, h, w, dy, dx)
+            }
+        };
         let (blk, warped) = if p.motion_before_tophat {
-            let blk = tophat(&shift(&den, h, w, dy, dx), h, w, p.tophat_wnd);
+            let blk = tophat(&warp(&den), h, w, p.tophat_wnd);
             (blk, reg.map(|r| r.shifted(h, w, dy, dx)))
         } else {
+            // Python fills the warped tophat in place, which is also the frame its quality uses
             let Some(Reg::U8(top)) = reg else { unreachable!() };
-            let blk = shift(&top, h, w, dy, dx);
+            let mut blk = warp(&top);
+            self.filled(&mut blk, self.rect_shift([dy, dx]));
             let warped = Reg::U8(blk.clone());
             (blk, Some(warped))
         };
@@ -222,14 +275,32 @@ impl Pass1 {
         Ok([dy, dx])
     }
 
-    /// The end of `push` for a frame corrected elsewhere (the GPU path, `web/src/gpu/`): its quality
-    /// (if there is a template), the max projection, block maximum and tile buffers of `blk`, and the
-    /// shift used. The estimated shift (`shifts64`) goes in before, with `push_estimate`.
+    /// The shift `motion._valid_rects` sees for the frame being folded: its float64 estimate when
+    /// `push_estimate` / `push` recorded one for it, else the shift used.
+    fn rect_shift(&self, used: [f32; 2]) -> [f64; 2] {
+        if self.shifts64.len() > self.shifts.len() {
+            let n = self.shifts64.len();
+            [self.shifts64[n - 2], self.shifts64[n - 1]]
+        } else {
+            used.map(f64::from)
+        }
+    }
+
+    /// The end of `push` for a frame corrected elsewhere (the GPU path, `web/src/gpu/`): the template
+    /// fill (if on), its quality (if there is a template), the max projection, block maximum and tile
+    /// buffers of `blk`, and the shift used. The estimated shift (`shifts64`) goes in before, with
+    /// `push_estimate`.
     pub fn fold_corrected(&mut self, blk: &[u8], quality: Option<f32>, used: [f32; 2]) {
         if let Some(q) = quality {
             self.quality.push(q);
         }
-        self.fold(blk);
+        if self.fills() {
+            let mut b = blk.to_vec();
+            self.filled(&mut b, self.rect_shift(used));
+            self.fold(&b);
+        } else {
+            self.fold(blk);
+        }
         self.shifts.extend(used);
     }
 
@@ -432,6 +503,9 @@ mod tests {
                 template_frames: 4,
                 motion_before_tophat: true,
                 motion_bandpass: [1.0, 6.0],
+                template_source: "first".into(),
+                template_chunks: 10,
+                motion_fill: "zero".into(),
             },
             tile: 32,
             seeds_wnd: 6,

@@ -16,7 +16,8 @@
 //! - pass 2: a worker compresses any tile of the window's tile store (`compress_at`), the
 //!   window's engine takes the factors in tile order (`set_tile`).
 
-use crate::motion::{registration_image, Correlator, Motion, MotionParams};
+use crate::fill::FillSum;
+use crate::motion::{fill_frame, registration_image, Correlator, Motion, MotionParams};
 use crate::npy;
 use crate::stream::{lane_ranges, FoldLane, LaneRange, Support, TraceModel};
 use crate::wasm::{
@@ -80,6 +81,9 @@ pub struct StreamSolver {
     sol: Vec<f64>,
     y8: Vec<u8>,
     cc: Vec<f64>,
+    rhs: Vec<f64>,
+    yr: Vec<f64>,
+    yra: Vec<f64>,
     f: Vec<f32>,
 }
 
@@ -98,6 +102,9 @@ impl StreamSolver {
             sol: Vec::new(),
             y8: Vec::new(),
             cc: Vec::new(),
+            rhs: Vec::new(),
+            yr: Vec::new(),
+            yra: Vec::new(),
             f: Vec::new(),
         })
     }
@@ -124,16 +131,24 @@ impl StreamSolver {
     }
 
     /// Solve `n` frames from `t` on whose pixels were preprocessed elsewhere (the GPU path:
-    /// `prep().frame` of each, `n * H * W` uint8).
+    /// `prep().frame` of each without the template fill, `n * H * W` uint8; the fill goes in here).
     pub fn solve_prepped(&mut self, t: usize, n: usize, y8: &[u8]) -> Result<(), JsError> {
-        let px = self.inp.params.h * self.inp.params.w;
+        let (h, w) = (self.inp.params.h, self.inp.params.w);
+        let px = h * w;
         if t + n > self.inp.params.t || y8.len() != n * px {
             return Err(JsError::new(
                 "prepared frames past the inputs' T or of the wrong size",
             ));
         }
-        for f in y8.chunks_exact(px) {
-            self.solve_y8(f);
+        for (i, f) in y8.chunks_exact(px).enumerate() {
+            if self.inp.fill.is_some() {
+                let (dy, dx) = (self.inp.shifts[2 * (t + i)], self.inp.shifts[2 * (t + i) + 1]);
+                let mut f = f.to_vec();
+                self.inp.prep().fill_border(&mut f, h, w, dy, dx);
+                self.solve_y8(&f);
+            } else {
+                self.solve_y8(f);
+            }
         }
         Ok(())
     }
@@ -148,9 +163,14 @@ impl StreamSolver {
     /// Least squares of one preprocessed frame, its traces and pixels kept for `take_*`.
     fn solve_y8(&mut self, y8: &[u8]) {
         let y: Vec<f32> = y8.iter().map(|&v| f32::from(v)).collect();
-        self.model.solve(&y, &mut self.sol);
+        self.model.solve_rhs(&y, &mut self.sol, &mut self.rhs);
         let k = self.model.k;
+        let from = self.cc.len();
         self.cc.extend(self.sol[..k].iter().map(|v| v.max(0.0)));
+        self.yr.resize(k, 0.0);
+        self.model
+            .yra(&self.rhs, &self.cc[from..], self.sol[k], &mut self.yr);
+        self.yra.extend_from_slice(&self.yr);
         self.f.push(self.sol[k] as f32);
         self.y8.extend_from_slice(y8);
     }
@@ -166,6 +186,10 @@ impl StreamSolver {
     pub fn take_cc(&mut self) -> Vec<f64> {
         std::mem::take(&mut self.cc)
     }
+    /// Their YrA, `(n, K)` float64 frame-major, next to `take_cc`.
+    pub fn take_yra(&mut self) -> Vec<f64> {
+        std::mem::take(&mut self.yra)
+    }
     /// Their background traces (float32).
     pub fn take_f(&mut self) -> Vec<f32> {
         std::mem::take(&mut self.f)
@@ -175,16 +199,18 @@ impl StreamSolver {
 #[wasm_bindgen]
 impl Engine {
     /// Fold in frames a `StreamSolver` solved, in frame order: their preprocessed pixels `y8`
-    /// (`n * H * W`), clipped traces `cc` (`n * K` float64) and background traces `f`.
-    pub fn push_solved(&mut self, y8: &[u8], cc: &[f64], f: &[f32]) -> Result<(), JsError> {
+    /// (`n * H * W`), clipped traces `cc` and their YrA `yra` (`n * K` float64 each) and
+    /// background traces `f`.
+    pub fn push_solved(&mut self, y8: &[u8], cc: &[f64], yra: &[f64], f: &[f32]) -> Result<(), JsError> {
         let p = self.inp.params.h * self.inp.params.w;
         let k = self.pass.model.k;
         let n = f.len();
-        if y8.len() != n * p || cc.len() != n * k {
+        if y8.len() != n * p || cc.len() != n * k || yra.len() != n * k {
             return Err(JsError::new(&format!(
-                "{n} solved frames come with {} pixels and {} traces, expected {} and {}",
+                "{n} solved frames come with {} pixels and {} traces ({} YrA), expected {} and {}",
                 y8.len(),
                 cc.len(),
+                yra.len(),
                 n * p,
                 n * k
             )));
@@ -197,7 +223,8 @@ impl Engine {
             for (d, &s) in y.iter_mut().zip(&y8[i * p..(i + 1) * p]) {
                 *d = f32::from(s);
             }
-            self.pass.push_solved(&y, &cc[i * k..(i + 1) * k], f[i]);
+            self.pass
+                .push_solved(&y, &cc[i * k..(i + 1) * k], &yra[i * k..(i + 1) * k], f[i]);
         }
         Ok(())
     }
@@ -321,6 +348,90 @@ impl TemplateWorker {
     }
 }
 
+/// A worker's share of a spread template (`motion::SpreadBuilder`, which the run's `MotionEngine`
+/// holds): per session frame `prep` (the means), `estimate` against the template `set_template`
+/// gave (the alignment rounds), `prep_warped` (the warped means) and `fill_add` (the fill sums,
+/// handed over with `take_fill`). The run's worker uses one too when it has no pool.
+#[wasm_bindgen]
+pub struct SpreadWorker {
+    p: MotionParams,
+    corr: Correlator,
+    tmpl: Option<Motion>,
+    fill: FillSum,
+    stride: usize,
+}
+
+#[wasm_bindgen]
+impl SpreadWorker {
+    /// `params_json`: the stage's `params.json` (the motion parameters; extra keys are ignored).
+    #[wasm_bindgen(constructor)]
+    pub fn new(params_json: &[u8]) -> Result<SpreadWorker, JsError> {
+        let err = |e: String| JsError::new(&e);
+        let p: MotionParams =
+            serde_json::from_slice(params_json).map_err(|e| JsError::new(&format!("params.json: {e}")))?;
+        p.check().map_err(err)?;
+        crate::preprocess::check_median_ksize(p.median_ksize).map_err(err)?;
+        let corr = Correlator::new(p.h, p.w, p.motion_down).map_err(err)?;
+        Ok(SpreadWorker {
+            stride: p.w,
+            fill: FillSum::new(p.h * p.w),
+            p,
+            corr,
+            tmpl: None,
+        })
+    }
+    pub fn set_stride(&mut self, stride: usize) {
+        self.stride = stride;
+    }
+    /// The template the next frames align to: its source image (`MotionEngine::spread_image`) and
+    /// search (`spread_search`).
+    pub fn set_template(&mut self, image: &[f32], search: usize) -> Result<(), JsError> {
+        let corr = Correlator::new(self.p.h, self.p.w, self.p.motion_down).map_err(|e| JsError::new(&e))?;
+        let (ph, pw) = corr.prep_shape();
+        if image.len() != ph * pw {
+            return Err(JsError::new("the template image has the wrong size"));
+        }
+        self.tmpl = Some(Motion::from_image(corr, image.to_vec(), search));
+        Ok(())
+    }
+    fn raw(&self, chunk: &[u8]) -> Vec<u8> {
+        unpad(chunk, self.p.h, self.p.w, self.stride)
+    }
+    fn template(&self) -> Result<&Motion, JsError> {
+        self.tmpl.as_ref().ok_or(JsError::new("set_template first"))
+    }
+    /// The frame's registration image, prepared (a run's mean).
+    pub fn prep(&self, chunk: &[u8]) -> Vec<f32> {
+        self.corr.prep(&registration_image(&self.raw(chunk), &self.p))
+    }
+    /// `[dy, dx, peak]`: the frame's shift and normalised correlation peak against the template.
+    pub fn estimate(&self, chunk: &[u8]) -> Result<Vec<f64>, JsError> {
+        let ([dy, dx], peak) = self
+            .template()?
+            .estimate_peak(&registration_image(&self.raw(chunk), &self.p));
+        Ok(vec![dy, dx, f64::from(peak)])
+    }
+    /// The frame's registration image warped by `(dy, dx)`, prepared (an aligned mean).
+    pub fn prep_warped(&self, chunk: &[u8], dy: f64, dx: f64) -> Vec<f32> {
+        let (h, w) = (self.p.h, self.p.w);
+        let reg = registration_image(&self.raw(chunk), &self.p);
+        self.corr.prep(&reg.shifted(h, w, dy as f32, dx as f32))
+    }
+    /// Add the frame's corrected image to this worker's fill sums (template: the final one).
+    pub fn fill_add(&mut self, chunk: &[u8]) -> Result<(), JsError> {
+        let raw = self.raw(chunk);
+        let (top, r) = fill_frame(&raw, self.template()?, &self.p);
+        self.fill.add(&top, self.p.h, self.p.w, r);
+        Ok(())
+    }
+    /// The fill sums since the last call (flat, `MotionEngine::spread_add_fill`), reset.
+    pub fn take_fill(&mut self) -> Vec<u32> {
+        let out = self.fill.to_flat();
+        self.fill = FillSum::new(self.p.h * self.p.w);
+        out
+    }
+}
+
 /// One lane of the streaming pass's fold on a pool worker (`stream::FoldLane`): lane `lane` of
 /// `lanes`, built from the pass's inputs. `fold` the solved frames in frame order, then hand the
 /// sums to the pass (`Engine::put_lane`).
@@ -386,14 +497,15 @@ impl StreamLane {
 #[wasm_bindgen]
 impl Engine {
     /// Store solved frames' traces without folding them (the pool's lanes fold them): `cc`
-    /// `n * K` clipped traces, `f` the `n` background traces.
-    pub fn push_traces(&mut self, cc: &[f64], f: &[f32]) -> Result<(), JsError> {
+    /// `n * K` clipped traces, `yra` their `n * K` YrA, `f` the `n` background traces.
+    pub fn push_traces(&mut self, cc: &[f64], yra: &[f64], f: &[f32]) -> Result<(), JsError> {
         let k = self.pass.model.k;
-        if cc.len() != f.len() * k || self.pass.t + f.len() > self.inp.params.t {
+        if cc.len() != f.len() * k || yra.len() != f.len() * k || self.pass.t + f.len() > self.inp.params.t {
             return Err(JsError::new("solved traces do not match the pass"));
         }
         for (i, &fi) in f.iter().enumerate() {
-            self.pass.push_traces(&cc[i * k..(i + 1) * k], fi);
+            self.pass
+                .push_traces(&cc[i * k..(i + 1) * k], &yra[i * k..(i + 1) * k], fi);
         }
         Ok(())
     }

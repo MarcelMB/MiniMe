@@ -13,7 +13,18 @@ import { pyFloat } from "./num";
 export type WindowParts = { t0: number; t1: number; files: Map<string, Uint8Array> };
 
 /** The pass-2 factors of a window that go to `factors/wNN/` (`writeWindow`). */
-const FACTORS = ["W.npy", "V.npy", "s.npy", "mean.npy", "k.npy", "rank.npy", "block_max.npy", "max_proj.npy"];
+const FACTORS = [
+  "W.npy",
+  "V.npy",
+  "s.npy",
+  "mean.npy",
+  "sigma.npy",
+  "energy.npy",
+  "k.npy",
+  "rank.npy",
+  "block_max.npy",
+  "max_proj.npy",
+];
 
 /** The files of a window the session-wide steps read: `factors/meta.json`'s ranks, the seeds
  * (`sessionSeeds`: initial seeds, the PNR mask, merged seeds) and the init footprints
@@ -239,14 +250,23 @@ export type RunParts = {
   windows: WindowParts[];
   /** The per-pixel maximum of the windows' max projections (`foldMaxProj`), H * W values. */
   maxProj: Float32Array;
-  /** The motion stage's `shifts.npy`, `template.npy` and `quality.npy`, and its parameters. */
-  motion: { shifts: Uint8Array; template: Uint8Array; quality: Uint8Array; params: Record<string, unknown> };
+  /** The motion stage's `shifts.npy`, `template.npy`, `quality.npy` and (template fill) `fill.npy`, and
+   * its parameters. */
+  motion: {
+    shifts: Uint8Array;
+    template: Uint8Array;
+    quality: Uint8Array;
+    fill?: Uint8Array;
+    params: Record<string, unknown>;
+  };
   /** The stitch's outputs: `A_{data,indices,indptr}.npy`, `sn.npy`, `bright.npy`. */
   stitch: Map<string, Uint8Array>;
   /** The streaming pass's outputs: `b.npy`, `Amerged_{data,indices,indptr}.npy`. */
   stream: Map<string, Uint8Array | Blob>;
   /** `C.npy`, (K, T) float32, read from where the pass wrote it. */
   traces: Blob;
+  /** YrA.npy, (K, T) float32 (cnmf.compute_trace on the streaming pass's traces). */
+  yra: Blob;
   /** `progress.jsonl`'s lines. */
   progress: string[];
 };
@@ -273,10 +293,13 @@ export async function writeRun(out: Dir, r: RunParts): Promise<void> {
   await out.write("progress.jsonl", `${r.progress.join("\n")}\n`);
   const motion = await walk(out, "motion", { create: true });
   await writeJSON(motion, "meta.json", { format_version: 1, params: r.motion.params, raw_hash: "" });
-  await motion.write(
-    "arrays.npz",
-    await npzBlob({ shifts: r.motion.shifts, template: r.motion.template, quality: r.motion.quality }),
-  );
+  const arrays: Record<string, Uint8Array> = {
+    shifts: r.motion.shifts,
+    template: r.motion.template,
+    quality: r.motion.quality,
+  };
+  if (r.motion.fill) arrays.fill = r.motion.fill;
+  await motion.write("arrays.npz", await npzBlob(arrays));
 
   const factors = await walk(out, "factors", { create: true });
   const ranks = r.windows.map((w) => Array.from(readNpy(need(w.files, "rank.npy")).data as ArrayLike<number>));
@@ -295,6 +318,7 @@ export async function writeRun(out: Dir, r: RunParts): Promise<void> {
   const A = csrOf({ t0: 0, t1: 0, files: r.stitch }, "A", P);
   await cnmf.write("A.npz", await csrNpz(A));
   await cnmf.write("C.npy", r.traces);
+  await cnmf.write("YrA.npy", r.yra);
   const peak = Float32Array.from(readNpy(need(r.stitch, "bright.npy")).data);
   await cnmf.write("units.csv", unitsCsv(A, r.H, r.W, peak));
   const b = r.stream.get("b.npy");

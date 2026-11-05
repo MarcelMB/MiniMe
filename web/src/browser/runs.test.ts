@@ -26,6 +26,28 @@ async function setup() {
 }
 
 describe("Registry", () => {
+  it("opens a rerun folder with its source run's factors", async () => {
+    const { name, top, reg } = await setup();
+    const run = join(top, "s1/processed/t");
+    const rerun = join(run, "reruns/r1");
+    mkdirSync(join(rerun, "cnmf"), { recursive: true });
+    mkdirSync(join(rerun, "factors"), { recursive: true });
+    cpSync(join(run, "factors/meta.json"), join(rerun, "factors/meta.json"));
+    const params = JSON.parse(readFileSync(join(run, "params.json"), "utf8"));
+    const src = `${name}/s1/processed/t`;
+    writeFileSync(join(rerun, "params.json"), JSON.stringify({ ...params, source_run: src }));
+    writeFileSync(join(rerun, "report.json"), JSON.stringify({ stages: [], counts: {} }));
+    const r = await reg.open(`${src}/reruns/r1`);
+    expect(r.sourceRun).toBe(src);
+    expect((r.factors as NodeDir).path).toBe(run);
+    expect((r.dir as NodeDir).path).toBe(rerun);
+    const plain = await reg.open(src);
+    expect(plain.sourceRun).toBeNull();
+    expect((plain.factors as NodeDir).path).toBe(run);
+    // find never lists a rerun
+    expect((await reg.find(name)).sort()).toEqual([src, `${name}/s2/processed/u`]);
+  });
+
   it("finds runs below a root, never in hidden folders", async () => {
     const { name, reg } = await setup();
     const found = await reg.find(name);
@@ -119,7 +141,7 @@ describe("run routes", () => {
     });
     expect(runs.find((r) => r.name === "t")).toMatchObject({
       id: expect.stringMatching(/^[0-9a-f]{12}$/),
-      units: 15,
+      units: 7,
       T: 300,
     });
     // no root given: the first one, the most recently used

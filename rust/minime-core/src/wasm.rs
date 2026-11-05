@@ -9,8 +9,9 @@ use crate::avi::{self, AviIndex, ReadAt};
 use crate::cnmf::{self, CnmfParams, CnmfResult};
 use crate::compress::{self, Gaussian, Normals, Pass2Params, Recorded, TileFactors};
 use crate::factors::Factors;
+use crate::fill::FillSum;
 use crate::init::{self, InitParams, InitResult};
-use crate::motion::{self, Motion, MotionParams, Reg, TemplateBuilder};
+use crate::motion::{self, Motion, MotionParams, Reg, SpreadBuilder, SpreadStage, TemplateBuilder};
 use crate::npy;
 use crate::pass1::{self, Pass1, Pass1Params};
 use crate::preview;
@@ -173,6 +174,10 @@ impl Engine {
     pub fn take_traces(&mut self) -> Vec<f32> {
         crate::unit_major(&self.pass.take_c(), self.pass.model.k)
     }
+    /// The YrA pushed since the last call, (K, n) unit-major, as `take_traces`.
+    pub fn take_yra(&mut self) -> Vec<f32> {
+        crate::unit_major(&self.pass.take_yra(), self.pass.model.k)
+    }
 
     /// Footprint update and merge; returns output name -> `.npy`/`.json` bytes (all but
     /// `C.npy`, which the worker writes from `take_traces`).
@@ -195,6 +200,12 @@ pub struct MotionEngine {
     stride: usize,
     tmpl_n: usize,
     pub(crate) builder: Option<TemplateBuilder>,
+    /// `template_source = "spread"`: the template's builder (instead of `builder`)
+    spread: Option<SpreadBuilder>,
+    /// the fill image (`motion_fill = "template"`) once built; `fill_sums` while a first-frames
+    /// template's fill is being added up
+    fill: Option<Vec<u8>>,
+    fill_sums: Option<FillSum>,
     motion: Option<Motion>,
     shifts: Vec<f64>,
     quality: Vec<f32>,
@@ -206,9 +217,10 @@ pub struct MotionEngine {
 #[wasm_bindgen]
 impl MotionEngine {
     /// `files`: `params.json` (`ref_motion.py`'s inputs) and optionally `check_frames.npy`;
-    /// `seg0_frames`: frames in the first segment (the template is built from those).
+    /// `seg0_frames`: frames in the first segment (a first-frames template is built from those);
+    /// `total_frames`: the session's frames (a spread template samples them).
     #[wasm_bindgen(constructor)]
-    pub fn new(files: &Map, seg0_frames: usize) -> Result<MotionEngine, JsError> {
+    pub fn new(files: &Map, seg0_frames: usize, total_frames: usize) -> Result<MotionEngine, JsError> {
         let err = |e: String| JsError::new(&e);
         let meta: serde_json::Value = serde_json::from_slice(&map_bytes(files, "params.json").map_err(err)?)
             .map_err(|e| JsError::new(&format!("params.json: {e}")))?;
@@ -228,8 +240,15 @@ impl MotionEngine {
                 .collect(),
             Err(_) => Vec::new(),
         };
-        let n = p.template_frames.min(seg0_frames);
-        let builder = TemplateBuilder::new(&p, n).map_err(err)?;
+        p.check().map_err(err)?;
+        let (builder, spread, n) = if p.spread() {
+            let s = SpreadBuilder::new(&p, total_frames).map_err(err)?;
+            let n = s.frames().len();
+            (None, Some(s), n)
+        } else {
+            let n = p.template_frames.min(seg0_frames);
+            (Some(TemplateBuilder::new(&p, n).map_err(err)?), None, n)
+        };
         Ok(MotionEngine {
             stride: p.w,
             p,
@@ -237,7 +256,10 @@ impl MotionEngine {
             t1,
             check,
             tmpl_n: n,
-            builder: Some(builder),
+            builder,
+            spread,
+            fill: None,
+            fill_sums: None,
             motion: None,
             shifts: Vec::new(),
             quality: Vec::new(),
@@ -285,15 +307,122 @@ impl MotionEngine {
         Ok(())
     }
 
-    /// Finish the template once all its frames are in (returns its frame count).
+    /// Finish the template once all its frames are in (returns its frame count). A first-frames
+    /// template with `motion_fill = "template"` then wants its fill sums (`fill_pending`).
     pub fn build_template(&mut self) -> Result<usize, JsError> {
+        let err = |e: String| JsError::new(&e);
+        if let Some(s) = self.spread.take() {
+            let n = s.frames().len();
+            let (m, fill) = s.finish().map_err(err)?;
+            self.motion = Some(m);
+            self.fill = fill;
+            return Ok(n);
+        }
         let b = self
             .builder
             .take()
             .ok_or(JsError::new("template already built"))?;
         let n = b.pushed() / 2;
-        self.motion = Some(b.finish().map_err(|e| JsError::new(&e))?);
+        self.motion = Some(b.finish().map_err(err)?);
+        if self.p.template_fill() {
+            self.fill_sums = Some(FillSum::new(self.p.h * self.p.w));
+        }
         Ok(n)
+    }
+
+    /// `template_source = "spread"`.
+    pub fn spread(&self) -> bool {
+        self.spread.is_some()
+    }
+    /// The session frames of the template, in the order its stages take them.
+    pub fn template_frames(&self) -> Vec<u32> {
+        match &self.spread {
+            Some(s) => s.frames().iter().map(|&f| f as u32).collect(),
+            None => (0..self.tmpl_n as u32).collect(),
+        }
+    }
+    /// The spread template's stage: 0 means of the runs (`spread_add_prepped`), 1 estimates
+    /// (`spread_set_estimates` against `spread_image` with `spread_search`), 2 aligned means
+    /// (`spread_add_prepped` of the frames warped by `spread_warps`), 3 fill sums (`add_fill`
+    /// against `spread_image`), 4 done (`build_template`); 4 without a spread template.
+    pub fn spread_stage(&self) -> u32 {
+        match self.spread.as_ref().map(SpreadBuilder::stage) {
+            Some(SpreadStage::Means) => 0,
+            Some(SpreadStage::Estimate(_)) => 1,
+            Some(SpreadStage::Mean(_)) => 2,
+            Some(SpreadStage::Fill) => 3,
+            Some(SpreadStage::Done) | None => 4,
+        }
+    }
+    /// The template the current stage aligns to (its source image), empty if none.
+    pub fn spread_image(&self) -> Vec<f32> {
+        if let Some(s) = &self.spread {
+            return s.current_image().map(<[f32]>::to_vec).unwrap_or_default();
+        }
+        match (&self.motion, &self.fill_sums) {
+            (Some(m), Some(_)) => m.source_image().to_vec(),
+            _ => Vec::new(),
+        }
+    }
+    /// The search of `spread_image`'s template: twice `motion_max_shift` for the estimates,
+    /// `motion_max_shift` for the fill.
+    pub fn spread_search(&self) -> usize {
+        match self.spread.as_ref().map(SpreadBuilder::stage) {
+            Some(SpreadStage::Estimate(_)) => 2 * self.p.motion_max_shift,
+            _ => self.p.motion_max_shift,
+        }
+    }
+    /// The shifts the aligned-means stage warps the template frames by, `(n, 2)` flat.
+    pub fn spread_warps(&self) -> Vec<f64> {
+        match &self.spread {
+            Some(s) if matches!(s.stage(), SpreadStage::Mean(_)) => {
+                (0..s.frames().len()).flat_map(|i| s.warp_shift(i)).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+    /// Template frame `i`'s prepared image (stages 0 and 2, in frame order).
+    pub fn spread_add_prepped(&mut self, i: usize, prep: &[f32]) -> Result<(), JsError> {
+        let s = self.spread.as_mut().ok_or(JsError::new("no spread template"))?;
+        s.add_prepped(i, prep).map_err(|e| JsError::new(&e))
+    }
+    /// `[dy, dx, peak]` of template frames `i0, i0 + 1, ...` (stage 1, any order of calls).
+    pub fn spread_set_estimates(&mut self, i0: usize, est: &[f64]) -> Result<(), JsError> {
+        let s = self.spread.as_mut().ok_or(JsError::new("no spread template"))?;
+        for (k, e) in est.chunks_exact(3).enumerate() {
+            s.set_estimate(i0 + k, [e[0], e[1]], e[2] as f32)
+                .map_err(|e| JsError::new(&e))?;
+        }
+        Ok(())
+    }
+    /// Whether the template's fill sums are still wanted (`add_fill` against `spread_image`).
+    pub fn fill_pending(&self) -> bool {
+        self.spread_stage() == 3 || self.fill_sums.is_some()
+    }
+    /// A `SpreadWorker`'s fill sums (`take_fill`) of some template frames.
+    pub fn add_fill(&mut self, flat: &[u32]) -> Result<(), JsError> {
+        let err = |e: String| JsError::new(&e);
+        let sums = FillSum::from_flat(flat).map_err(err)?;
+        if let Some(s) = self.spread.as_mut() {
+            return s.add_fill(&sums).map_err(err);
+        }
+        let acc = self
+            .fill_sums
+            .as_mut()
+            .ok_or(JsError::new("no fill sums wanted"))?;
+        acc.merge(&sums);
+        if acc.n as usize > self.tmpl_n {
+            return Err(JsError::new("more fill frames than template frames"));
+        }
+        if acc.n as usize == self.tmpl_n {
+            self.fill = Some(acc.image());
+            self.fill_sums = None;
+        }
+        Ok(())
+    }
+    /// The fill image (`h * w` uint8), empty without one.
+    pub fn fill_image(&self) -> Vec<u8> {
+        self.fill.clone().unwrap_or_default()
     }
 
     /// Shift and quality of the next frame of `t0..t1`.
@@ -338,6 +467,13 @@ impl MotionEngine {
             ("frames_t.npy".into(), npy::write(&[k], &self.chk_t)),
             ("prep.npy".into(), npy::write(&[k, ph, pw], &self.prep_chk)),
         ];
+        if let Some(f) = &self.fill {
+            files.push(("fill.npy".into(), npy::write(&[self.p.h, self.p.w], f)));
+        } else if self.p.template_fill() {
+            return Err(JsError::new(
+                "motion_fill is \"template\" but the fill image was not built",
+            ));
+        }
         if !self.reg_chk.is_empty() {
             files.push((
                 "reg.npy".into(),
@@ -391,7 +527,9 @@ impl Pass1Engine {
             }
         }
         let m = Motion::from_template_image(&p.motion, template).map_err(err)?;
-        let pass = Pass1::new(&p, Some(m));
+        let mut pass = Pass1::new(&p, Some(m));
+        let fill = map_bytes(files, "fill.npy").ok();
+        crate::pass1::attach_fill(&mut pass, &p, fill.as_deref()).map_err(err)?;
         Ok(Pass1Engine {
             stride: p.motion.w,
             p,
@@ -966,5 +1104,176 @@ impl StitchEngine {
             files.push(("sn.npy".into(), npy::write(&[p], &sn)));
         }
         Ok(npy_map(files))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Window reruns and the auto-tune: one window's stages on its saved factors
+// ---------------------------------------------------------------------------
+
+/// A window's seeds → init → CNMF from its saved factors (`factors/wNN/`), for reruns and the
+/// auto-tune search: `trial` per setting, `window_bytes` for the stitch.
+#[wasm_bindgen]
+pub struct WindowEngine {
+    s: crate::window::WindowSession,
+}
+
+#[wasm_bindgen]
+impl WindowEngine {
+    #[wasm_bindgen(constructor)]
+    pub fn new(run_session: &[u8], t0: usize, t1: usize, files: &Map) -> Result<WindowEngine, JsError> {
+        let s = crate::window::WindowSession::new(run_session, t0, t1, &mut |n| map_bytes(files, n))
+            .map_err(|e| JsError::new(&e))?;
+        Ok(WindowEngine { s })
+    }
+
+    /// `checks_json`: a `Checks`; `caps_json`: `{"seeds_pnr": n, "seeds_merged": n}` or "".
+    /// Returns a `TrialOut` as JSON.
+    pub fn trial(
+        &mut self,
+        session: &[u8],
+        checks_json: &str,
+        reference: bool,
+        caps_json: &str,
+    ) -> Result<String, JsError> {
+        let checks: crate::score::Checks =
+            serde_json::from_str(checks_json).map_err(|e| JsError::new(&format!("checks: {e}")))?;
+        let caps: Option<crate::window::Caps> = if caps_json.is_empty() {
+            None
+        } else {
+            let v: serde_json::Value =
+                serde_json::from_str(caps_json).map_err(|e| JsError::new(&format!("caps: {e}")))?;
+            Some(crate::window::Caps {
+                seeds_pnr: v["seeds_pnr"].as_u64().unwrap_or(0) as usize,
+                seeds_merged: v["seeds_merged"].as_u64().unwrap_or(0) as usize,
+            })
+        };
+        let now = || js_sys::Date::now() / 1e3;
+        let out = self
+            .s
+            .trial(session, &checks, reference, caps.as_ref(), 5.0, &now);
+        Ok(serde_json::to_string(&out).unwrap())
+    }
+
+    pub fn window_bytes(&self) -> Result<Vec<u8>, JsError> {
+        self.s.window_bytes().map_err(|e| JsError::new(&e))
+    }
+
+    pub fn contrast_hist(
+        &self,
+        seeds_wnd: usize,
+        seeds_stp: usize,
+        seeds_max_wnd: usize,
+        n_windows: usize,
+    ) -> Result<Vec<i64>, JsError> {
+        self.s
+            .contrast_hist(seeds_wnd, seeds_stp, seeds_max_wnd, n_windows)
+            .map_err(|e| JsError::new(&e))
+    }
+
+    /// Bytes of `W`, `V`, `mean` and `sigma` held.
+    pub fn heap_hint(&self) -> f64 {
+        self.s.bytes() as f64
+    }
+}
+
+fn csr_of(a_data: &[f32], a_indices: &[i32], a_indptr: &[i32], p: usize) -> crate::init::Csr {
+    crate::init::Csr {
+        k: a_indptr.len().saturating_sub(1),
+        p,
+        indptr: a_indptr.iter().map(|&v| v as usize).collect(),
+        indices: a_indices.iter().map(|&v| v as usize).collect(),
+        data: a_data.to_vec(),
+    }
+}
+
+/// The unit checks and pair statistics of a run's final units (`cnmf/A.npz` as CSR parts,
+/// `cnmf/YrA.npy` as `(K, T)` float32): `flags.json`, `pairs.json`, `unit_flags.csv`,
+/// `summary.json` (with `lost` against `reference_json`, `[[y, x], ...]` or `[]`) and `good.json`.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn score_units(
+    a_data: &[f32],
+    a_indices: &[i32],
+    a_indptr: &[i32],
+    p: usize,
+    traces: &[f32],
+    k: usize,
+    t: usize,
+    h: usize,
+    w: usize,
+    checks_json: &str,
+    min_dist_frac: f64,
+    reference_json: &str,
+) -> Result<Map, JsError> {
+    use crate::score;
+    let checks: score::Checks =
+        serde_json::from_str(checks_json).map_err(|e| JsError::new(&format!("checks: {e}")))?;
+    let reference: Vec<[f64; 2]> = if reference_json.is_empty() {
+        vec![]
+    } else {
+        serde_json::from_str(reference_json).map_err(|e| JsError::new(&format!("reference: {e}")))?
+    };
+    let a = csr_of(a_data, a_indices, a_indptr, p);
+    if a.k != k {
+        return Err(JsError::new(&format!("{} traces for {} footprints", k, a.k)));
+    }
+    let f = score::unit_flags(&a, traces, h, w, &checks).map_err(|e| JsError::new(&e))?;
+    let lost = score::lost_units(&reference, &f, checks.keep_dist * checks.diameter);
+    let pairs = score::pair_stats(&a, traces, k, t, h, w, &checks, min_dist_frac);
+    let files = vec![
+        (
+            "flags.json".to_string(),
+            serde_json::to_vec(&score::flags_doc(&f, &checks)).unwrap(),
+        ),
+        (
+            "pairs.json".to_string(),
+            serde_json::to_vec(&score::pairs_doc(&pairs, &checks, min_dist_frac)).unwrap(),
+        ),
+        ("unit_flags.csv".to_string(), score::flags_csv(&f).into_bytes()),
+        (
+            "summary.json".to_string(),
+            serde_json::to_vec(&score::summarize(&f, lost)).unwrap(),
+        ),
+        (
+            "good.json".to_string(),
+            serde_json::to_vec(&score::good_centroids(&f)).unwrap(),
+        ),
+    ];
+    Ok(npy_map(files))
+}
+
+#[wasm_bindgen]
+pub fn estimate_diameter(
+    a_data: &[f32],
+    a_indices: &[i32],
+    a_indptr: &[i32],
+    p: usize,
+) -> Result<f64, JsError> {
+    crate::score::estimate_diameter(&csr_of(a_data, a_indices, a_indptr, p)).map_err(|e| JsError::new(&e))
+}
+
+#[wasm_bindgen]
+impl StitchEngine {
+    /// A window's mean and noise from its saved `mean.npy` and `sigma.npy` (flat, tile after tile
+    /// on the `tile` grid), as `add_pass2` takes them from a live pass 2.
+    pub fn add_mean_noise(
+        &mut self,
+        mean_npy: &[u8],
+        sigma_npy: &[u8],
+        tile: usize,
+        t0: usize,
+        t1: usize,
+    ) -> Result<(), JsError> {
+        let mean = npy::read_f32(mean_npy).map_err(|e| JsError::new(&e))?.data;
+        let sigma = npy::read_f32(sigma_npy).map_err(|e| JsError::new(&e))?.data;
+        let grid = pass1::tile_grid(self.p.h, self.p.w, tile);
+        let rank = vec![0usize; grid.len()];
+        let energy = vec![0f64; mean.len()];
+        let tiles =
+            crate::factors::Factors::split_flat(&grid, t1 - t0, &[], &[], &mean, &sigma, &energy, &rank)
+                .map_err(|e| JsError::new(&e))?;
+        self.mean_noise.add(&grid, &tiles, self.p.w, t1 - t0);
+        Ok(())
     }
 }

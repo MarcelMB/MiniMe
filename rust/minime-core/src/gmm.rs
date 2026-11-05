@@ -267,6 +267,85 @@ impl Gmm1D {
         let k = self.means.len();
         self.weighted_log_prob(x).chunks_exact(k).map(argmax).collect()
     }
+
+    /// `Gmm1D.upper_cut`: one-sided threshold of a two-component fit, values from it on
+    /// belong to the top.
+    ///
+    /// Two clusters (each component wins at its own mean): the crossing of the weighted
+    /// densities between the means. One hump (one component wins at both means): the
+    /// crossing above the means where the wider component takes over, so the upper tail;
+    /// `-inf` when it wins everywhere.
+    pub fn upper_cut(&self) -> Result<f64, String> {
+        if self.means.len() != 2 {
+            return Err(format!("upper_cut needs 2 components, got {}", self.means.len()));
+        }
+        // np.argsort of two values: the first on a tie
+        let (lo, hi) = if self.means[1] < self.means[0] {
+            (1, 0)
+        } else {
+            (0, 1)
+        };
+        if self.wins(hi, lo, self.means[hi]) && self.wins(lo, hi, self.means[lo]) {
+            return self
+                .crossings(hi, lo)
+                .into_iter()
+                .find(|&r| r > self.means[lo] && r < self.means[hi])
+                .ok_or_else(|| "upper_cut: no crossing between the means".to_string());
+        }
+        // np.argsort(variances)[::-1]: the second is "wide" on a tie
+        let (wide, narrow) = if self.variances[1] < self.variances[0] {
+            (0, 1)
+        } else {
+            (1, 0)
+        };
+        Ok(self
+            .crossings(wide, narrow)
+            .last()
+            .copied()
+            .unwrap_or(f64::NEG_INFINITY))
+    }
+
+    /// `(a, b, c)`: `log w_j + log N(x | mu_j, var_j) = a x^2 + b x + c`.
+    fn log_density(&self, j: usize) -> [f64; 3] {
+        let (m, v) = (self.means[j], self.variances[j]);
+        [
+            -0.5 / v,
+            m / v,
+            self.weights[j].ln() - 0.5 * (2.0 * std::f64::consts::PI * v).ln() - 0.5 * m * m / v,
+        ]
+    }
+
+    /// `(a, b, c)` of component `j`'s log density minus `other`'s.
+    fn log_ratio(&self, j: usize, other: usize) -> [f64; 3] {
+        let (p, q) = (self.log_density(j), self.log_density(other));
+        [p[0] - q[0], p[1] - q[1], p[2] - q[2]]
+    }
+
+    fn wins(&self, j: usize, other: usize, x: f64) -> bool {
+        let [a, b, c] = self.log_ratio(j, other);
+        a * x * x + b * x + c > 0.0
+    }
+
+    /// Sorted real `x` where components `j` and `other` are equally likely.
+    fn crossings(&self, j: usize, other: usize) -> Vec<f64> {
+        let [a, b, c] = self.log_ratio(j, other);
+        if a == 0.0 {
+            return if b != 0.0 { vec![-c / b] } else { vec![] };
+        }
+        let disc = b * b - 4.0 * a * c;
+        if disc < 0.0 {
+            return vec![];
+        }
+        // the cancellation-free pair: q = -(b + sign(b) sqrt(disc)) / 2, roots q/a and c/q
+        let q = -0.5 * (b + b.signum() * disc.sqrt());
+        let mut r = if q == 0.0 {
+            vec![0.0, 0.0]
+        } else {
+            vec![q / a, c / q]
+        };
+        r.sort_by(f64::total_cmp);
+        r
+    }
 }
 
 /// Weights, means and variances from `(n, k)` row-major responsibilities.
@@ -379,5 +458,69 @@ mod tests {
             assert_eq!(l == hi, i % 4 == 0);
         }
         assert!((g.weights[hi] - 0.25).abs() < 1e-6);
+    }
+
+    /// `n` draws of N(`mu`, `sd`^2) by Box-Muller on `r`.
+    fn normal(r: &mut Mt19937, mu: f64, sd: f64, n: usize) -> Vec<f64> {
+        (0..n)
+            .map(|_| {
+                let u = 1.0 - r.random_sample();
+                let v = r.random_sample();
+                mu + sd * (-2.0 * u.ln()).sqrt() * (2.0 * std::f64::consts::PI * v).cos()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn upper_cut_between_two_clusters_keeps_the_whole_top() {
+        // two clusters: the cut lies between the means and keeps the top cluster plus
+        // anything above it, even values far above a narrow top component that predict
+        // hands back
+        let mut r = Mt19937::new(1);
+        let mut x = normal(&mut r, 0.0, 1.5, 400);
+        x.extend(normal(&mut r, 5.0, 0.3, 100));
+        let g = fit_gmm_1d(&x, 2).unwrap();
+        let cut = g.upper_cut().unwrap();
+        assert!(0.0 < cut && cut < 5.0);
+        assert!(x[400..].iter().all(|&v| v >= cut));
+        assert!(x[..400].iter().filter(|&&v| v >= cut).count() <= 2);
+        assert_ne!(g.predict(&[12.0])[0], argmax(&g.means));
+        assert!(12.0 >= cut);
+    }
+
+    #[test]
+    fn upper_cut_of_one_hump_is_its_upper_tail() {
+        // one hump fitted as a narrow and a wide component with (near) equal means: the cut
+        // is where the wide one takes over above the means, whichever mean is higher
+        let mut r = Mt19937::new(3);
+        let mut x = normal(&mut r, 0.0, 0.8, 900);
+        x.extend(normal(&mut r, 0.0, 2.5, 400));
+        let g = fit_gmm_1d(&x, 2).unwrap();
+        let (mlo, mhi) = (g.means[0].min(g.means[1]), g.means[0].max(g.means[1]));
+        assert!(mhi - mlo < 0.5, "{g:?}");
+        let cut = g.upper_cut().unwrap();
+        assert!(cut > mhi + 0.5);
+        let m = 0.5 * (g.means[0] + g.means[1]);
+        let shifted = |d: f64| {
+            let h = Gmm1D {
+                means: vec![m + d, m - d],
+                ..g.clone()
+            };
+            h.upper_cut().unwrap()
+        };
+        assert!((shifted(1e-3) - shifted(-1e-3)).abs() < 0.01);
+        let low: Vec<f64> = x.iter().copied().filter(|&v| v < mlo - 3.0).collect();
+        assert!(!low.is_empty() && low.iter().all(|&v| v < cut)); // never the low tail
+    }
+
+    #[test]
+    fn upper_cut_keeps_all_when_the_wide_component_wins_everywhere() {
+        let g = Gmm1D {
+            weights: vec![0.99, 0.01],
+            means: vec![0.0, 0.1],
+            variances: vec![4.0, 0.25],
+            iterations: 0,
+        };
+        assert_eq!(g.upper_cut().unwrap(), f64::NEG_INFINITY);
     }
 }

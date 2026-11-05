@@ -88,7 +88,8 @@ export async function speedTest(
   const began = performance.now();
   const N = pool.size;
   const F = Math.min(SPEED_FRAMES, T);
-  const pass1 = JSON.parse(new TextDecoder().decode(params)) as Record<string, unknown>;
+  // the speed test's engines get no fill image: the zero fill times the same (only the border differs)
+  const pass1 = { ...(JSON.parse(new TextDecoder().decode(params)) as Record<string, unknown>), motion_fill: "zero" };
   const template = bench_template(params, readFrames(segs, 0, 1, H, W));
   const starts = Array.from({ length: N }, (_, i) => Math.floor((i * Math.max(0, T - F)) / Math.max(1, N - 1 || 1)));
   const task = (i: number, n = F) => {

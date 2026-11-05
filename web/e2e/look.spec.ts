@@ -12,8 +12,9 @@ import { expect, type Locator, type Page, test } from "@playwright/test";
 const DATA = resolve(fileURLToPath(new URL(".", import.meta.url)), ".data");
 // outside e2e/.data: main's smoke test lists that folder's runs, and this copy must not be one of them
 const LOOK = join(tmpdir(), "minime-look");
-const PY = "http://127.0.0.1:8799";
-const BR = "http://127.0.0.1:8797";
+// the ports playwright.look.config.ts serves on
+const PY = `http://127.0.0.1:${process.env.LOOK_PY_PORT ?? 8799}`;
+const BR = `http://127.0.0.1:${process.env.LOOK_BR_PORT ?? 8797}`;
 const ROOT = "look"; // the folder's root name in the browser build
 
 const PAGES: [string, (page: Page) => Locator][] = [

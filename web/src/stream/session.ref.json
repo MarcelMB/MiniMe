@@ -12,7 +12,10 @@
     "motion_bandpass": [1.0, 6.0],
     "tile": 64,
     "seeds_wnd": 1000,
-    "seeds_stp": 500
+    "seeds_stp": 500,
+    "template_source": "spread",
+    "template_chunks": 10,
+    "motion_fill": "template"
   },
   "pass2": {
     "H": 600,
@@ -74,6 +77,7 @@
     "median_ksize": 7,
     "tophat_wnd": 15,
     "motion_before_tophat": true,
+    "motion_fill": "template",
     "dl_wnd": 10,
     "sparse_snr": 1.0,
     "size_thres": [25, null],

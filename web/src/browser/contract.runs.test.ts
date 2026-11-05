@@ -19,7 +19,7 @@ describe("run requests match main's", () => {
     expect((got as { available: { raw: boolean; pre: boolean } }).available).toMatchObject({ raw: true, pre: true });
   });
   it("reruns", async () => {
-    expect(await getJSON(`/runs/${rid}/reruns`)).toEqual(py.find("GET /runs/{rid}/reruns").json());
+    expectClose(await getJSON(`/runs/${rid}/reruns`), py.find("GET /runs/{rid}/reruns").json(), 1e-6, ["wall_total"]);
   });
   it("params", async () => {
     expect(await getJSON("/params/defaults")).toEqual(py.find("GET /params/defaults").json());
@@ -27,9 +27,5 @@ describe("run requests match main's", () => {
       expect(await getJSON(`/params/derived?diameter=${d}`)).toEqual(
         py.find(`GET /params/derived?diameter=${d}`).json(),
       );
-  });
-  it("tune requests answer 404", async () => {
-    await expect(getJSON(`/runs/${rid}/autotune`)).rejects.toMatchObject({ status: 404 });
-    await expect(getJSON(`/runs/${rid}/flags`)).rejects.toMatchObject({ status: 404 });
   });
 });

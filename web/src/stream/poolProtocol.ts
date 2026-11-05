@@ -23,6 +23,14 @@ export type ToFrameWorker =
   /** Prepare template frames `[a, b)` of the session, as round 1 or round 2 averages them. */
   | { type: "t1"; id: number; a: number; b: number }
   | { type: "t2"; id: number; a: number; b: number }
+  /** A spread template's workers (`SpreadWorker`) from the stage's `params.json`. */
+  | { type: "u0"; params: Uint8Array }
+  /** The template the next spread tasks align to: its source image and search (px). */
+  | { type: "utmpl"; image: Float32Array; search: number }
+  /** Session frames `[a, b)` of a spread template: prepared (`prep`), their `[dy, dx, peak]` against the
+   * template (`est`), prepared after the warp by `shifts` (`warp`, `(b - a, 2)` flat) or added to the
+   * fill sums (`fill`, which come back with the task). */
+  | { type: "u1"; id: number; op: SpreadOp; a: number; b: number; shifts?: Float64Array }
   /** Free the solver and pass 2's engine (their memory stays with the wasm instance, but is reusable). */
   | { type: "free" }
   /** Pass 1 on frames `[a, b)` of the window `files` describe (`params.json`, `template.npy`,
@@ -65,7 +73,7 @@ export type P1Result = {
   gpuFrames: number;
 };
 /** `parts[j]`: the frames' pixels of fold lane `j`, frame after frame. */
-export type S1Result = { parts: Uint8Array[]; cc: Float64Array; f: Float32Array; gpuFrames: number };
+export type S1Result = { parts: Uint8Array[]; cc: Float64Array; yra: Float64Array; f: Float32Array; gpuFrames: number };
 /** A window's seeds, init and CNMF outputs, its final units for the stitch (`window_bytes`), and each
  * stage's seconds and stage-row note. */
 export type W1Result = { files: FileMap; window: Uint8Array; seconds: number[]; notes: string[] };
@@ -74,6 +82,10 @@ export type F2Result = { range: Uint32Array; done: Float64Array; seg: Float64Arr
 export type P2Result = { factors: Uint8Array; readMs: number };
 /** The prepared template frames `a..b`, one after the other. */
 export type TResult = { preps: Float32Array; gpuFrames: number };
+export type SpreadOp = "prep" | "est" | "warp" | "fill";
+/** A spread task's result: prepared frames (`prep`, `warp`), `[dy, dx, peak]` per frame (`est`) or
+ * fill sums (`fill`, `SpreadWorker.take_fill`). */
+export type UResult = { preps?: Float32Array; est?: Float64Array; fill?: Uint32Array };
 /** The worker's GPU: its name, and why it is off ("" when on). */
 export type G0Result = { name: string; off: string };
 /** The self-test: what differed ("" when every kernel gave the CPU's bits) and the GPU's name. */
@@ -93,6 +105,7 @@ export type FromFrameWorker =
   | ({ type: "done"; kind: "s1" } & Meta & S1Result)
   | ({ type: "done"; kind: "p2" } & Meta & P2Result)
   | ({ type: "done"; kind: "t1" | "t2" } & Meta & TResult)
+  | ({ type: "done"; kind: "u1" } & Meta & UResult)
   | ({ type: "done"; kind: "f0" | "f1" } & Meta)
   | ({ type: "done"; kind: "f2" } & Meta & F2Result)
   | ({ type: "done"; kind: "w1" } & Meta & W1Result)

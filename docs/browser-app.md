@@ -80,7 +80,8 @@ python experiments/streaming/check_rust.py <ref> <ref>/rust_browser
 ## Motion stage result (2026-11-02): native and Chrome match Python
 In the `fresh` runs every window reuses the session's motion sidecar, so the browser needs
 the session's own motion pass: template from the first `template_frames` frames of
-segment 0, then a shift per frame. Checked on frames 0–3000 of the 30-min GRIN synth
+segment 0 (since 2026-11-05 frames spread over the session, see "Spread template and template
+fill"), then a shift per frame. Checked on frames 0–3000 of the 30-min GRIN synth
 (`ref_motion.py`, which also reproduces the baseline sidecar's shifts exactly):
 
 | | Rust native vs Python | Rust → wasm, headless Chrome vs Python |
@@ -813,6 +814,103 @@ preprocessing use it. WebGPU works in nested workers in Chrome and WebKit, so ev
 
 Run it: `STREAM_DEVICE=auto|cpu|gpu|both [STREAM_GPU_TEST=...] STREAM_RAW=... STREAM_OUT=... npm run e2e:stream`;
 the speed test alone: `e2e/speed.spec.ts` with the stream config's server.
+
+## Spread template and template fill (2026-11-05): MiniMe's new motion defaults, same as Python
+MiniMe's defaults changed to `template_source = "spread"` and `motion_fill = "template"` (Python on
+`claude/motion-defaults-bc3667`, brought over here): a first-frames template sat where the field was in
+the first seconds, often px away from the rest of the session, and the warp's zero band that came and
+went with the motion became false units along the edges. `session.json` carries both keys (`pass1`;
+`motion_fill` also in `stream`); inputs without them (written before) mean `first` / `zero`.
+
+- **Template** (`motion::SpreadBuilder`, `spread.ts`): 10 runs of 20 frames spread over the session
+  (`np.linspace(0, T - 20, 10).round()`), read with `File.slice` through the AVI index. Five reads: the
+  runs' prepared means (the best-agreeing run starts), twice the shifts and correlation peaks of every frame
+  against the current template (search 2 x `motion_max_shift`) and the mean of the frames warped by their
+  shift minus `_reachable_median` (median of the frames whose peak is at least half the median, clipped so
+  they stay within 0.75 x `motion_max_shift`; numpy's percentile and float32 sums reproduced). The frame
+  workers prepare (`SpreadWorker`, CPU only: 200 frames, 1.2 s with 8 workers); the run's `MotionEngine` adds
+  prepared frames in frame order, so 1 and N workers give the same bits.
+- **Fill image**: a sixth read: each template frame's denoised image warped against the final template with
+  the edge pixels replicated, top-hat, summed (uint32) over the frames that hold data at each pixel, floor of
+  the mean; workers return partial sums in any order. In the run folder: `motion/arrays.npz` `fill`.
+- **Pass 1 and the streaming pass**: the denoised frame is warped with `BORDER_REPLICATE` (`warp.rs`
+  `replicate`; checked against `cv2.warpAffine`: 300 random cases and 600² frames, bit for bit), top-hat,
+  then `fill_outside` (`fill.rs`: rows above `y0` / from `y1`, columns left of `x0` / from `x1`,
+  `motion._valid_rects` of the float64 estimate, or of the float32 shift the streaming pass reads). The fill
+  is a CPU copy in `Pass1::fold_corrected` and `StreamSolver::solve_prepped`, so the GPU path shares it; the
+  GPU's warp of the denoised frame has a replicate variant (`kernels.ts` `shiftU8Replicate`, `Kernels.replicate`)
+  and the self-test's CPU reference uses it.
+- Checks (30-min GRIN synth, its new-defaults batch run `processed/motion_defaults_browser` as the baseline):
+
+  | check | native vs Python | Chrome vs Python |
+  |---|---|---|
+  | template (frames 0-3000 estimated against it) | ≤ 2.6e-7 of max | ≤ 3.4e-7 of max, 1 and 8 workers identical |
+  | shifts | ≤ 4.4e-6 px, same integer peak in all 3000 frames | ≤ 5.1e-6 px, same integer peak |
+  | fill image | identical | identical |
+  | pass 1 with the fill (given shifts): max projection, 11 block maxima, 100 tiles | identical (CRC) | |
+  | streaming pass with the fill (3000 frames, 228 units): preprocessed frames, `C`, sums | frames and `C` identical, sums ≤ 4.5e-15 | |
+  | 2 windows (6000 frames, `ref_stitch.py --session-inputs`): window units, supports, pairs, edges, parents, groups | | identical (193 + 181 -> 231 units); chain PASS |
+  | the same on the GPU (8 workers) | | 44 files identical to the CPU run |
+
+  5-min synth from the AVIs alone (Chrome, 8 workers): 398 units, F1 **0.967** (precision 0.995, detectable
+  recall 0.965), traces 0.995, 2 false units within 15 px of an edge; the run before (2026-11-03, first-frames
+  template, zero fill): 419 units, F1 0.962 (precision 0.964, detectable recall 0.965), 14 false edge units.
+  Python's batch run with the new defaults: F1 0.963, 393 units. GPU and CPU runs give the same 88 files.
+- Not ported: `motion_outlier` (opt-in in Python; New run lists it as a parameter the browser ignores).
+  The speed test's engines run with the zero fill (no fill image yet; the same speed).
+
+Run it (the e2e on its own port and build folder when another run uses 8796):
+```bash
+python experiments/streaming/ref_motion.py --baseline motion_defaults_browser --name ref_motion_spread --t0 0 --t1 3000
+minime-core motion --raw <raw> --params <ref>/inputs/params.json --out <ref>/rust_native --check-frames <ref>/inputs/check_frames.npy
+STREAM_PORT=8831 STREAM_DIST=dist-stream-md STREAM_WORKERS=8 STREAM_RAW=<raw> STREAM_INPUTS=<ref>/inputs STREAM_OUT=<ref>/rust_browser npm run e2e:stream
+python experiments/streaming/check_motion.py <ref> <ref>/rust_browser
+python experiments/streaming/t1_discovery.py --mode fresh --windows 3000 --baseline motion_defaults_browser --name t1_fresh_fill --n 2
+python experiments/streaming/ref_stitch.py --session-inputs --stream --n 2 --baseline motion_defaults_browser --t1 t1_fresh_fill --name ref_stitch_fill
+```
+
+## Auto-tune and reruns (2026-11-05, branch `autotune-browser`)
+
+What runs where: the run's windows are kept in OPFS; `New run` with "auto-tune after the run" chains a tune job.
+The tune workers (`TuneWorkers`, one `WindowEngine` per worker, windows spread over the pool) run each trial on
+all 12 windows (seeds, init, CNMF, stitch not included) and the per-window scores are summed; `LocalSearch` walks
+the grids one parameter at a time. Then the 12 windows are rerun with the proposal (`window2`), stitched and
+streamed once (`stream`, the scored traces) into `reruns/auto/`. `flags`/`pairs` (the unit table and pair counts)
+are computed by one `score_units` wasm call on the main thread with the 202 pattern (the spec said "in the tune
+worker"; the plan moved it: K x T float32 takes well under a second on grin30).
+
+Layout: `reruns/<name>/` is a full run folder (`cnmf/A.npz`, `C.npy`, `YrA.npy`, `params.json`, `report.json`)
+plus `autotune.json`, `sweep.csv`, `unit_flags.csv`. A rerun reads the run's `factors/` and needs `sigma.npy`;
+runs made before 2026-11-05 have none and must be run again to be tuned.
+
+| `synth_v4_grin30` | browser | Python auto-tune |
+|---|---|---|
+| run F1 (YrA) | 0.757 | 0.680 |
+| proposal F1 | 0.748 (R 0.664, P 0.857, 357 units) | 0.682 |
+| proposed | merge_corr 0.7, inita_corr 0.98 (at the grid edge), rest the run's | sparse_snr 0.714, merge_corr 0.85, inita_corr 0.85, loop_merge_corr 0.75 |
+| auto-tune wall | 61 s (rerun + stream 26 s) | 192 s |
+| trials | 17 | 16 |
+| per-setting cost | 0.5 to 3 s (12 windows, parallel) | |
+| tune-worker wasm heap peak | 173 MB | |
+| Chromium tree RSS peak | 3.7 GiB (3.58 GiB for a plain run) | |
+| click to done (run + tune) | 173 s (run 116 s) | main run 95.5 s |
+
+Memory: the tune workers' wasm heap peaks at 173 MB; the Chromium process tree peaks at 3.7 GiB against 3.58 GiB for
+a plain run, so the tune adds little. The tree RSS counts the GPU process and the renderer baseline and shared
+pages once per process, so it is not a budget for the tune alone.
+
+Window trials: a window's units come out of the CNMF loop as `merge.c` = the merged YrA and `merge.extra` = the
+merged C (`cnmf::outputs`). The window engine first took `extra` as YrA, so trials were scored on C and the stitch
+brightness (max per unit) came from C; the rerun of the run's own parameters then stitched to 365 units against the
+run's 366. Fixed (`WindowSession::run` takes `merge.c`): the rerun now reproduces the run (2276 window units, 366
+stitched). When nothing beats the run the rerun uses the run's own parameters, as Python's `Sweep.run`.
+
+Result after the fix: the search finds a gain on the summed window scores (1646 vs 1608: merge_corr 0.7, inita_corr
+0.98, at the edge of its grid), but the proposal's real F1 is lower than the run's (0.748 vs 0.757, 357 vs 366 units;
+precision 0.857 vs 0.855, recall 0.664 vs 0.679): the window-score gain is flagged-unit bookkeeping (fewer duplicates
+and low-PNR units) that costs true units. Python's search on the whole-session score picked other values (sparse_snr
+0.714). Open: why the summed window score and the truth disagree here (sparse_snr 0.714 now scores 1440 vs 1608, with
+527 flagged).
 
 ## Next
 0. Rerun the 8 h and 24 h streaming pass with the traces in OPFS (8 h scale run above);
