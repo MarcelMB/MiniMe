@@ -62,7 +62,6 @@ export class GpuFrames {
     mk("rD0", 4 * maxB * this.half, R | D);
     mk("rD1", 4 * maxB * this.half, R | D);
     mk("rOut", words, R | D);
-    mk("rReg", 4 * words, R | D);
     if (k.f32taps.length) device.queue.writeBuffer(this.buf.taps, 0, Float32Array.from(k.f32taps));
   }
 
@@ -196,7 +195,15 @@ export class GpuFrames {
       this.pass(enc, "upSub", ["H2", "X3", "X1"], ceil(W, 16), ceil(H, 16), n);
       this.downsample(enc, "X1", "D0", n);
       enc.copyBufferToBuffer(this.buf.D0, 0, this.buf.rD0, 0, 4 * n * this.half);
-      if (readDen) enc.copyBufferToBuffer(this.buf.X1, 0, this.buf.rReg, 0, 4 * bytes);
+      if (readDen) {
+        // the self-test's readback of the registration images, made on first use
+        this.buf.rReg ??= this.device.createBuffer({
+          size: this.buf.X1.size,
+          usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+          label: "rReg",
+        });
+        enc.copyBufferToBuffer(this.buf.X1, 0, this.buf.rReg, 0, 4 * bytes);
+      }
     }
     q.submit([enc.finish()]);
     this.batches++;
