@@ -8,7 +8,7 @@ import pytest
 import scipy.sparse as sps
 from typer.testing import CliRunner
 
-from minime import cli, pipeline, report
+from minime import cli, motion, pipeline, report
 from minime.params import Params
 from minime.testing import synth
 from tests.conftest import TINY_PARAMS
@@ -280,9 +280,19 @@ def test_spread_template_fill_run_and_sidecar_rerun_agree(tiny_session, tmp_path
     assert (p.template_source, p.motion_fill) == ("spread", "template")
     out = pipeline.run(tiny_session["raw_dir"], p, run_name="f", out_root=tmp_path)
     a1 = sps.load_npz(out / "cnmf" / "A.npz").toarray()
+    fill = motion.load_sidecar(out / "motion").fill
+    assert fill is not None and fill.dtype == np.uint8 and fill.shape == (64, 64)
     out = pipeline.run(tiny_session["raw_dir"], p, run_name="f", out_root=tmp_path)
     rep = json.loads((out / "report.json").read_text())
     assert rep["motion"]["sidecar_reused"]
+    assert np.array_equal(sps.load_npz(out / "cnmf" / "A.npz").toarray(), a1)
+    assert np.array_equal(motion.load_sidecar(out / "motion").fill, fill)
+    # a sidecar without the fill (before Nov 2026) is reused with the fill rebuilt
+    sc = motion.load_sidecar(out / "motion")
+    sc.fill = None
+    motion.save_sidecar(out / "motion", sc)
+    out = pipeline.run(tiny_session["raw_dir"], p, run_name="f", out_root=tmp_path)
+    assert json.loads((out / "report.json").read_text())["motion"]["sidecar_reused"]
     assert np.array_equal(sps.load_npz(out / "cnmf" / "A.npz").toarray(), a1)
 
 

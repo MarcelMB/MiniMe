@@ -127,6 +127,11 @@ def test_sidecar_roundtrip_and_validation(tmp_path):
     )
     assert motion.load_if_valid(tmp_path / "motion", "abc", sc.params, 11) is None
     assert motion.load_if_valid(tmp_path / "nope", "abc", sc.params, 10) is None
+    assert back.fill is None  # zero fill: no fill image stored
+    sc.fill = np.full((8, 8), 7, np.uint8)
+    motion.save_sidecar(tmp_path / "motion", sc)
+    back = motion.load_sidecar(tmp_path / "motion")
+    assert back.fill.dtype == np.uint8 and np.array_equal(back.fill, sc.fill)
 
 
 def test_template_image_shape_for_odd_sizes():
