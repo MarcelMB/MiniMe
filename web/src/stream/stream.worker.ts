@@ -204,6 +204,12 @@ async function run({
     for (const p of outPath) dest = await dest.getDirectoryHandle(p);
   }
   scratchId = scratch ?? crypto.randomUUID();
+  if (speedTest) {
+    // the New run page's speed test: no run folder, no scratch folder (it writes nothing)
+    wasmMemory = (await init()).memory;
+    const log = (what: string) => post({ type: "log", message: what });
+    return speedOnly(avis, params ?? {}, Boolean(speedTest.force), log, tl);
+  }
   await (await scratchParent()).removeEntry(scratchId, { recursive: true }).catch(() => undefined); // an earlier run's
   progressLog = new ProgressLog(dest ? new HandleDir(dest) : null);
   const log = (what: string) =>
@@ -211,7 +217,6 @@ async function run({
   const wasm = await init();
   wasmMemory = wasm.memory;
   log("wasm ready");
-  if (speedTest) return speedOnly(avis, params ?? {}, Boolean(speedTest.force), log, tl);
   const files = new Map<string, Uint8Array>();
   for (const f of inputs) files.set(f.name, new Uint8Array(await f.arrayBuffer()));
   if (files.size) log(`read ${files.size} input files`);

@@ -28,7 +28,10 @@ describe("decide", () => {
 
   it("auto picks the fastest measured mode", () => {
     expect(decide("auto", 8, "", test({ cpu: 800, gpu: 1500, both: 1200 })).use).toBe("gpu");
-    expect(decide("auto", 8, "", test({ cpu: 800, gpu: 600, both: 1000 }))).toMatchObject({ use: "both", gpuWorkers: 6 });
+    expect(decide("auto", 8, "", test({ cpu: 800, gpu: 600, both: 1000 }))).toMatchObject({
+      use: "both",
+      gpuWorkers: 6,
+    });
     expect(decide("auto", 8, "", test({ cpu: 900, gpu: 600, both: 800 })).use).toBe("cpu");
     expect(decide("auto", 1, "", test({ cpu: 100, gpu: 90, both: 300 })).use).toBe("cpu"); // no split with one worker
     expect(decide("auto", 8, "", null).use).toBe("cpu");
