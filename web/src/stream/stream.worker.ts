@@ -855,8 +855,10 @@ async function runSession(
   res.set("report.json", encode(rep));
   if (opts.out && maxProj) {
     const parts = { H, W, T, windows: kept, maxProj, stitch: st.files, stream: res, report: rep };
-    // the traces now sit in the run folder; the scratch copy goes
-    res.set("C.npy", await saveRun(opts.out, opts, sessionObj, shifts as Uint8Array, out, parts));
+    // the traces now sit in the run folder; the scratch copies go
+    const saved = await saveRun(opts.out, opts, sessionObj, shifts as Uint8Array, out, parts);
+    res.set("C.npy", saved.c);
+    res.set("YrA.npy", saved.yra);
   }
   post({ type: "done", files: res, seconds: total }, transferable(res));
 }
@@ -873,7 +875,7 @@ type RunData = {
 };
 
 /** Write the run folder into `dir` (`browser/writer.ts`), then delete the run's scratch folder
- * in OPFS; returns `cnmf/C.npy` of the run folder. `motion` holds the motion stage's outputs
+ * in OPFS; returns `cnmf/C.npy` and `cnmf/YrA.npy` of the run folder (the scratch ones are gone). `motion` holds the motion stage's outputs
  * (`template.npy`, `quality.npy`), which only a run that estimated its own motion has. */
 async function saveRun(
   dir: FileSystemDirectoryHandle,
@@ -882,7 +884,7 @@ async function saveRun(
   shifts: Uint8Array,
   motion: Map<string, Uint8Array>,
   d: RunData,
-): Promise<File> {
+): Promise<{ c: File; yra: File }> {
   const bytes = (name: string) => {
     const b = name === "shifts.npy" ? shifts : motion.get(name);
     if (!b)
@@ -921,7 +923,8 @@ async function saveRun(
     progress: progressLog.lines,
   });
   await (await scratchParent()).removeEntry(scratchId, { recursive: true }).catch(() => undefined);
-  return (await to.dir("cnmf")).file("C.npy");
+  const cnmf = await to.dir("cnmf");
+  return { c: await cnmf.file("C.npy"), yra: await cnmf.file("YrA.npy") };
 }
 
 /** One window's entry of `report.json`: its frames, the seconds of each of its stages and its unit
