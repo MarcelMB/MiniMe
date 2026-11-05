@@ -237,7 +237,7 @@ describe("autotune", () => {
     expect(doc.kept).toEqual([]); // the fake run left every size at its default
     expect(doc.pairs.run.n_near).toBeGreaterThanOrEqual(0);
     // `run_score` is the session-level unit-check summary of the run, as Python's; the search's sums are `window_scores`
-    expect(doc.run_score.good + doc.run_score.flagged).toBe(15);
+    expect(doc.run_score.good + doc.run_score.flagged).toBe(7);
     expect(doc.window_scores.run).not.toBeNull();
     const csv = readFileSync(join(f.run, "reruns/auto/sweep.csv"), "utf8").trim().split("\n");
     expect(csv.length - 1).toBe(doc.n_trials);

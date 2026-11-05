@@ -4,19 +4,18 @@ import { setupE2eRun } from "../testing/e2eRun";
 import { checkDiameter, estimateDiameter, scoreRun } from "./score";
 
 describe("scoring a run folder", () => {
-  it("estimates the diameter from the footprints and flags the e2e run's units", async () => {
+  it("flags the e2e run's units and needs 10 units to estimate the diameter", async () => {
     const { rid } = await setupE2eRun();
     const r = await state.registry.get(rid);
-    const d = await estimateDiameter(r);
-    expect(d).toBeGreaterThan(4);
-    expect(d).toBeLessThan(16);
+    // the e2e run has 7 units since the spread template and template fill became the defaults
+    await expect(estimateDiameter(r)).rejects.toThrow("too few to estimate the cell diameter");
     const s = await scoreRun(
       r,
       { diameter: 7, pnr_min: 12, piece_frac: 0.9, size_lo: 0.3, size_hi: 3, dup_corr: 0.6, keep_dist: 0.5 },
       0.4,
       [],
     );
-    expect(s.flags.good + s.flags.flagged).toBe(15);
+    expect(s.flags.good + s.flags.flagged).toBe(7);
     expect(Object.keys(s.flags.reasons)).toEqual(["low_pnr", "in_pieces", "bad_size", "duplicate"]);
     expect(s.pairs.corr_bins).toHaveLength(29);
     expect(s.csv.split("\n")[0]).toContain("unit_id,pnr");
