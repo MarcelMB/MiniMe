@@ -74,7 +74,7 @@ impl Pass1Engine {
 /// frame, then the least squares on `[A; b]`. `solve_frame` each frame, then `take_*`.
 #[wasm_bindgen]
 pub struct StreamSolver {
-    inp: Inputs,
+    pub(crate) inp: Inputs,
     model: TraceModel,
     stride: usize,
     sol: Vec<f64>,
@@ -119,14 +119,45 @@ impl StreamSolver {
             .inp
             .prep()
             .frame(&raw, h, w, self.inp.shifts[2 * t], self.inp.shifts[2 * t + 1]);
+        self.solve_y8(&y8);
+        Ok(())
+    }
+
+    /// Solve `n` frames from `t` on whose pixels were preprocessed elsewhere (the GPU path:
+    /// `prep().frame` of each, `n * H * W` uint8).
+    pub fn solve_prepped(&mut self, t: usize, n: usize, y8: &[u8]) -> Result<(), JsError> {
+        let px = self.inp.params.h * self.inp.params.w;
+        if t + n > self.inp.params.t || y8.len() != n * px {
+            return Err(JsError::new(
+                "prepared frames past the inputs' T or of the wrong size",
+            ));
+        }
+        for f in y8.chunks_exact(px) {
+            self.solve_y8(f);
+        }
+        Ok(())
+    }
+
+    /// The session's shifts of frames `a..a + n`, `(n, 2)` float32 (flat).
+    pub fn shifts(&self, a: usize, n: usize) -> Vec<f32> {
+        self.inp.shifts[2 * a..2 * (a + n)].to_vec()
+    }
+}
+
+impl StreamSolver {
+    /// Least squares of one preprocessed frame, its traces and pixels kept for `take_*`.
+    fn solve_y8(&mut self, y8: &[u8]) {
         let y: Vec<f32> = y8.iter().map(|&v| f32::from(v)).collect();
         self.model.solve(&y, &mut self.sol);
         let k = self.model.k;
         self.cc.extend(self.sol[..k].iter().map(|v| v.max(0.0)));
         self.f.push(self.sol[k] as f32);
-        self.y8.extend_from_slice(&y8);
-        Ok(())
+        self.y8.extend_from_slice(y8);
     }
+}
+
+#[wasm_bindgen]
+impl StreamSolver {
     /// The solved frames' preprocessed pixels (`n * H * W` uint8).
     pub fn take_y8(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.y8)
@@ -239,9 +270,9 @@ impl MotionEngine {
 /// averages it, `round2` (after `set_first`) as the second does, aligned to the first template.
 #[wasm_bindgen]
 pub struct TemplateWorker {
-    p: MotionParams,
-    corr: Correlator,
-    first: Option<Motion>,
+    pub(crate) p: MotionParams,
+    pub(crate) corr: Correlator,
+    pub(crate) first: Option<Motion>,
     stride: usize,
 }
 

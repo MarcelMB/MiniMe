@@ -10,7 +10,7 @@
 import type { FromFrameWorker, ToFrameWorker } from "./poolProtocol";
 
 type Task = Extract<ToFrameWorker, { id: number }>;
-type TaskKind = "p1" | "s1" | "p2" | "t1" | "t2" | "f0" | "f1" | "f2" | "w1";
+type TaskKind = "p1" | "s1" | "p2" | "t1" | "t2" | "f0" | "f1" | "f2" | "w1" | "g0" | "gt" | "gb";
 type Done<K extends TaskKind> = Extract<FromFrameWorker, { type: "done"; kind: K }>;
 type Without<T, K extends string> = T extends unknown ? Omit<T, K> : never;
 
@@ -54,20 +54,39 @@ export function workerCount(params: Record<string, unknown>): number {
 
 export class Pool {
   /** Milliseconds all tasks of each kind kept a worker busy, for the stage's utilisation. */
-  readonly busyMs: Record<TaskKind, number> = { p1: 0, s1: 0, p2: 0, t1: 0, t2: 0, f0: 0, f1: 0, f2: 0, w1: 0 };
+  readonly busyMs: Record<TaskKind, number> = {
+    p1: 0,
+    s1: 0,
+    p2: 0,
+    t1: 0,
+    t2: 0,
+    f0: 0,
+    f1: 0,
+    f2: 0,
+    w1: 0,
+    g0: 0,
+    gt: 0,
+    gb: 0,
+  };
+  /** Frames each kind of task did on the GPU (the GPU path, `gpuStages.ts`). */
+  readonly gpuFrames: Record<string, number> = {};
+  /** The workers' notes for the run's log (a worker's GPU went off). */
+  onNote: ((message: string) => void) | null = null;
   private constructor(private readonly slots: Slot[]) {}
 
   /** `n` workers, each with the session's AVIs indexed; rejects (and stops them) when one fails to start in `timeoutMs`. */
   static async create(n: number, avis: File[], scratch: string, timeoutMs = 30_000): Promise<Pool> {
+    const pool = new Pool([]);
     const slots: Slot[] = Array.from({ length: n }, () => {
       const w = new Worker(new URL("./frame.worker.ts", import.meta.url), { type: "module" });
       const s: Slot = { w, busy: false, heapMb: 0, handler: null, fail: null };
-      w.onmessage = (e: MessageEvent<FromFrameWorker>) => s.handler?.(e.data);
+      w.onmessage = (e: MessageEvent<FromFrameWorker>) =>
+        e.data.type === "note" ? pool.onNote?.(e.data.message) : s.handler?.(e.data);
       w.onerror = (e) => s.fail?.(new Error(`a frame worker failed: ${e.message || "could not start"}`));
       w.onmessageerror = () => s.fail?.(new Error("a frame worker sent a message that could not be read"));
       return s;
     });
-    const pool = new Pool(slots);
+    pool.slots.push(...slots);
     try {
       await pool.broadcast({ type: "init", avis, scratch }, timeoutMs);
     } catch (e) {
@@ -146,6 +165,7 @@ export class Pool {
       };
       const give = (i: number, r: Done<K>) => {
         this.busyMs[r.kind] += r.ms;
+        if ("gpuFrames" in r) this.gpuFrames[r.kind] = (this.gpuFrames[r.kind] ?? 0) + Number(r.gpuFrames);
         opts.onResult(i, r);
         given++;
       };

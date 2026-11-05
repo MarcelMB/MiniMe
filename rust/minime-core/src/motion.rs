@@ -210,7 +210,12 @@ impl Correlator {
 
     /// `motion._prep` of one frame: downsample, remove the mean, Hann-window (float32).
     pub fn prep(&self, reg: &Reg) -> Vec<f32> {
-        let mut f: Vec<f32> = match (reg, self.down) {
+        self.prep_down(self.downsample(reg))
+    }
+
+    /// The first step of `prep`: the frame at the prepared size (`area_down2` when `down` is 2).
+    pub fn downsample(&self, reg: &Reg) -> Vec<f32> {
+        match (reg, self.down) {
             (Reg::F32(x), 2) => area_down2_f32(x, self.h, self.w),
             (Reg::F32(x), _) => x.clone(),
             (Reg::U8(x), 2) => area_down2_u8(x, self.h, self.w)
@@ -218,7 +223,11 @@ impl Correlator {
                 .map(|&v| f32::from(v))
                 .collect(),
             (Reg::U8(x), _) => x.iter().map(|&v| f32::from(v)).collect(),
-        };
+        }
+    }
+
+    /// The rest of `prep` on a `downsample`d frame (`prep_shape` pixels): remove the mean, Hann-window.
+    pub fn prep_down(&self, mut f: Vec<f32>) -> Vec<f32> {
         let m = mean_f32(&f);
         for (v, &hw) in f.iter_mut().zip(&self.hann) {
             *v = (*v - m) * hw;
@@ -440,15 +449,24 @@ impl Motion {
         self.corr.prep_shape()
     }
 
+    pub fn correlator(&self) -> &Correlator {
+        &self.corr
+    }
+
     pub fn max_shift(&self) -> usize {
         self.max_shift
     }
 
     /// `motion.estimate` of one frame: `(dy, dx)` in full-resolution pixels.
     pub fn estimate(&self, reg: &Reg) -> [f64; 2] {
+        self.estimate_down(self.corr.downsample(reg))
+    }
+
+    /// `estimate` of a frame already at the prepared size (`Correlator::downsample`).
+    pub fn estimate_down(&self, down: Vec<f32>) -> [f64; 2] {
         let c = &self.corr;
         let (ph, pw) = (c.ph, c.pw);
-        let mut spec = c.rfft2(&c.prep(reg));
+        let mut spec = c.rfft2(&c.prep_down(down));
         for (v, t) in spec.iter_mut().zip(&self.spec) {
             *v *= t;
         }
@@ -482,7 +500,12 @@ impl Motion {
     /// `motion.frame_quality` of one motion-corrected registration frame: Pearson
     /// correlation over pixels with the template.
     pub fn quality(&self, warped: &Reg) -> f32 {
-        let f = self.corr.prep(warped);
+        self.quality_down(self.corr.downsample(warped))
+    }
+
+    /// `quality` of a warped frame already at the prepared size (`Correlator::downsample`).
+    pub fn quality_down(&self, down: Vec<f32>) -> f32 {
+        let f = self.corr.prep_down(down);
         let (mf, mt) = (mean_f32(&f), mean_f32(&self.image));
         let (mut ft, mut ff, mut tt) = (0f64, 0f64, 0f64);
         for (&a, &b) in f.iter().zip(&self.image) {

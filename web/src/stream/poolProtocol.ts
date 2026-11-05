@@ -40,7 +40,16 @@ export type ToFrameWorker =
    * per tile (`Pass2Engine.tile_bytes`). Posts progress 0, 1, 2 as seeds, init, CNMF begin. */
   | { type: "w1"; id: number; files: FileMap; maxProj: Uint8Array; blockMax: Uint8Array; tiles: Uint8Array[] }
   /** Compress tile `k` of the window's tile store. */
-  | { type: "p2"; id: number; k: number };
+  | { type: "p2"; id: number; k: number }
+  /** Turn this worker's GPU on (open the adapter; its per-frame tasks then run their kernels there)
+   * or off. `test`: the tests' hooks ("nogpu", "lost", "mismatch"). */
+  | { type: "g0"; id: number; on: boolean; test?: string }
+  /** The GPU self-test on session frames `at` with `shifts[2i], shifts[2i + 1]` for frame `i`, the
+   * kernels of `params` (a stage's `params.json`). */
+  | { type: "gt"; id: number; params: Uint8Array; at: number[]; shifts: number[] }
+  /** The speed test: pass 1 of session frames `[a, b)` with a throwaway engine (`files`), on the GPU
+   * when it is on. */
+  | { type: "gb"; id: number; files: FileMap; a: number; b: number };
 
 export type P1Result = {
   a: number;
@@ -52,9 +61,11 @@ export type P1Result = {
   quality: Float32Array;
   /** Bytes written to the slab. */
   bytes: number;
+  /** Frames the GPU corrected (the rest went through the CPU path). */
+  gpuFrames: number;
 };
 /** `parts[j]`: the frames' pixels of fold lane `j`, frame after frame. */
-export type S1Result = { parts: Uint8Array[]; cc: Float64Array; f: Float32Array };
+export type S1Result = { parts: Uint8Array[]; cc: Float64Array; f: Float32Array; gpuFrames: number };
 /** A window's seeds, init and CNMF outputs, its final units for the stitch (`window_bytes`), and each
  * stage's seconds and stage-row note. */
 export type W1Result = { files: FileMap; window: Uint8Array; seconds: number[]; notes: string[] };
@@ -62,7 +73,13 @@ export type W1Result = { files: FileMap; window: Uint8Array; seconds: number[]; 
 export type F2Result = { range: Uint32Array; done: Float64Array; seg: Float64Array };
 export type P2Result = { factors: Uint8Array; readMs: number };
 /** The prepared template frames `a..b`, one after the other. */
-export type TResult = { preps: Float32Array };
+export type TResult = { preps: Float32Array; gpuFrames: number };
+/** The worker's GPU: its name, and why it is off ("" when on). */
+export type G0Result = { name: string; off: string };
+/** The self-test: what differed ("" when every kernel gave the CPU's bits) and the GPU's name. */
+export type GtResult = { failure: string; name: string };
+/** The speed test's frames, how many of them the GPU did, and its milliseconds (`ms`). */
+export type GbResult = { frames: number; gpuFrames: number };
 
 type Meta = { id: number; ms: number; heapMb: number };
 export type FromFrameWorker =
@@ -70,10 +87,15 @@ export type FromFrameWorker =
   /** A running task's count; a window task (`w1`) also says what the step before did and how long it took. */
   | { type: "progress"; id: number; done: number; note?: string; seconds?: number }
   | { type: "error"; id: number; message: string }
+  /** Something the run's log should say (this worker's GPU went off, and why). */
+  | { type: "note"; message: string }
   | ({ type: "done"; kind: "p1" } & Meta & P1Result)
   | ({ type: "done"; kind: "s1" } & Meta & S1Result)
   | ({ type: "done"; kind: "p2" } & Meta & P2Result)
   | ({ type: "done"; kind: "t1" | "t2" } & Meta & TResult)
   | ({ type: "done"; kind: "f0" | "f1" } & Meta)
   | ({ type: "done"; kind: "f2" } & Meta & F2Result)
-  | ({ type: "done"; kind: "w1" } & Meta & W1Result);
+  | ({ type: "done"; kind: "w1" } & Meta & W1Result)
+  | ({ type: "done"; kind: "g0" } & Meta & G0Result)
+  | ({ type: "done"; kind: "gt" } & Meta & GtResult)
+  | ({ type: "done"; kind: "gb" } & Meta & GbResult);

@@ -2,11 +2,19 @@
 // gets the same `ToWorker` message a job sends, and the outputs stay in the page as blobs that
 // the spec reads by slices (the traces of a long session are far too big for one message).
 // Only the browser build opened with `?e2e` loads this (`e2e.ts`).
+import type { Device } from "../gpu/plan";
 import { defaultRunName } from "../launch/params";
 import type { FromWorker, ToWorker } from "../stream/protocol";
 import { RUN_LOCK } from "./support";
 
-export type StreamOptions = { keepStore?: boolean; workers?: number; tileCrc?: boolean };
+export type StreamOptions = {
+  keepStore?: boolean;
+  workers?: number;
+  tileCrc?: boolean;
+  /** `ToWorker.device` and `gpuTest`. */
+  device?: Device;
+  gpuTest?: string;
+};
 export type StreamResult = {
   files: { name: string; size: number }[];
   seconds: number;
@@ -62,7 +70,16 @@ async function stream(avis: File[], inputs: File[], opts: StreamOptions): Promis
         ...(opts.workers ? { workers: opts.workers } : {}),
         ...(opts.tileCrc ? { tile_crc: true } : {}),
       };
-      const msg: ToWorker = { avis, inputs, out, params, keepStore: opts.keepStore, scratch: "e2e-stream" };
+      const msg: ToWorker = {
+        avis,
+        inputs,
+        out,
+        params,
+        keepStore: opts.keepStore,
+        scratch: "e2e-stream",
+        device: opts.device,
+        gpuTest: opts.gpuTest,
+      };
       worker.postMessage(msg);
     });
   } finally {

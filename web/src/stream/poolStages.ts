@@ -32,7 +32,20 @@ function utilisation(pool: Pool, ctx: Ctx, what: string, began: number, busy: nu
  * worker (the slowest worker then holds up the stage less), in multiples of 100 frames, the
  * tile buffering; with `even` one chunk per worker of the same size, as a worker that is dealt its
  * chunks up front cannot take over another's. */
-export function chunkBounds(t: number, n: number, even = false): number[] {
+export function chunkBounds(t: number, n: number, even = false, weights?: number[]): number[] {
+  if (even && weights && weights.length === n) {
+    // one chunk per worker in proportion to its rate (the split of GPU and CPU workers); chunk i goes
+    // to worker i, so none may be empty
+    const sum = weights.reduce((a, b) => a + b, 0);
+    const bounds = [0];
+    let acc = 0;
+    for (let i = 0; i < n - 1; i++) {
+      acc += weights[i];
+      bounds.push(Math.round((t * acc) / sum));
+    }
+    bounds.push(t);
+    if (bounds.every((b, i) => i === 0 || b > bounds[i - 1])) return bounds;
+  }
   const size = even ? Math.ceil(t / n) : Math.max(100, Math.ceil(t / (2 * n) / 100) * 100);
   const bounds: number[] = [];
   for (let a = 0; a < t; a += size) bounds.push(a);
@@ -86,8 +99,9 @@ export async function pass1Pooled(
   ctx: Ctx,
   tiles: string,
   deal = false,
+  weights?: number[],
 ): Promise<Store> {
-  const bounds = chunkBounds(t, pool.size, deal);
+  const bounds = chunkBounds(t, pool.size, deal, weights);
   const parts = bounds.length - 1;
   const stage = pick(files, (n) => n === "params.json" || n === "template.npy" || n === "shifts.npy");
   const live = new Array<number>(parts).fill(0);
