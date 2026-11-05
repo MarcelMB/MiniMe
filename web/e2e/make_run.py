@@ -1,5 +1,6 @@
 """Make the tiny run the smoke test serves (once; reused while web/e2e/.data exists)."""
 
+import dataclasses
 import sys
 from pathlib import Path
 
@@ -26,6 +27,28 @@ def main(root: Path) -> None:
         motion_before_tophat=False,
     )
     pipeline.run(raw, params, run_name="t", workers=1, keep_store=True)
+    add_rerun_and_autotune(root / "processed" / "t")
+
+
+def add_rerun_and_autotune(run: Path) -> None:
+    """A rerun `r1` and an auto-tune (`reruns/auto`) for the Tune page's contract requests."""
+    from minime import window2
+    from minime.autotune import run as at
+    from minime.autotune import sweep
+
+    window2.rerun(run, dataclasses.replace(window2.run_params(run), sparse_snr=0.5), name="r1")
+    small = sweep.Grids(
+        seeds_diff_thres=(2, 3),
+        pnr_thres=("auto", 1.0),
+        merge_corr=(0.8,),
+        init_merge_corr=(0.8,),
+        inita_corr=(0.8,),
+        sparse_snr=(0.5, 1.0),
+        loop_merge_corr=(0.9,),
+        n_confirm=2,
+        max_extend=0,
+    )
+    at.autotune(run, 7.0, grids=small, strategy="grid")
 
 
 if __name__ == "__main__":

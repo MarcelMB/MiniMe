@@ -4,13 +4,16 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { Computing, getArray, getJSON } from "../../api";
 import { linspaceInt, percentile, toU8 } from "../derived/contrast";
-import { readNpy, writeNpy } from "../npy";
+import { writeNpy } from "../npy";
 import { csrNpz } from "../npz";
 import { state } from "../state";
+import { loadContract } from "../testing/contract";
 import { DATA, setupE2eRun } from "../testing/e2eRun";
 import { NodeDir } from "../testing/nodeDir";
 import { settled } from "../testing/settled";
 import { windowDir } from "../writer";
+
+const py = loadContract(join(DATA, "contract-python"));
 
 type Units = {
   stage: string;
@@ -35,6 +38,12 @@ describe("view routes on the e2e run", () => {
     rid = (await setupE2eRun()).rid;
   });
 
+  it("takes ?rerun= on the data routes and 404s for a rerun that has no report", async () => {
+    const a = await getArray(`/runs/${rid}/image/background?rerun=r1`);
+    expect(a.shape).toEqual((await getArray(`/runs/${rid}/image/background`)).shape);
+    await notFound(`/runs/${rid}/units?rerun=nope`, `run ${rid} has no finished rerun 'nope'`);
+  });
+
   it("answers the four images as (H, W) float32, the noise one only for browser runs", async () => {
     for (const name of ["max_proj", "background", "rank"]) {
       const a = await getArray(`/runs/${rid}/image/${name}`);
@@ -52,7 +61,7 @@ describe("view routes on the e2e run", () => {
     await expect(getArray(`/runs/${rid}/motion/residual`)).rejects.toBeInstanceOf(Computing);
     const a = await settled(() => getArray(`/runs/${rid}/motion/residual`));
     expect([a.shape, a.dtype]).toEqual([[11, 3], "float32"]);
-    const want = readNpy(new Uint8Array(readFileSync(join(DATA, "contract-python/0007.npy"))));
+    const want = py.find("GET /runs/{rid}/motion/residual").npy();
     for (let i = 0; i < 33; i++) expect(Math.abs(a.data[i] - want.data[i])).toBeLessThan(1e-4);
   });
 
@@ -346,7 +355,7 @@ describe("view routes on a browser run (the factors and tile store per window)",
 
   it("answers pre frames from tiles/w00 byte for byte as main does from the flat store it was moved from", async () => {
     const got = await settled(() => getArray(`/runs/${rid}/frame/100?source=pre`));
-    const want = readNpy(new Uint8Array(readFileSync(join(DATA, "contract-python/0017.npy"))));
+    const want = py.find("GET /runs/{rid}/frame/100?source=pre").npy();
     expect(got.shape).toEqual(want.shape);
     expect(Array.from(got.data)).toEqual(Array.from(want.data));
   });
@@ -358,7 +367,7 @@ describe("view routes on a browser run (the factors and tile store per window)",
     expect(await (await state.cache(rid)).has("residual.npy")).toBe(true);
     const again = await getArray(`/runs/${rid}/motion/residual`); // cached: no Computing
     expect(Array.from(again.data)).toEqual(Array.from(a.data));
-    const want = readNpy(new Uint8Array(readFileSync(join(DATA, "contract-python/0007.npy"))));
+    const want = py.find("GET /runs/{rid}/motion/residual").npy();
     for (let i = 0; i < 33; i++) expect(Math.abs(a.data[i] - want.data[i])).toBeLessThan(1e-4);
   });
 });
