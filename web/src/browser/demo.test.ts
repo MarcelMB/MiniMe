@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   type DataFile,
+  DEMO_PAGE,
   DEMOS,
   downloadDemo,
   fetchListing,
@@ -91,6 +92,9 @@ function memoryTarget(files = new Map<string, Uint8Array>()): Target & { files: 
 }
 
 describe("demo listing", () => {
+  it("links the dataset page on Dataverse itself, not doi.org (its redirect drops a slash)", () => {
+    expect(DEMO_PAGE).toBe("https://dataverse.ucla.edu/dataset.xhtml?persistentId=doi:10.25346/S6WHMSXK");
+  });
   it("reads the Dataverse listing and orders the videos by their number", async () => {
     const ds = dataset();
     const files = await fetchListing(fakeFetch(ds));
