@@ -68,6 +68,7 @@ export function Home() {
   return (
     <div className="page">
       {FEATURES.PrivacyNote && <FEATURES.PrivacyNote />}
+      {FEATURES.DemoCard && <FEATURES.DemoCard />}
       <div className="row">
         <div>
           <span className="label">Runs in</span>
