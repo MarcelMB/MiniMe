@@ -306,7 +306,8 @@ def pnr_refine(
     q: tuple[float, float] = (0.1, 99.9),
     pnr: np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """Add ``pnr`` and ``mask_pnr``; ``thres="auto"`` keeps the upper component of a 2-GMM.
+    """Add ``pnr`` and ``mask_pnr``; ``thres="auto"`` keeps the seeds from the ``upper_cut``
+    of a 2-GMM of log PNR on (one-sided: never a low-PNR seed over a higher one).
 
     ``pnr`` (n,) skips the trace read when the caller already has ``seed_pnr`` of ``seeds``.
     """
@@ -318,8 +319,7 @@ def pnr_refine(
         if thres != "auto":
             raise ValueError(f"unknown pnr threshold {thres!r}")
         dat = np.log(np.maximum(pnr, np.finfo(np.float64).tiny))
-        gmm = fit_gmm_1d(dat, 2)
-        mask = gmm.predict(dat) == np.argmax(gmm.means)
+        mask = dat >= fit_gmm_1d(dat, 2).upper_cut()
     else:
         mask = pnr > thres
     if not mask.any():
