@@ -7,8 +7,10 @@
 
 export const DATAVERSE = "https://dataverse.ucla.edu";
 export const DEMO_DOI = "doi:10.25346/S6WHMSXK";
-/** The dataset's landing page (the manual download). */
-export const DEMO_PAGE = `https://doi.org/${DEMO_DOI.slice(4)}`;
+/** The dataset's landing page (the manual download). Not the doi.org link: Dataverse's
+ * `/citation` redirect behind it drops a slash (`dataverse.ucla.edudataset.xhtml`), a host that
+ * does not exist. */
+export const DEMO_PAGE = `${DATAVERSE}/dataset.xhtml?persistentId=${DEMO_DOI}`;
 export const LISTING_URL = `${DATAVERSE}/api/datasets/:persistentId/?persistentId=${DEMO_DOI}`;
 export const fileUrl = (id: number) => `${DATAVERSE}/api/access/datafile/${id}`;
 
