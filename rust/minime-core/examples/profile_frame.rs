@@ -57,6 +57,9 @@ fn main() {
         template_frames: 200,
         motion_before_tophat: true,
         motion_bandpass: [1.0, 6.0],
+        template_source: "spread".into(),
+        template_chunks: 10,
+        motion_fill: "template".into(),
     };
     let den: Vec<Vec<u8>> = fr.iter().map(|f| median_blur(f, h, w, 7)).collect();
     let (dy, dx) = (0.37f32, -1.62f32);

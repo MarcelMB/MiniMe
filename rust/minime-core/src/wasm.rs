@@ -391,7 +391,9 @@ impl Pass1Engine {
             }
         }
         let m = Motion::from_template_image(&p.motion, template).map_err(err)?;
-        let pass = Pass1::new(&p, Some(m));
+        let mut pass = Pass1::new(&p, Some(m));
+        let fill = map_bytes(files, "fill.npy").ok();
+        crate::pass1::attach_fill(&mut pass, &p, fill.as_deref()).map_err(err)?;
         Ok(Pass1Engine {
             stride: p.motion.w,
             p,
