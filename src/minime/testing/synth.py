@@ -329,10 +329,29 @@ def _out_of_focus(
     return ys, xs, sigma, signal, patches
 
 
+def _given_shifts(shifts: np.ndarray, T: int, margin: int) -> np.ndarray:
+    """``shifts`` checked as a (T, 2) integer trace within the canvas margin, int64."""
+    s = np.asarray(shifts)
+    if s.shape != (T, 2):
+        raise ValueError(f"shifts must be ({T}, 2), got {s.shape}")
+    if not np.array_equal(s, np.round(s)):
+        raise ValueError("shifts must be whole pixels (the generator crops the canvas)")
+    if np.abs(s).max(initial=0) > margin:
+        raise ValueError(f"shifts exceed motion_margin = {margin} px")
+    return s.astype(np.int64)
+
+
 def _build(
-    h: int, w: int, T: int, seed: int, options: SynthOptions | None
+    h: int,
+    w: int,
+    T: int,
+    seed: int,
+    options: SynthOptions | None,
+    shifts: np.ndarray | None = None,
 ) -> tuple[SynthSetup, np.random.Generator]:
-    """All draws before the frame loop; returns the truth and the RNG positioned for noise."""
+    """All draws before the frame loop; returns the truth and the RNG positioned for noise.
+    ``shifts`` (T, 2) integer: the rigid motion instead of the random walk (every draw is
+    the same, so the cells and their activity are those of the walk session)."""
     o = options or SynthOptions()
     rng = np.random.default_rng(seed)
     kids = np.random.SeedSequence(seed).spawn(12)  # child i is the same for any count > i
@@ -364,7 +383,10 @@ def _build(
     if o.background != 1.0:
         vign = vign * np.float32(o.background)
     drift = 1.0 + 0.05 * np.sin(2 * np.pi * np.arange(T) / (30 * 60))
-    shifts = np.clip(np.cumsum(steps, axis=0), -m, m)
+    if shifts is None:
+        shifts = np.clip(np.cumsum(steps, axis=0), -m, m)
+    else:
+        shifts = _given_shifts(shifts, T, m)
     patches = np.stack([_gauss_patch(_patch_size(sigma), s) for s in sigma])
 
     empty_f = np.zeros((0, ch, cw), np.float32)
@@ -448,10 +470,15 @@ def _build(
 
 
 def synth_setup(
-    h: int, w: int, T: int, seed: int = 0, options: SynthOptions | None = None
+    h: int,
+    w: int,
+    T: int,
+    seed: int = 0,
+    options: SynthOptions | None = None,
+    shifts: np.ndarray | None = None,
 ) -> SynthSetup:
     """Everything ``synth_chunks`` draws before its frame loop, in the same order."""
-    return _build(h, w, T, seed, options)[0]
+    return _build(h, w, T, seed, options, shifts)[0]
 
 
 def true_centroids(setup: SynthSetup) -> np.ndarray:
@@ -667,10 +694,18 @@ def _apply_frame_map(
 
 
 def synth_movie(
-    h: int, w: int, T: int, seed: int = 0, options: SynthOptions | None = None
+    h: int,
+    w: int,
+    T: int,
+    seed: int = 0,
+    options: SynthOptions | None = None,
+    shifts: np.ndarray | None = None,
 ) -> np.ndarray:
-    """(T, h, w) uint8 movie with cells, background, noise and motion."""
-    return np.concatenate([c for _, c in synth_chunks(h, w, T, seed, options=options)])
+    """(T, h, w) uint8 movie with cells, background, noise and motion (``shifts``: the
+    given (T, 2) integer motion instead of the random walk)."""
+    return np.concatenate(
+        [c for _, c in synth_chunks(h, w, T, seed, options=options, shifts=shifts)]
+    )
 
 
 def synth_chunks(
@@ -680,9 +715,10 @@ def synth_chunks(
     seed: int = 0,
     chunk: int = GEN_CHUNK,
     options: SynthOptions | None = None,
+    shifts: np.ndarray | None = None,
 ) -> Iterator[tuple[int, np.ndarray]]:
     """Yield ``(t0, (n, h, w) uint8)`` chunks of the synthetic movie, bounded memory."""
-    s, rng = _build(h, w, T, seed, options)
+    s, rng = _build(h, w, T, seed, options, shifts)
     ch, cw = s.vign.shape
     prev = None
     for t0 in range(0, T, chunk):
@@ -742,15 +778,19 @@ def write_session(
     seed: int = 0,
     side: int = 600,
     options: SynthOptions | None = None,
+    shifts: np.ndarray | None = None,
 ) -> dict:
     """Write ``N.avi`` segments (uncompressed, fourcc GREY) to ``out_dir`` and ``meta.json``
-    and ``truth.npz`` (``write_truth``) to ``out_dir.parent``; returns the metadata dict."""
+    and ``truth.npz`` (``write_truth``) to ``out_dir.parent``; returns the metadata dict.
+    ``shifts`` (T, 2) integer: the rigid motion instead of the random walk (``truth.npz``
+    holds it; ``meta.json`` says ``shifts_given``)."""
     T = int(round(minutes * 60 * fps))
     out_dir.mkdir(parents=True, exist_ok=True)
     fourcc = cv2.VideoWriter_fourcc(*"GREY")
     t0 = time.perf_counter()
     seg = -1
-    for f0, chunk in synth_chunks(side, side, T, seed, chunk=segment, options=options):
+    gen = synth_chunks(side, side, T, seed, chunk=segment, options=options, shifts=shifts)
+    for f0, chunk in gen:
         seg = f0 // segment
         writer = cv2.VideoWriter(str(out_dir / f"{seg}.avi"), fourcc, fps, (side, side), False)
         for frame in chunk:
@@ -766,9 +806,11 @@ def write_session(
         "fourcc": "GREY",
         "seed": seed,
         "options": (options or SynthOptions()).to_dict(),
+        "shifts_given": shifts is not None,
         "bytes_raw": T * side * side,
         "generate_seconds": time.perf_counter() - t0,
     }
-    write_truth(synth_setup(side, side, T, seed, options), side, side, out_dir.parent / "truth.npz")
+    setup = synth_setup(side, side, T, seed, options, shifts)
+    write_truth(setup, side, side, out_dir.parent / "truth.npz")
     (out_dir.parent / "meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
     return meta

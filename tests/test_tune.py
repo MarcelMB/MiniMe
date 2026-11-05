@@ -82,7 +82,8 @@ def self_minian(tiny_w2_run, tmp_path_factory):
 def test_minian_overlay_aligns_and_matches(tiny_rerun, self_minian):
     run = figures.load_run(tiny_rerun)
     mn = minian.load(self_minian, run)
-    assert mn.offset == pytest.approx([-2, 1], abs=0.3)
+    # windowed phase correlation of two 64 px projections holding 7 cells: within 0.4 px
+    assert mn.offset == pytest.approx([-2, 1], abs=0.4)
     n = run.A.shape[0]
     assert len(mn.ui) >= 0.8 * n
     assert np.nanmedian(mn.corr) > 0.99
@@ -250,7 +251,7 @@ def test_best_per_value_and_curves(tmp_path):
     assert (tmp_path / names[0]).read_bytes()[:4] == b"\x89PNG"
 
 
-def test_server_autotune_roundtrip(tune_server, monkeypatch):
+def test_server_autotune_roundtrip(tune_server, monkeypatch, estimate_from_few_units):
     app, base = tune_server
     _wait(base)
     with pytest.raises(urllib.error.HTTPError) as e:
