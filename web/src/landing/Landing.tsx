@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { href } from "../router";
+import { useScheme } from "../scheme";
 import { FIGURES, type FigureName, figureSrc } from "./figures";
 
 const REPO = "https://github.com/MarcelMB/MiniMe";
@@ -7,12 +8,10 @@ const REPO = "https://github.com/MarcelMB/MiniMe";
 /** A README figure in the colour scheme the page is shown in. */
 function Figure({ name }: { name: FigureName }) {
   const { light, dark } = figureSrc(name);
+  const scheme = useScheme();
   return (
     <figure className="landing-fig">
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcSet={dark} />
-        <img src={light} alt={FIGURES[name]} loading="lazy" />
-      </picture>
+      <img src={scheme === "dark" ? dark : light} alt={FIGURES[name]} loading="lazy" />
     </figure>
   );
 }

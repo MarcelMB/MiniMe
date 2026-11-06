@@ -4,19 +4,19 @@ import { JobPage } from "./launch/JobPage";
 import { NewRun } from "./launch/NewRun";
 import { href, useRoute } from "./router";
 import { RunPage } from "./run/RunPage";
+import { SchemeToggle } from "./SchemeToggle";
+import { useScheme } from "./scheme";
 
 const REPO = "https://github.com/MarcelMB/MiniMe";
 
 export function App() {
   const route = useRoute();
+  const scheme = useScheme();
   return (
     <>
       <header className="topbar">
         <a className="brand" href={href({ name: "start" })}>
-          <picture>
-            <source media="(prefers-color-scheme: dark)" srcSet="./minime-logo-dark.svg" />
-            <img src="./minime-logo.svg" alt="MiniMe" />
-          </picture>
+          <img src={scheme === "dark" ? "./minime-logo-dark.svg" : "./minime-logo.svg"} alt="MiniMe" />
         </a>
         <nav aria-label="Main">
           <a className="btn" href={href({ name: "home" })}>
@@ -33,6 +33,7 @@ export function App() {
           <a className="btn" href={`${REPO}/issues/new`} target="_blank" rel="noopener noreferrer">
             Found an issue?
           </a>
+          <SchemeToggle />
         </nav>
       </header>
       {route.name === "start" && (FEATURES.Landing ? <FEATURES.Landing /> : <Home />)}
