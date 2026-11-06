@@ -15,9 +15,10 @@
 <text x="624" y="360" font-size="17" font-weight="600" fill="#1f7a8c">MiniMe: ~70 MB</text>
 <text x="624" y="382" font-size="15" fill="#1f7a8c">same for any length</text>
 <g font-size="17" fill="#1f2328">
-<text x="880" y="200">MiniMe keeps about</text>
-<text x="880" y="224"><tspan font-weight="600">1/1000</tspan> of the raw movie</text>
-<text x="880" y="270">The tab can hold only</text>
-<text x="880" y="294"><tspan font-weight="600">1/40</tspan> of it</text>
+<text x="880" y="190">A browser tab holds only</text>
+<text x="880" y="214"><tspan font-weight="600">1/40</tspan> of the movie.</text>
+<text x="880" y="260">MiniMe needs <tspan font-weight="600">1/1000</tspan> of it,</text>
+<text x="880" y="284">so it fits in the tab</text>
+<text x="880" y="308">many times over.</text>
 </g>
 </svg>
