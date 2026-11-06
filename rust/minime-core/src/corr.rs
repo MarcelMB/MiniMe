@@ -252,15 +252,23 @@ pub fn seeds_merge(
 /// `corr.brightest_parent`: each node's brightest neighbour in `edges` that is brighter than
 /// it (ties to the lower index), or itself (a root) when it has none.
 pub fn brightest_parent(n: usize, edges: &[[usize; 2]], bright: &[f64]) -> Vec<usize> {
-    // the order of numpy's lexsort on (-bright, index) for finite values
-    let brighter = |a: usize, b: usize| bright[a] > bright[b] || (bright[a] == bright[b] && a < b);
     let mut parent: Vec<usize> = (0..n).collect();
     for &[i, j] in edges {
-        let (par, child) = if brighter(i, j) { (i, j) } else { (j, i) };
-        let cur = parent[child];
-        if cur == child || brighter(par, cur) {
-            parent[child] = par;
-        }
+        link_brighter(&mut parent, i, j, bright);
     }
     parent
+}
+
+/// One edge of `brightest_parent`: the dimmer of `i` and `j` takes the other as its parent if
+/// it is brighter than its current one. The result is the same in any edge order (each node
+/// keeps the brightest of its brighter neighbours), so edges can be linked as they are found.
+#[inline]
+pub fn link_brighter(parent: &mut [usize], i: usize, j: usize, bright: &[f64]) {
+    // the order of numpy's lexsort on (-bright, index) for finite values
+    let brighter = |a: usize, b: usize| bright[a] > bright[b] || (bright[a] == bright[b] && a < b);
+    let (par, child) = if brighter(i, j) { (i, j) } else { (j, i) };
+    let cur = parent[child];
+    if cur == child || brighter(par, cur) {
+        parent[child] = par;
+    }
 }
