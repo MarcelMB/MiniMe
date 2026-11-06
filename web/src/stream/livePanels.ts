@@ -36,9 +36,10 @@ export function motionPanel(
   w: number,
   shifts: Float32Array,
   at: number,
+  last = false,
 ): LivePayload {
   const p = previewImage(frameFromBlock(block, n, n - 1, grid, w), h, w);
-  return { panel: "motion", frame: p.image, h: p.h, w: p.w, f: p.f, at, shifts };
+  return { panel: "motion", frame: p.image, h: p.h, w: p.w, f: p.f, at, shifts, ...(last ? { last } : {}) };
 }
 
 export class Pass2Live {
@@ -137,15 +138,17 @@ export function unitsPanel(
   };
 }
 
+/** Window `window`'s units for the stitch panel; `first` is its first unit's index over all windows. */
 export function stitchWindowPanel(
   window: number,
+  first: number,
   files: Map<string, Uint8Array>,
   h: number,
   w: number,
 ): LivePayload | null {
   const a = csrFromFiles(files, "A", h * w);
   if (!a) return null;
-  return { panel: "stitch", window, polygons: unitPolygons(a, h, w), centroids: centroids(a, h, w) };
+  return { panel: "stitch", window, first, polygons: unitPolygons(a, h, w), centroids: centroids(a, h, w) };
 }
 
 export function stitchFinalPanel(out: Map<string, Uint8Array>): LivePayload | null {

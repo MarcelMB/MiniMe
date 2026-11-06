@@ -1,7 +1,13 @@
 import type { Device } from "../gpu/plan";
 import { isFinal, type ProgressEvent, type RunPlan, type StageProgress } from "../launch/params";
 import { workerCount } from "../stream/pool";
-import type { FromWorker, LiveToggle, ToWorker } from "../stream/protocol";
+import {
+  type FromWorker,
+  LIVE_STITCH_WINDOWS,
+  type LiveOnEvent,
+  type LiveToggle,
+  type ToWorker,
+} from "../stream/protocol";
 import { DEFAULTS, unusedParams, WINDOW_FRAMES } from "../stream/session";
 import type { Job } from "../types";
 import { type Indexer, listSegments, openRawVideo, RawVideo } from "./avi";
@@ -626,6 +632,13 @@ export class JobManager {
       const panels = this.latestLive.get(job.id) ?? new Map<string, unknown>();
       this.latestLive.set(job.id, panels);
       panels.set(key, p);
+      // only the newest stitch windows (and the final links): a long run has hundreds
+      if (p.panel === "stitch" && p.window >= 0) {
+        const wins = [...panels.keys()]
+          .filter((k) => k.startsWith("stitch ") && k !== "stitch -1")
+          .sort((a, b) => Number(a.slice(7)) - Number(b.slice(7)));
+        for (const k of wins.slice(0, -LIVE_STITCH_WINDOWS)) panels.delete(k);
+      }
       for (const l of this.listeners.get(job.id) ?? []) l("live", p);
     } else if (m.type === "plan") {
       const { type: _, ...plan } = m;
@@ -646,6 +659,8 @@ export class JobManager {
     this.worker = null;
     this.liveOn.delete(job.id);
     this.latestLive.delete(job.id);
+    // the switch went with the worker: the page hides the card while the job goes on
+    for (const l of this.listeners.get(job.id) ?? []) l("liveon", { on: null } satisfies LiveOnEvent);
     try {
       const run = await state.registry.open(job.out_dir);
       this.startTune(job, (p) => this.tuneRunner().autotune(run, job.tune_args, p), false);
@@ -678,9 +693,12 @@ export class JobManager {
     if (job !== this.own || !this.worker || isFinal(job.status) || job.kind !== "run")
       throw new HttpError(400, "this run is not going in this tab");
     if (on) this.liveOn.add(id);
-    else this.liveOn.delete(id);
+    else {
+      this.liveOn.delete(id);
+      this.latestLive.delete(id); // a page opened later must not replay the previews from before
+    }
     this.worker.postMessage({ type: "live", on } satisfies LiveToggle);
-    for (const l of this.listeners.get(id) ?? []) l("liveon", { on });
+    for (const l of this.listeners.get(id) ?? []) l("liveon", { on } satisfies LiveOnEvent);
     return { on };
   }
 
@@ -734,7 +752,7 @@ export class JobManager {
       for (const [n, d] of past) send(n, d);
       if (!isFinal(job.status)) for (const p of this.latest.get(id)?.values() ?? []) send("progress", p);
       if (!isFinal(job.status) && job === this.own && this.worker) {
-        send("liveon", { on: this.liveOn.has(id) });
+        send("liveon", { on: this.liveOn.has(id) } satisfies LiveOnEvent);
         for (const p of this.latestLive.get(id)?.values() ?? []) send("live", p);
       }
     } else

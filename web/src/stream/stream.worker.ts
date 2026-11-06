@@ -64,11 +64,17 @@ const post = (m: FromWorker, transfer: Transferable[] = []) => self.postMessage(
 // the live view (only while `live.on`, the job page's switch)
 const postLive = (p: LivePayload) => post({ type: "live", ...p }, liveTransfer(p));
 const motionOk = makeThrottle(4);
+/** The frame workers' motion previews, forwarded at most 4 times a second in all (each worker throttles
+ * its own; with many workers they add up). A chunk's last preview always passes. */
+const forwardMotion = makeThrottle(4);
 /** The window's frame size and mean image for the single-thread seeds / init / CNMF previews. */
 let liveWindow: { h: number; w: number; mean: () => Float32Array; label: string } | null = null;
 /** A pool's workers send their previews through this worker; they get the switch's state now. */
 function liveOn(p: Pool): void {
-  p.onLive = (m) => post(m, liveTransfer(m));
+  p.onLive = (m) => {
+    if (m.panel === "motion" && !forwardMotion(m.last === true)) return;
+    post(m, liveTransfer(m));
+  };
   if (live.on) p.send({ type: "live", on: true });
 }
 const BLOCK = 64; // frames per File.slice read
@@ -749,9 +755,14 @@ async function runSession(
     stages: Record<string, number>;
     units?: Promise<W1Result>;
     ready: boolean;
+    /** The window's first unit over all windows' units in the stitch (as its `edges.npy` numbers them). */
+    first: number;
   };
   /** Windows through pass 2 whose seeds, init and CNMF may still be on the window worker, oldest first. */
   const pending: Pending[] = [];
+  /** Units added to the stitch so far (the next window's first unit index): add_window / add_cnmf's counts. */
+  let stitchUnits = 0;
+  let localFirst = 0;
   /** A window's units and outputs, in window order: the stitch, its report entry, its run-folder files. */
   const finishWindow = async (p: Pending) => {
     if (p.units) {
@@ -759,13 +770,14 @@ async function runSession(
       const u = await p.units;
       total += (performance.now() - s) / 1e3; // the run's own time: only the wait shows
       for (const [name, bytes] of u.files) p.files.set(name, bytes);
-      stitch.add_window(u.window, p.t0, p.t1);
+      p.first = stitchUnits;
+      stitchUnits += stitch.add_window(u.window, p.t0, p.t1);
       (["seeds", "init", "cnmf"] as const).forEach((stage, j) => {
         p.stages[stage] = u.seconds[j];
       });
     }
     // the window's files are complete here on both paths (window worker or this thread)
-    if (live.on) guard("stitch", () => stitchWindowPanel(p.i, p.files, H, W), postLive, log);
+    if (live.on) guard("stitch", () => stitchWindowPanel(p.i, p.first, p.files, H, W), postLive, log);
     const tag = `win_${String(p.i).padStart(2, "0")}_`;
     for (const [name, bytes] of p.files)
       if (name.startsWith("summary") || (opts.params.tile_crc && name === "tile_crc.npy")) out.set(tag + name, bytes);
@@ -798,7 +810,10 @@ async function runSession(
           ahead = beginPass1(pool, windowFiles(i + 1), tilesDir(i + 1), log);
         }
       },
-      onCnmf: (engine) => stitch.add_cnmf(engine, t0, t1),
+      onCnmf: (engine) => {
+        localFirst = stitchUnits;
+        stitchUnits += stitch.add_cnmf(engine, t0, t1);
+      },
     });
     total += w.seconds;
     if (ownMotion) {
@@ -811,7 +826,7 @@ async function runSession(
       const d = seconds - (before.get(stage) ?? 0);
       if (d > 0 && (!w.units || stage === "pass1" || stage === "pass2")) stages[stage] = d;
     }
-    const p: Pending = { i, t0, t1, files: w.files, stages, units: w.units, ready: !w.units };
+    const p: Pending = { i, t0, t1, files: w.files, stages, units: w.units, ready: !w.units, first: localFirst };
     p.units?.then(
       () => {
         p.ready = true;
@@ -1126,7 +1141,17 @@ async function windowPass1(
     if (live.on && motionOk(engine.done() === t1 - t0))
       guard(
         "motion",
-        () => motionPanel(packed, n, tileGrid(H, W, tileOf(files)), H, W, engine.chunk_shifts(), t0),
+        () =>
+          motionPanel(
+            packed,
+            n,
+            tileGrid(H, W, tileOf(files)),
+            H,
+            W,
+            engine.chunk_shifts(),
+            t0,
+            engine.done() === t1 - t0,
+          ),
         postLive,
         log,
       );

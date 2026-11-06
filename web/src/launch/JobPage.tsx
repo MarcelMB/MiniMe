@@ -3,12 +3,12 @@ import { getJSON, postJSON, subscribe } from "../api";
 import { ErrorNote } from "../controls";
 import { fmtDuration } from "../format";
 import { go } from "../router";
-import type { LivePayload } from "../stream/protocol";
+import type { LiveOnEvent, LivePayload } from "../stream/protocol";
 import type { Job, RunListing } from "../types";
 import { fmtLeft } from "./eta";
 import { LiveView } from "./LiveView";
 import { LiveRun } from "./live";
-import { emptyLive, reduceLive } from "./liveState";
+import { emptyLive, panelForStage, reduceLive } from "./liveState";
 import { isFinal, type ProgressEvent, type RunPlan, type StageProgress, type StageRow, stageRows } from "./params";
 import { StageRows } from "./StageRows";
 
@@ -126,8 +126,9 @@ export function JobPage({ id }: { id: string }) {
           setVersion((v) => v + 1);
         },
         plan: (d) => live.current.setPlan(d as RunPlan),
+        // null: the switch is gone (the run's worker went away while the job goes on, e.g. its auto-tune)
         liveon: (d) => {
-          const on = (d as { on: boolean }).on;
+          const on = (d as LiveOnEvent).on;
           setLiveOn(on);
           if (!on) setLiveState(emptyLive());
         },
@@ -264,7 +265,9 @@ export function JobPage({ id }: { id: string }) {
           <span className="label">Log</span>
           <pre className="log">{log.slice(-40).join("\n")}</pre>
         </section>
-        {liveOn !== null && !final && <LiveView jobId={id} on={liveOn} state={liveState} />}
+        {liveOn !== null && !final && (
+          <LiveView jobId={id} on={liveOn} state={liveState} follow={panelForStage(running?.stage)} />
+        )}
       </div>
       {lost && !final && <ErrorNote message="Live updates lost — reload to reconnect." />}
       {job.status === "failed" && <ErrorNote message={job.error || "the run failed"} />}

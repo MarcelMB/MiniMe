@@ -39,12 +39,29 @@ export type Stage = "stream" | "motion" | "pass1" | "pass2" | "seeds" | "init" |
 
 /** The job page's live-view switch: while on, the worker posts previews of each stage (`live`). */
 export type LiveToggle = { type: "live"; on: boolean };
+/** The job page's `liveon` event: the switch's state, null when there is no switch any more (the run's
+ * worker went away while the job goes on, as when a run chains its auto-tune). */
+export type LiveOnEvent = { on: boolean | null };
 /** A tile grid in full-resolution pixels. */
 export type LiveGrid = { h: number; w: number; tile: number };
+/** Stitch windows the job manager and the page keep (the newest; the final links stay too). */
+export const LIVE_STITCH_WINDOWS = 8;
 /** Image previews are u8, `h` x `w` after downsampling by `f`; coordinates (polygons, points,
- * centroids) stay in full-resolution pixels, the page divides them by `f`. */
+ * centroids) stay in full-resolution pixels, the page divides them by `f`. Polygons are [x, y]
+ * points; centroids and seeds are (row, col) pairs. A motion preview with `last` is a chunk's
+ * final one (never throttled away: its shifts are the chunk's complete ones). A stitch window's
+ * `first` is its first unit's index over all windows' units (as `edges` numbers them). */
 export type LivePayload =
-  | { panel: "motion"; frame: Uint8Array; h: number; w: number; f: number; at: number; shifts: Float32Array }
+  | {
+      panel: "motion";
+      frame: Uint8Array;
+      h: number;
+      w: number;
+      f: number;
+      at: number;
+      shifts: Float32Array;
+      last?: boolean;
+    }
   | {
       panel: "pass2";
       label: string;
@@ -79,7 +96,7 @@ export type LivePayload =
       ids: number[];
       traces: Float32Array[];
     }
-  | { panel: "stitch"; window: number; polygons: number[][][][]; centroids: Float64Array }
+  | { panel: "stitch"; window: number; first: number; polygons: number[][][][]; centroids: Float64Array }
   | { panel: "stitch"; window: -1; edges: Float64Array; units: number };
 export type LivePanel = LivePayload["panel"];
 

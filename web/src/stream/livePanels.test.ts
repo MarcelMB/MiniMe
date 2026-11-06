@@ -28,6 +28,9 @@ describe("live panels", () => {
     if (p.panel !== "motion") return;
     expect(p.at).toBe(50);
     expect(p.frame.length).toBe(4);
+    expect(p.last).toBeUndefined();
+    const end = motionPanel(Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]), 2, grid, 2, 2, new Float32Array(4), 50, true);
+    expect(end.panel === "motion" && end.last).toBe(true);
   });
   it("pass2: ranks of tiles seen, unknown before", () => {
     const live = new Pass2Live("window 1/1", { h: 2, w: 4, tile: 2 }, 2);
@@ -68,9 +71,10 @@ describe("live panels", () => {
     expect(unitsPanel("w", "cnmf", new Map(), new Float32Array(6), 2, 3)).toBeNull();
   });
   it("stitch: a window's outlines and centroids, then the links", () => {
-    const w = stitchWindowPanel(0, csr("A"), 2, 3);
+    const w = stitchWindowPanel(3, 12, csr("A"), 2, 3);
     if (w?.panel !== "stitch" || "edges" in w) throw new Error("panel");
     expect(w.centroids.length).toBe(4);
+    expect([w.window, w.first]).toEqual([3, 12]);
     const out = csr("A");
     out.set("edges.npy", writeNpy([1, 2], i64([0, 1])));
     const f = stitchFinalPanel(out);

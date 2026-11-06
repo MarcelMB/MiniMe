@@ -123,7 +123,7 @@ a { color: var(--accent); }
 @media (max-width: 720px) { .liverow { grid-template-columns: 1fr; } }
 .livecanvas { width: 100%; max-width: 512px; image-rendering: pixelated; border-radius: 6px; }
 .liverow .row .livecanvas { width: 30%; }
-.rankgrid { display: grid; gap: 2px; max-width: 512px; aspect-ratio: 1 / 1; }
+.rankgrid { display: grid; gap: 2px; max-width: 512px; } /* aspect ratio inline: the frame's w / h */
 .rankgrid span { background: var(--accent); border-radius: 2px; }
 .privacy { flex-direction: row; align-items: center; gap: 20px; border: 2px solid var(--ok); }
 .privacy-icon { flex: none; width: 56px; height: 56px; fill: none; stroke: var(--ok); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }

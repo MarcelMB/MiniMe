@@ -470,18 +470,52 @@ describe("JobManager and its worker", () => {
     expect(later.filter((n) => n.startsWith("live ")).length).toBe(1);
   });
 
-  it("keeps one preview per panel but every stitch window", async () => {
+  it("keeps one preview per panel and each of the newest stitch windows", async () => {
     const { m, workers, body } = await setup();
     const job = await m.submit(body);
     m.setLive(job.id, true);
     const st = (window: number) =>
-      workers[0].say({ type: "live", panel: "stitch", window, polygons: [], centroids: new Float64Array(0) });
+      workers[0].say({ type: "live", panel: "stitch", window, first: 0, polygons: [], centroids: new Float64Array(0) });
     st(0);
     st(1);
     st(1);
     const later: unknown[] = [];
     m.events(job.id, (n, d) => n === "live" && later.push((d as { window: number }).window));
     expect(later).toEqual([0, 1]);
+  });
+
+  it("keeps at most 8 stitch windows plus the final links for a late page", async () => {
+    const { m, workers, body } = await setup();
+    const job = await m.submit(body);
+    m.setLive(job.id, true);
+    for (let window = 0; window < 12; window++)
+      workers[0].say({ type: "live", panel: "stitch", window, first: 0, polygons: [], centroids: new Float64Array(0) });
+    workers[0].say({ type: "live", panel: "stitch", window: -1, edges: new Float64Array(0), units: 0 });
+    const later: number[] = [];
+    m.events(job.id, (n, d) => n === "live" && later.push((d as { window: number }).window));
+    expect(later.sort((a, b) => a - b)).toEqual([-1, 4, 5, 6, 7, 8, 9, 10, 11]);
+  });
+
+  it("forgets the previews when the switch goes off", async () => {
+    const { m, workers, body } = await setup();
+    const job = await m.submit(body);
+    m.setLive(job.id, true);
+    workers[0].say({
+      type: "live",
+      panel: "motion",
+      frame: new Uint8Array(4),
+      h: 2,
+      w: 2,
+      f: 1,
+      at: 0,
+      shifts: new Float32Array(2),
+    });
+    m.setLive(job.id, false);
+    m.setLive(job.id, true);
+    const later: string[] = [];
+    m.events(job.id, (n) => later.push(n));
+    expect(later).toContain("liveon");
+    expect(later).not.toContain("live");
   });
 
   it("ignores live after the end and refuses the switch for a finished job", async () => {
@@ -1392,7 +1426,11 @@ describe("rerun and auto-tune jobs", () => {
     const job = await m.submit({ ...body, tune: true, tune_args: { diameter: 7 } });
     expect(job.tune).toBe(true);
     const seen: string[] = [];
-    m.events(job.id, (n, d) => seen.push(n === "stage" ? `stage ${(d as { stage: string }).stage}` : n));
+    const switches: unknown[] = [];
+    m.events(job.id, (n, d) => {
+      seen.push(n === "stage" ? `stage ${(d as { stage: string }).stage}` : n);
+      if (n === "liveon") switches.push(d);
+    });
     workers[0].say({ type: "stage", stage: "pass1", event: "end", t: 1, seconds: 1 });
     // the fake worker writes nothing: the run folder is a run once it has report.json and the factors' meta
     mkdirSync(join(workerOut(m, job), "factors"));
@@ -1406,7 +1444,8 @@ describe("rerun and auto-tune jobs", () => {
     await tick();
     expect(m.get(job.id).status).toBe("done");
     expect(t.calls).toEqual(['autotune {"diameter":7}']);
-    expect(seen).toEqual(["status", "liveon", "stage pass1", "stage tune_run", "stage tune_run", "status"]);
+    expect(seen).toEqual(["status", "liveon", "stage pass1", "liveon", "stage tune_run", "stage tune_run", "status"]);
+    expect(switches).toEqual([{ on: false }, { on: null }]); // the switch goes with the run's worker
   });
 
   it("refuses bad auto-tune options of a run before any worker is made", async () => {

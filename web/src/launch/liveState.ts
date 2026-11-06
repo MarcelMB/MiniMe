@@ -1,6 +1,7 @@
-import type { LivePanel, LivePayload } from "../stream/protocol";
+import { LIVE_STITCH_WINDOWS, type LivePanel, type LivePayload } from "../stream/protocol";
 
-export type StitchWindow = { polygons: number[][][][]; centroids: Float64Array };
+/** A window's units; `first` is its first unit's index over all windows (as the links number them). */
+export type StitchWindow = { first: number; polygons: number[][][][]; centroids: Float64Array };
 export type LiveState = {
   /** Panels in the order they first arrived. */
   order: LivePanel[];
@@ -26,17 +27,45 @@ export function reduceLive(s: LiveState, p: LivePayload): LiveState {
       return { ...s, order, seeds: p };
     case "units":
       return { ...s, order, units: p };
-    case "stitch":
+    case "stitch": {
       if ("edges" in p) return { ...s, order, stitch: { ...s.stitch, edges: p.edges, units: p.units } };
-      return {
-        ...s,
-        order,
-        stitch: {
-          ...s.stitch,
-          windows: new Map(s.stitch.windows).set(p.window, { polygons: p.polygons, centroids: p.centroids }),
-        },
-      };
+      const windows = new Map(s.stitch.windows).set(p.window, {
+        first: p.first,
+        polygons: p.polygons,
+        centroids: p.centroids,
+      });
+      // only the newest windows (a long run has hundreds)
+      for (const k of [...windows.keys()].sort((a, b) => a - b).slice(0, -LIVE_STITCH_WINDOWS)) windows.delete(k);
+      return { ...s, order, stitch: { ...s.stitch, windows } };
+    }
   }
+}
+
+/** The live panel of a running stage (its row's `stage`), null for a stage without one. */
+export function panelForStage(stage: string | undefined): LivePanel | null {
+  switch (stage) {
+    case "motion":
+    case "pass1":
+      return "motion";
+    case "pass2":
+      return "pass2";
+    case "seeds":
+      return "seeds";
+    case "init":
+    case "cnmf":
+      return "units";
+    case "stitch":
+      return "stitch";
+    default:
+      return null;
+  }
+}
+
+/** The panel to show: the user's pick, else the running stage's panel once it has a preview, else the newest. */
+export function shownPanel(order: LivePanel[], picked: LivePanel | null, running: LivePanel | null): LivePanel | null {
+  if (picked && order.includes(picked)) return picked;
+  if (running && order.includes(running)) return running;
+  return order.at(-1) ?? null;
 }
 
 /** The shift chunks in frame order as (frame, shift 0, shift 1), at most `max` points (every k-th). */

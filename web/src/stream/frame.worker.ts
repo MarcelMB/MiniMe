@@ -226,7 +226,8 @@ async function pass1Chunk(m: Extract<ToFrameWorker, { type: "p1" }>): Promise<vo
       if (live.on && motionOk(engine.done() === m.b))
         guard(
           "motion",
-          () => motionPanel(block, n, gridFor(m.files, H, W), H, W, engine.chunk_shifts(), t0 + m.a),
+          () =>
+            motionPanel(block, n, gridFor(m.files, H, W), H, W, engine.chunk_shifts(), t0 + m.a, engine.done() === m.b),
           postLive,
           say,
         );

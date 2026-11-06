@@ -9,14 +9,16 @@ export type Layer =
 const PALETTE = ["#4f9cf9", "#f59e0b", "#10b981", "#ef4444", "#a855f7", "#14b8a6", "#ec4899", "#84cc16"];
 export const windowColor = (i: number): string => PALETTE[i % PALETTE.length];
 
-/** Links between unit centroids; units are numbered over the windows in window order. */
+/** Links between unit centroids. `edges` numbers units over all windows' units (window `w`'s unit `u`
+ * is `w.first + u`); links to a unit whose window the page does not have are left out. */
 export function linkSegments(windows: Map<number, StitchWindow>, edges: Float64Array): number[][] {
-  const cents: number[][] = [];
-  for (const [, w] of [...windows].sort((a, b) => a[0] - b[0]))
-    for (let u = 0; u < w.centroids.length / 2; u++) cents.push([w.centroids[2 * u], w.centroids[2 * u + 1]]);
+  const cents = new Map<number, [number, number]>();
+  for (const w of windows.values())
+    for (let u = 0; u < w.centroids.length / 2; u++)
+      cents.set(w.first + u, [w.centroids[2 * u], w.centroids[2 * u + 1]]);
   const out: number[][] = [];
   for (let e = 0; e + 1 < edges.length; e += 2) {
-    const [a, b] = [cents[edges[e]], cents[edges[e + 1]]];
+    const [a, b] = [cents.get(edges[e]), cents.get(edges[e + 1])];
     if (a && b) out.push([a[1], a[0], b[1], b[0]]);
   }
   return out;
