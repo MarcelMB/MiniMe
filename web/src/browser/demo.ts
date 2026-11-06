@@ -2,8 +2,8 @@
  * Dataverse, and a download of it straight into a folder the user picked or into browser storage.
  *
  * Dataverse's bot check answers a browser's cross-origin request with a challenge page that has no
- * CORS header, so the hosted page cannot fetch from it: Home's demo card links to the dataset for a
- * manual download instead. `downloadDemo` takes any `DemoSource`, for a mirror that allows CORS. */
+ * CORS header, so the hosted page cannot fetch from it: the download comes from the same files on
+ * Hugging Face (`hfSource`), which allows CORS; Dataverse stays the citable copy and the manual route. */
 
 export const DATAVERSE = "https://dataverse.ucla.edu";
 export const DEMO_DOI = "doi:10.25346/S6WHMSXK";
@@ -13,6 +13,13 @@ export const DEMO_DOI = "doi:10.25346/S6WHMSXK";
 export const DEMO_PAGE = `${DATAVERSE}/dataset.xhtml?persistentId=${DEMO_DOI}`;
 export const LISTING_URL = `${DATAVERSE}/api/datasets/:persistentId/?persistentId=${DEMO_DOI}`;
 export const fileUrl = (id: number) => `${DATAVERSE}/api/access/datafile/${id}`;
+
+/** The Hugging Face mirror: the dataset's files in the same layout (`raw/N.avi` and the top level). */
+export const HF_REPO = "MarcelMB/minime-demo";
+export const HF_PAGE = `https://huggingface.co/datasets/${HF_REPO}`;
+export const HF_LISTING_URL = `https://huggingface.co/api/datasets/${HF_REPO}/tree/main?recursive=true`;
+export const hfFileUrl = (path: string) =>
+  `${HF_PAGE}/resolve/main/${path.split("/").map(encodeURIComponent).join("/")}`;
 
 /** One 1000-frame segment (600 x 600 px, 20 fps), for the size shown before the listing is in. */
 export const SEGMENT_BYTES = 360_029_862;
@@ -136,7 +143,7 @@ export type Progress = {
 };
 
 export type DownloadOptions = {
-  /** Default: Dataverse (which a browser page cannot reach; see the top of this file). */
+  /** Default: the Hugging Face mirror (a browser page cannot reach Dataverse; see the top of this file). */
   source?: DemoSource;
   fetch?: typeof fetch;
   signal?: AbortSignal;
@@ -154,6 +161,32 @@ export async function fetchListing(fetchFn: typeof fetch = fetch, signal?: Abort
 
 export const dataverseSource: DemoSource = { list: fetchListing, url: (f) => fileUrl(f.id) };
 
+export type HfEntry = { type: "file" | "directory"; path: string; size: number; lfs?: { size: number } };
+
+/** `HF_LISTING_URL`'s files as `DataFile`s (`id` is their place in the listing; Hugging Face has none). */
+export function hfFiles(entries: HfEntry[]): DataFile[] {
+  return entries
+    .filter((e) => e.type === "file")
+    .map((e, id) => {
+      const i = e.path.lastIndexOf("/");
+      return {
+        id,
+        filename: e.path.slice(i + 1),
+        filesize: e.lfs?.size ?? e.size,
+        dir: i < 0 ? "" : e.path.slice(0, i),
+      };
+    });
+}
+
+export const hfSource: DemoSource = {
+  async list(fetchFn = fetch, signal) {
+    const r = await fetchFn(HF_LISTING_URL, { signal });
+    if (!r.ok) throw new Error(`Hugging Face answered ${r.status} for the demo's file list`);
+    return hfFiles((await r.json()) as HfEntry[]);
+  },
+  url: (f) => hfFileUrl(f.dir ? `${f.dir}/${f.filename}` : f.filename),
+};
+
 /** Fetch one file into `target`, checking it is as long as the listing says. */
 async function fetchFile(
   p: Planned,
@@ -164,7 +197,7 @@ async function fetchFile(
   onBytes: (n: number) => void,
 ): Promise<void> {
   const r = await fetchFn(url, { signal });
-  if (!r.ok || !r.body) throw new Error(`Dataverse answered ${r.status} for ${p.file.filename}`);
+  if (!r.ok || !r.body) throw new Error(`the server answered ${r.status} for ${p.file.filename}`);
   const sink = await target.create(p.path);
   const reader = r.body.getReader();
   let n = 0;
@@ -196,7 +229,7 @@ export async function downloadDemo(
   opts: DownloadOptions = {},
 ): Promise<{ fetched: number; skipped: number; bytes: number }> {
   const fetchFn = opts.fetch ?? fetch;
-  const source = opts.source ?? dataverseSource;
+  const source = opts.source ?? hfSource;
   const todo = plan(await source.list(fetchFn, opts.signal), kind);
   const total = todo.reduce((s, p) => s + p.file.filesize, 0);
   const missing: Planned[] = [];

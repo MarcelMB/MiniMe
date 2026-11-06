@@ -3,9 +3,15 @@ import {
   type DataFile,
   DEMO_PAGE,
   DEMOS,
+  dataverseSource,
   downloadDemo,
   fetchListing,
   fileUrl,
+  HF_LISTING_URL,
+  type HfEntry,
+  hfFiles,
+  hfFileUrl,
+  hfSource,
   LISTING_URL,
   type Progress,
   plan,
@@ -132,12 +138,52 @@ describe("demo listing", () => {
   });
 });
 
+describe("Hugging Face mirror", () => {
+  /** The tree API's answer: directories too, LFS files with their size under `lfs`. */
+  const tree: HfEntry[] = [
+    { type: "file", path: ".gitattributes", size: 2 },
+    { type: "file", path: "README.md", size: 3 },
+    { type: "file", path: "meta.json", size: 4 },
+    { type: "directory", path: "raw", size: 0 },
+    ...[...Array(36).keys()].map((i) => ({ type: "file" as const, path: `raw/${i}.avi`, size: 10, lfs: { size: 10 } })),
+    { type: "file", path: "truth.npz", size: 5, lfs: { size: 5 } },
+  ];
+
+  it("reads the tree listing as files in their folders", () => {
+    const files = hfFiles(tree);
+    expect(rawFiles(files)).toHaveLength(36);
+    expect(files.find((f) => f.filename === "7.avi")).toMatchObject({ dir: "raw", filesize: 10 });
+    expect(files.find((f) => f.filename === "meta.json")).toMatchObject({ dir: "", filesize: 4 });
+    expect(files.some((f) => f.filename === "raw")).toBe(false);
+  });
+
+  it("is the default source: lists the tree and fetches each file by its path", async () => {
+    const log: string[] = [];
+    const fetchFn = (async (u: RequestInfo | URL) => {
+      const url = String(u);
+      log.push(url);
+      if (url === HF_LISTING_URL) return new Response(JSON.stringify(tree));
+      const e = tree.find((x) => url === hfFileUrl(x.path));
+      return e ? new Response(new Uint8Array(e.size)) : new Response("not found", { status: 404 });
+    }) as typeof fetch;
+    const t = memoryTarget();
+    expect(await downloadDemo("short", t, { fetch: fetchFn })).toMatchObject({ fetched: 8, bytes: 67 });
+    expect(log[1]).toBe("https://huggingface.co/datasets/MarcelMB/minime-demo/resolve/main/raw/0.avi");
+    expect(t.files.get("minime-demo-5min/meta.json")?.length).toBe(4);
+    expect(hfSource.url({ id: 0, filename: "truth.npz", filesize: 5, dir: "" })).toBe(hfFileUrl("truth.npz"));
+  });
+});
+
 describe("downloadDemo", () => {
   it("fetches every file of the short demo into the target, with progress up to the total", async () => {
     const ds = dataset();
     const t = memoryTarget();
     const seen: Progress[] = [];
-    const out = await downloadDemo("short", t, { fetch: fakeFetch(ds), onProgress: (p) => seen.push(p) });
+    const out = await downloadDemo("short", t, {
+      source: dataverseSource,
+      fetch: fakeFetch(ds),
+      onProgress: (p) => seen.push(p),
+    });
     expect(out).toEqual({ fetched: 8, skipped: 0, bytes: 6 * 10 + 4 + 3 });
     expect(t.files.get("minime-demo-5min/raw/3.avi")).toEqual(ds.bytes.get(103));
     expect(t.files.get("minime-demo-5min/meta.json")).toEqual(ds.bytes.get(1));
@@ -159,6 +205,7 @@ describe("downloadDemo", () => {
     const log: string[] = [];
     const need: number[] = [];
     const out = await downloadDemo("short", t, {
+      source: dataverseSource,
       fetch: fakeFetch(ds, { log }),
       beforeStart: (n) => {
         need.push(n);
@@ -175,9 +222,9 @@ describe("downloadDemo", () => {
   it("fetches nothing when every file is there", async () => {
     const ds = dataset();
     const t = memoryTarget();
-    await downloadDemo("short", t, { fetch: fakeFetch(ds) });
+    await downloadDemo("short", t, { source: dataverseSource, fetch: fakeFetch(ds) });
     const log: string[] = [];
-    expect(await downloadDemo("short", t, { fetch: fakeFetch(ds, { log }) })).toMatchObject({
+    expect(await downloadDemo("short", t, { source: dataverseSource, fetch: fakeFetch(ds, { log }) })).toMatchObject({
       fetched: 0,
       skipped: 8,
     });
@@ -190,6 +237,7 @@ describe("downloadDemo", () => {
     const log: string[] = [];
     await expect(
       downloadDemo("full", t, {
+        source: dataverseSource,
         fetch: fakeFetch(ds, { log }),
         beforeStart: () => {
           throw new Error("no room");
@@ -203,13 +251,16 @@ describe("downloadDemo", () => {
   it("leaves no file behind for a download that ends short, and keeps the ones before it", async () => {
     const ds = dataset();
     const t = memoryTarget();
-    await expect(downloadDemo("short", t, { fetch: fakeFetch(ds, { short: 102 }) })).rejects.toThrow(
-      /2\.avi ended after 9 of 10 bytes/,
-    );
+    await expect(
+      downloadDemo("short", t, { source: dataverseSource, fetch: fakeFetch(ds, { short: 102 }) }),
+    ).rejects.toThrow(/2\.avi ended after 9 of 10 bytes/);
     expect([...t.files.keys()].sort()).toEqual(["minime-demo-5min/raw/0.avi", "minime-demo-5min/raw/1.avi"]);
     // the next try goes on from there
     const log: string[] = [];
-    expect(await downloadDemo("short", t, { fetch: fakeFetch(ds, { log }) })).toMatchObject({ fetched: 6, skipped: 2 });
+    expect(await downloadDemo("short", t, { source: dataverseSource, fetch: fakeFetch(ds, { log }) })).toMatchObject({
+      fetched: 6,
+      skipped: 2,
+    });
   });
 
   it("cancels in the middle of a file: that file is dropped, the finished ones stay", async () => {
@@ -221,7 +272,9 @@ describe("downloadDemo", () => {
         if (id === 103) ac.abort(new DOMException("cancelled", "AbortError"));
       },
     });
-    await expect(downloadDemo("short", t, { fetch: fetchFn, signal: ac.signal })).rejects.toThrow("cancelled");
+    await expect(
+      downloadDemo("short", t, { source: dataverseSource, fetch: fetchFn, signal: ac.signal }),
+    ).rejects.toThrow("cancelled");
     expect([...t.files.keys()].sort()).toEqual([0, 1, 2].map((i) => `minime-demo-5min/raw/${i}.avi`));
   });
 
@@ -229,7 +282,11 @@ describe("downloadDemo", () => {
     const ac = new AbortController();
     ac.abort(new DOMException("cancelled", "AbortError"));
     await expect(
-      downloadDemo("short", memoryTarget(), { fetch: fakeFetch(dataset()), signal: ac.signal }),
+      downloadDemo("short", memoryTarget(), {
+        source: dataverseSource,
+        fetch: fakeFetch(dataset()),
+        signal: ac.signal,
+      }),
     ).rejects.toThrow("cancelled");
   });
 
