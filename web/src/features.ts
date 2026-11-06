@@ -21,6 +21,15 @@ export type Features = {
   PrivacyNote: ComponentType | null;
   /** Home's card that downloads the synthetic demo session (the browser build: from UCLA Dataverse). */
   DemoCard: ComponentType | null;
+  /** The landing page at the root URL (the browser build); without it the root shows the Runs list. */
+  Landing: ComponentType | null;
 };
 
-export const FEATURES: Features = { tune: true, RunActions: null, SpeedPanel: null, PrivacyNote: null, DemoCard: null };
+export const FEATURES: Features = {
+  tune: true,
+  RunActions: null,
+  SpeedPanel: null,
+  PrivacyNote: null,
+  DemoCard: null,
+  Landing: null,
+};

@@ -11,7 +11,7 @@ const raw = process.env.STREAM_RAW;
 test("measures the GPU and the CPU on raw AVIs", async ({ page }) => {
   test.skip(!raw, "set STREAM_RAW");
   page.on("console", (m) => m.text().startsWith("[worker]") && console.log(m.text()));
-  await page.goto("/?e2e=1#/");
+  await page.goto("/?e2e=1#/runs");
   await page.waitForFunction(() => "__minimeSpeed" in window);
   const avis = readdirSync(raw!)
     .filter((f) => /^\d+.*\.avi$/i.test(f))

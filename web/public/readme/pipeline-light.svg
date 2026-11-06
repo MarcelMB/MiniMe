@@ -1,0 +1,82 @@
+<svg font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 520" role="img">
+<defs>
+<marker id="ov-arrow-acc" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" viewBox="0 0 12 12" refX="11" refY="6" orient="auto"><path d="M0 0 L12 6 L0 12 z" fill="#1f7a8c"/></marker>
+<marker id="ov-arrow-data" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" viewBox="0 0 12 12" refX="11" refY="6" orient="auto"><path d="M0 0 L12 6 L0 12 z" fill="#b7791f"/></marker>
+</defs>
+
+<!-- raw videos and run folder -->
+<rect x="20" y="20" width="380" height="50" rx="8" fill="#f8ecd3" stroke="#b7791f" stroke-width="2"/>
+<text x="210" y="51" font-size="18" fill="#1f2328" text-anchor="middle">raw videos (stay on disk)</text>
+<rect x="1000" y="20" width="180" height="50" rx="8" fill="#f8ecd3" stroke="#b7791f" stroke-width="2"/>
+<text x="1090" y="51" font-size="18" fill="#1f2328" text-anchor="middle">results</text>
+
+<!-- read 1 and read 2 -->
+<line x1="360" y1="70" x2="360" y2="128" stroke="#b7791f" stroke-width="2" marker-end="url(#ov-arrow-data)"/>
+<text x="370" y="104" font-size="16" fill="#b7791f">read 1</text>
+<path d="M 400 45 H 840 V 128" fill="none" stroke="#b7791f" stroke-width="2" marker-end="url(#ov-arrow-data)"/>
+<text x="620" y="36" font-size="16" fill="#b7791f" text-anchor="middle">read 2</text>
+<line x1="1090" y1="130" x2="1090" y2="72" stroke="#1f7a8c" stroke-width="2" marker-end="url(#ov-arrow-acc)"/>
+
+<!-- five stages -->
+<g font-size="16" fill="#1f2328" text-anchor="middle">
+<rect x="20" y="130" width="200" height="140" rx="8" fill="#dceff2" stroke="#1f7a8c" stroke-width="2"/>
+<text x="120" y="160" font-size="17" font-weight="600">1 · motion template</text>
+<text x="120" y="190">200 frames from</text>
+<text x="120" y="211">the whole session</text>
+<text x="120" y="232">→ reference image</text>
+
+<rect x="260" y="130" width="200" height="140" rx="8" fill="#dceff2" stroke="#1f7a8c" stroke-width="2"/>
+<text x="360" y="160" font-size="17" font-weight="600">2 · windows</text>
+<text x="360" y="190">2.5 min at a time:</text>
+<text x="360" y="211">preprocess, motion,</text>
+<text x="360" y="232">compress, find cells</text>
+
+<rect x="500" y="130" width="200" height="140" rx="8" fill="#dceff2" stroke="#1f7a8c" stroke-width="2"/>
+<text x="600" y="160" font-size="17" font-weight="600">3 · stitch</text>
+<text x="600" y="190">merge the windows'</text>
+<text x="600" y="211">cell lists into one;</text>
+<text x="600" y="232" fill="#5c6670">a cell seen in many</text>
+<text x="600" y="253" fill="#5c6670">windows is kept once</text>
+
+<rect x="740" y="130" width="200" height="140" rx="8" fill="#dceff2" stroke="#1f7a8c" stroke-width="2"/>
+<text x="840" y="160" font-size="17" font-weight="600">4 · streaming pass</text>
+<text x="840" y="190">every frame again:</text>
+<text x="840" y="211">traces of all cells</text>
+<text x="840" y="232">+ running totals</text>
+
+<rect x="980" y="130" width="200" height="140" rx="8" fill="#dceff2" stroke="#1f7a8c" stroke-width="2"/>
+<text x="1080" y="160" font-size="17" font-weight="600">5 · footprints</text>
+<text x="1080" y="190">final footprints</text>
+<text x="1080" y="211">from the totals;</text>
+<text x="1080" y="232">no third read</text>
+</g>
+<line x1="220" y1="200" x2="258" y2="200" stroke="#1f7a8c" stroke-width="2" marker-end="url(#ov-arrow-acc)"/>
+<line x1="460" y1="200" x2="498" y2="200" stroke="#1f7a8c" stroke-width="2" marker-end="url(#ov-arrow-acc)"/>
+<line x1="700" y1="200" x2="738" y2="200" stroke="#1f7a8c" stroke-width="2" marker-end="url(#ov-arrow-acc)"/>
+<line x1="940" y1="200" x2="978" y2="200" stroke="#1f7a8c" stroke-width="2" marker-end="url(#ov-arrow-acc)"/>
+
+<!-- what is in memory -->
+<rect x="480" y="294" width="700" height="62" rx="8" fill="#dceff2" stroke="#1f7a8c" stroke-width="2"/>
+<text x="830" y="320" font-size="17" fill="#1f2328" text-anchor="middle">In memory at any time: one window, or the cell list + totals.</text>
+<text x="830" y="344" font-size="17" fill="#1f7a8c" text-anchor="middle" font-weight="600">Never the whole session.</text>
+
+<!-- session timeline -->
+<text x="20" y="414" font-size="16" fill="#5c6670">session: frame 0 … T</text>
+<rect x="20" y="422" width="1160" height="28" rx="4" fill="#ececef" stroke="#c9ccd1" stroke-width="1.5"/>
+<line x1="252" y1="422" x2="252" y2="450" stroke="#1f7a8c" stroke-width="2"/>
+<line x1="484" y1="422" x2="484" y2="450" stroke="#1f7a8c" stroke-width="2"/>
+<line x1="716" y1="422" x2="716" y2="450" stroke="#1f7a8c" stroke-width="2"/>
+<line x1="948" y1="422" x2="948" y2="450" stroke="#1f7a8c" stroke-width="2"/>
+<g font-size="16" fill="#1f2328" text-anchor="middle">
+<text x="136" y="441">w1</text>
+<text x="368" y="441">w2</text>
+<text x="600" y="441">w3</text>
+<text x="832" y="441">…</text>
+<text x="1064" y="441">wN</text>
+</g>
+<path d="M 256 416 Q 256 406 266 406 H 358 Q 368 406 368 396 Q 368 406 378 406 H 470 Q 480 406 480 416" fill="none" stroke="#1f7a8c" stroke-width="2"/>
+<line x1="368" y1="396" x2="368" y2="272" stroke="#1f7a8c" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ov-arrow-acc)"/>
+<text x="378" y="372" font-size="16" fill="#1f7a8c">each window</text>
+<line x1="20" y1="470" x2="1178" y2="470" stroke="#1f7a8c" stroke-width="3" marker-end="url(#ov-arrow-acc)"/>
+<text x="600" y="498" font-size="16" fill="#1f7a8c" text-anchor="middle">read 2: one frame at a time</text>
+</svg>

@@ -1,3 +1,4 @@
+import { FEATURES } from "./features";
 import { Home } from "./home/Home";
 import { JobPage } from "./launch/JobPage";
 import { NewRun } from "./launch/NewRun";
@@ -11,7 +12,7 @@ export function App() {
   return (
     <>
       <header className="topbar">
-        <a className="brand" href={href({ name: "home" })}>
+        <a className="brand" href={href({ name: "start" })}>
           <picture>
             <source media="(prefers-color-scheme: dark)" srcSet="./minime-logo-dark.svg" />
             <img src="./minime-logo.svg" alt="MiniMe" />
@@ -34,6 +35,7 @@ export function App() {
           </a>
         </nav>
       </header>
+      {route.name === "start" && (FEATURES.Landing ? <FEATURES.Landing /> : <Home />)}
       {route.name === "home" && <Home />}
       {route.name === "new" && <NewRun />}
       {route.name === "job" && <JobPage key={route.id} id={route.id} />}
