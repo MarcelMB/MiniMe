@@ -6,10 +6,13 @@
 // it may post `progress`. Results carry `ms`, the milliseconds the task kept the worker busy, and
 // `heapMb`, the worker's wasm heap.
 
+import type { LivePayload, LiveToggle } from "./protocol";
+
 /** Files a stage's engine is built from (`params.json`, `template.npy`, ...). */
 export type FileMap = Map<string, Uint8Array>;
 
 export type ToFrameWorker =
+  | LiveToggle
   | { type: "init"; avis: File[]; scratch: string }
   /** Build the streaming pass's solver (`StreamSolver`) from its inputs. */
   | { type: "s0"; files: FileMap }
@@ -46,7 +49,15 @@ export type ToFrameWorker =
   | { type: "f2"; id: number }
   /** A window's seeds, init and CNMF loop: `files` its stage files, pass 1's maxima, pass 2's factors
    * per tile (`Pass2Engine.tile_bytes`). Posts progress 0, 1, 2 as seeds, init, CNMF begin. */
-  | { type: "w1"; id: number; files: FileMap; maxProj: Uint8Array; blockMax: Uint8Array; tiles: Uint8Array[] }
+  | {
+      type: "w1";
+      id: number;
+      label: string;
+      files: FileMap;
+      maxProj: Uint8Array;
+      blockMax: Uint8Array;
+      tiles: Uint8Array[];
+    }
   /** Compress tile `k` of the window's tile store. */
   | { type: "p2"; id: number; k: number }
   /** Turn this worker's GPU on (open the adapter; its per-frame tasks then run their kernels there)
@@ -99,6 +110,8 @@ export type FromFrameWorker =
   /** A running task's count; a window task (`w1`) also says what the step before did and how long it took. */
   | { type: "progress"; id: number; done: number; note?: string; seconds?: number }
   | { type: "error"; id: number; message: string }
+  /** A live-view preview (only while the page turned the switch on). */
+  | ({ type: "live" } & LivePayload)
   /** Something the run's log should say (this worker's GPU went off, and why). */
   | { type: "note"; message: string }
   | ({ type: "done"; kind: "p1" } & Meta & P1Result)

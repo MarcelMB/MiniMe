@@ -1231,6 +1231,7 @@ function windowUnits(
     name.endsWith(".json") || name === "template.npy" || name === "shifts.npy" || name === "fill.npy";
   const msg = {
     type: "w1" as const,
+    label: stageLabel,
     files: new Map([...files].filter(([name]) => keep(name))),
     maxProj: pass1.chunk_max_proj(),
     blockMax: pass1.chunk_block_max(),

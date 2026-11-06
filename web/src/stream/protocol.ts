@@ -37,6 +37,52 @@ export type SpeedAnswer = { test: SpeedTest | null; selfTest: string; reason: st
 
 export type Stage = "stream" | "motion" | "pass1" | "pass2" | "seeds" | "init" | "cnmf" | "stitch";
 
+/** The job page's live-view switch: while on, the worker posts previews of each stage (`live`). */
+export type LiveToggle = { type: "live"; on: boolean };
+/** A tile grid in full-resolution pixels. */
+export type LiveGrid = { h: number; w: number; tile: number };
+/** Image previews are u8, `h` x `w` after downsampling by `f`; coordinates (polygons, points,
+ * centroids) stay in full-resolution pixels, the page divides them by `f`. */
+export type LivePayload =
+  | { panel: "motion"; frame: Uint8Array; h: number; w: number; f: number; at: number; shifts: Float32Array }
+  | {
+      panel: "pass2";
+      label: string;
+      grid: LiveGrid;
+      ranks: Int32Array;
+      k: number;
+      comps: Uint8Array[];
+      th: number;
+      tw: number;
+      traces: Float32Array[];
+    }
+  | {
+      panel: "seeds";
+      label: string;
+      image: Uint8Array;
+      h: number;
+      w: number;
+      f: number;
+      seeds: Float32Array;
+      merged: Float32Array;
+    }
+  | {
+      panel: "units";
+      label: string;
+      step: "init" | "cnmf";
+      image: Uint8Array;
+      h: number;
+      w: number;
+      f: number;
+      polygons: number[][][][];
+      count: number;
+      ids: number[];
+      traces: Float32Array[];
+    }
+  | { panel: "stitch"; window: number; polygons: number[][][][]; centroids: Float64Array }
+  | { panel: "stitch"; window: -1; edges: Float64Array; units: number };
+export type LivePanel = LivePayload["panel"];
+
 export type FromWorker =
   | {
       type: "start";
@@ -69,4 +115,6 @@ export type FromWorker =
   | { type: "done"; files: Map<string, Uint8Array | Blob>; seconds: number }
   | { type: "log"; message: string }
   | ({ type: "speed" } & SpeedAnswer)
+  /** A live-view preview of a stage (only while the page turned the switch on). */
+  | ({ type: "live" } & LivePayload)
   | { type: "error"; message: string };
