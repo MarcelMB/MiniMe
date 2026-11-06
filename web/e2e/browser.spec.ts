@@ -36,7 +36,7 @@ const PAGES: [string, (page: Page) => Locator][] = [
  * returns its root name (a vpath starts with it). With `n` > 3 the folder holds `n` files, the
  * three of the e2e raw folder over and over (`0.avi` ... `<n-1>.avi`, 100 frames each). */
 async function openApp(page: Page, n = 3): Promise<string> {
-  await page.goto("/?e2e=1#/");
+  await page.goto("/?e2e=1#/runs");
   await page.waitForFunction(() => "__minimeAddFolder" in window && "__minimeApi" in window);
   const files = readdirSync(RAW).map((name) => readFileSync(join(RAW, name)).toString("base64"));
   return page.evaluate(
@@ -323,7 +323,7 @@ test("a run in Browser storage downloads as a zip that minime score reads and th
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
-  await page.goto("/?e2e=1#/");
+  await page.goto("/?e2e=1#/runs");
   await page.waitForFunction(() => "__minimeApi" in window);
   await putRawInBrowserStorage(page, "dl");
   const job = await startJob(page, "Browser storage/dl", "dl", PARAMS);
@@ -374,7 +374,7 @@ test("a run in Browser storage downloads as a zip that minime score reads and th
   const page2 = await other.newPage();
   page2.on("pageerror", (e) => errors.push(e.message));
   page2.on("console", (m) => m.type() === "error" && errors.push(m.text()));
-  await page2.goto("/#/");
+  await page2.goto("/#/runs");
   await page2.getByRole("button", { name: "Change folder" }).click();
   await expect(page2.getByText("This browser opens folders read-only")).toBeVisible();
   await page2.locator('input[type="file"]').setInputFiles(unzipped);
@@ -394,7 +394,7 @@ test("a raw folder picked on its own asks for an output folder and the run goes 
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
-  await page.goto("/?e2e=1#/");
+  await page.goto("/?e2e=1#/runs");
   await page.waitForFunction(() => "__minimeApi" in window);
   const files = readdirSync(RAW).map((name) => [name, readFileSync(join(RAW, name)).toString("base64")]);
   await page.evaluate(
@@ -477,7 +477,7 @@ test("a raw folder picked on its own asks for an output folder and the run goes 
 
   // the folder the run went to is a root now; picking it again is the same root, with its run listed
   await page.evaluate(() => {
-    window.location.hash = "#/";
+    window.location.hash = "#/runs";
   });
   await pickFolder();
   await expect(page.locator("h1.mono")).toHaveText("outonly");
@@ -535,7 +535,7 @@ test("New run on a raw folder inside the Runs folder runs into its processed fol
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
-  await page.goto("/?e2e=1#/");
+  await page.goto("/?e2e=1#/runs");
   await page.waitForFunction(() => "__minimeApi" in window);
   const files = readdirSync(RAW).map((name) => [name, readFileSync(join(RAW, name)).toString("base64")]);
   const meta = readFileSync("e2e/.data/meta.json", "utf8");
@@ -626,8 +626,28 @@ test("a browser without OPFS gets a page that says so instead of the app", async
     // biome-ignore lint/suspicious/noExplicitAny: removed to look like a browser without OPFS
     delete (StorageManager.prototype as any).getDirectory;
   });
-  await page.goto("/#/");
+  await page.goto("/#/runs");
   await expect(page.getByRole("heading", { name: "This browser cannot run MiniMe" })).toBeVisible();
   await expect(page.getByText("recent Chrome, Edge, Firefox or Safari")).toBeVisible();
   await expect(page.getByRole("link", { name: "New run" })).toHaveCount(0); // the app is gone
+});
+
+// The root URL is the landing page (the README's story and figures); the logo returns to it
+// from anywhere, and the Runs list is at #/runs.
+test("The root shows the landing page and the logo leads back to it", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Why it fits in a browser tab" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "How to use it" })).toBeVisible();
+  const figures = page.locator(".landing-fig img");
+  await expect(figures).toHaveCount(5);
+  for (const img of await figures.all()) {
+    await img.scrollIntoViewIfNeeded();
+    await expect.poll(() => img.evaluate((el: HTMLImageElement) => el.naturalWidth)).toBeGreaterThan(0);
+  }
+  await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Runs" }).click();
+  await expect(page).toHaveURL(/#\/runs$/);
+  await expect(page.getByRole("button", { name: "Change folder" })).toBeVisible();
+  await page.getByRole("link", { name: "MiniMe" }).first().click();
+  await expect(page).toHaveURL(/#\/$/);
+  await expect(page.getByRole("heading", { name: "Why it fits in a browser tab" })).toBeVisible();
 });

@@ -1,0 +1,36 @@
+<svg font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 350" role="img">
+<text x="20" y="34" font-size="18" fill="#e6e8eb">Example: a 2-hour session, 600 × 600 pixels, 30 fps</text>
+<line x1="370" y1="88" x2="370" y2="272" stroke="#3a414a" stroke-width="1" stroke-dasharray="3 5"/>
+<line x1="520" y1="88" x2="520" y2="272" stroke="#3a414a" stroke-width="1" stroke-dasharray="3 5"/>
+<line x1="670" y1="88" x2="670" y2="272" stroke="#3a414a" stroke-width="1" stroke-dasharray="3 5"/>
+<line x1="820" y1="88" x2="820" y2="272" stroke="#3a414a" stroke-width="1" stroke-dasharray="3 5"/>
+<line x1="970" y1="88" x2="970" y2="272" stroke="#3a414a" stroke-width="1" stroke-dasharray="3 5"/>
+<line x1="1120" y1="88" x2="1120" y2="272" stroke="#3a414a" stroke-width="1" stroke-dasharray="3 5"/>
+<line x1="370" y1="272" x2="1120" y2="272" stroke="#9aa3ad" stroke-width="1.5"/>
+<line x1="370" y1="272" x2="370" y2="279" stroke="#9aa3ad" stroke-width="1.5"/>
+<text x="370" y="296" font-size="15" fill="#9aa3ad" text-anchor="middle">10 MB</text>
+<line x1="520" y1="272" x2="520" y2="279" stroke="#9aa3ad" stroke-width="1.5"/>
+<text x="520" y="296" font-size="15" fill="#9aa3ad" text-anchor="middle">100 MB</text>
+<line x1="670" y1="272" x2="670" y2="279" stroke="#9aa3ad" stroke-width="1.5"/>
+<text x="670" y="296" font-size="15" fill="#9aa3ad" text-anchor="middle">1 GB</text>
+<line x1="820" y1="272" x2="820" y2="279" stroke="#9aa3ad" stroke-width="1.5"/>
+<text x="820" y="296" font-size="15" fill="#9aa3ad" text-anchor="middle">10 GB</text>
+<line x1="970" y1="272" x2="970" y2="279" stroke="#9aa3ad" stroke-width="1.5"/>
+<text x="970" y="296" font-size="15" fill="#9aa3ad" text-anchor="middle">100 GB</text>
+<line x1="1120" y1="272" x2="1120" y2="279" stroke="#9aa3ad" stroke-width="1.5"/>
+<text x="1120" y="296" font-size="15" fill="#9aa3ad" text-anchor="middle">1 TB</text>
+<text x="745" y="328" font-size="15" fill="#9aa3ad" text-anchor="middle">memory / size (log scale: each step is 10×)</text>
+<text x="356" y="117" font-size="16" fill="#e6e8eb" text-anchor="end">raw movie (uint8)</text>
+<rect x="370" y="96" width="583.8" height="30" rx="4" fill="#e2b35a"/>
+<text x="961.8" y="117" font-size="16" font-weight="600" fill="#e6e8eb" stroke="#161b22" stroke-width="5" stroke-linejoin="round" paint-order="stroke">78 GB</text>
+<text x="356" y="159" font-size="16" fill="#e6e8eb" text-anchor="end">same movie as float32</text>
+<rect x="370" y="138" width="673.9" height="30" rx="4" fill="#e2b35a"/>
+<text x="1051.9" y="159" font-size="16" font-weight="600" fill="#e6e8eb" stroke="#161b22" stroke-width="5" stroke-linejoin="round" paint-order="stroke">311 GB</text>
+<text x="356" y="217" font-size="16" fill="#e6e8eb" text-anchor="end">MiniMe in the browser</text>
+<rect x="370" y="196" width="126.8" height="30" rx="4" fill="#5cc1d4"/>
+<text x="504.8" y="217" font-size="16" font-weight="600" fill="#e6e8eb" stroke="#161b22" stroke-width="5" stroke-linejoin="round" paint-order="stroke">~70 MB</text>
+<text x="370" y="248" font-size="15" fill="#5cc1d4" stroke="#161b22" stroke-width="5" stroke-linejoin="round" paint-order="stroke">does not grow with recording length</text>
+<line x1="715.2" y1="60" x2="715.2" y2="272" stroke="#f0894f" stroke-width="3" stroke-dasharray="9 5"/>
+<text x="705.2" y="74" font-size="15" font-weight="600" fill="#f0894f" text-anchor="end">browser tab: ~2 GB working set</text>
+<text x="725.2" y="74" font-size="15" fill="#f0894f">past it the tab crashes</text>
+</svg>
