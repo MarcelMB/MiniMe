@@ -4,7 +4,8 @@
 // Only the browser build opened with `?e2e` loads this (`e2e.ts`).
 import type { Device } from "../gpu/plan";
 import { defaultRunName } from "../launch/params";
-import type { FromWorker, ToWorker } from "../stream/protocol";
+import { liveTransfer } from "../stream/live";
+import type { FromWorker, LiveToggle, ToWorker } from "../stream/protocol";
 import { RUN_LOCK } from "./support";
 
 export type StreamOptions = {
@@ -16,6 +17,8 @@ export type StreamOptions = {
   gpuTest?: string;
   /** Run parameters over the defaults (a `params.json`'s values, e.g. an auto-tune proposal). */
   params?: Record<string, unknown>;
+  /** Switch the live view on right after the start message and count what it sends. */
+  live?: boolean;
 };
 export type StreamResult = {
   files: { name: string; size: number }[];
@@ -23,6 +26,8 @@ export type StreamResult = {
   /** Where the run folder went in browser storage (`runs/<name>`); empty with reference inputs,
    * which only return their outputs. */
   folder: string;
+  /** What the live view sent: messages, payload bytes and the distinct panels. */
+  live: { messages: number; bytes: number; panels: string[] };
 };
 
 const outputs = new Map<string, Blob>();
@@ -48,10 +53,15 @@ async function stream(avis: File[], inputs: File[], opts: StreamOptions): Promis
   try {
     return await new Promise<StreamResult>((resolve, reject) => {
       let lastProgress = 0;
+      const live = { messages: 0, bytes: 0, panels: [] as string[] };
       worker.onmessage = (e: MessageEvent<FromWorker>) => {
         const m = e.data;
         if (m.type === "log") console.log(`[worker] ${m.message}`);
-        else if (m.type === "stage") console.log(`[stream] ${m.stage} ${m.event}${m.note ? ` (${m.note})` : ""}`);
+        else if (m.type === "live") {
+          live.messages++;
+          for (const t of liveTransfer(m)) live.bytes += (t as ArrayBuffer).byteLength;
+          if (!live.panels.includes(m.panel)) live.panels.push(m.panel);
+        } else if (m.type === "stage") console.log(`[stream] ${m.stage} ${m.event}${m.note ? ` (${m.note})` : ""}`);
         else if (m.type === "progress" && Date.now() / 1e3 - lastProgress >= PROGRESS_EVERY_S) {
           lastProgress = Date.now() / 1e3;
           console.log(`[stream] ${m.stage} ${m.done} / ${m.frames}, state ${m.stateMb.toFixed(0)} MB`);
@@ -62,6 +72,7 @@ async function stream(avis: File[], inputs: File[], opts: StreamOptions): Promis
             files: [...outputs].map(([name, blob]) => ({ name, size: blob.size })),
             seconds: m.seconds,
             folder,
+            live,
           });
         } else if (m.type === "error") reject(new Error(m.message));
       };
@@ -84,6 +95,7 @@ async function stream(avis: File[], inputs: File[], opts: StreamOptions): Promis
         gpuTest: opts.gpuTest,
       };
       worker.postMessage(msg);
+      if (opts.live) worker.postMessage({ type: "live", on: true } satisfies LiveToggle);
     });
   } finally {
     worker.terminate();
