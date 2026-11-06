@@ -76,9 +76,9 @@ describe("JobManager", () => {
     workers[0].say({ type: "log", message: "hi" });
     workers[0].say({ type: "done", files: new Map(), seconds: 3 });
     await tick(); // the final status is recorded after the job is saved
-    expect(seen.map(([n]) => n)).toEqual(["status", "stage", "log", "status"]);
-    expect(seen[1][1]).toEqual({ stage: "pass1", event: "start", t: 1 }); // progress.jsonl's dict, no `type`
-    expect(seen[2][1]).toBe("hi");
+    expect(seen.map(([n]) => n)).toEqual(["status", "liveon", "stage", "log", "status"]);
+    expect(seen[2][1]).toEqual({ stage: "pass1", event: "start", t: 1 }); // progress.jsonl's dict, no `type`
+    expect(seen[3][1]).toBe("hi");
     expect(m.get(job.id).status).toBe("done");
   });
 
@@ -104,17 +104,17 @@ describe("JobManager", () => {
     workers[0].say({ type: "plan", frames: 900, windows: 1 });
     workers[0].say({ type: "stage", stage: "pass1", event: "start", t: 2 });
     p("pass1", 50);
-    expect(seen.slice(2, 4)).toEqual([
+    expect(seen.slice(3, 5)).toEqual([
       ["progress", { stage: "motion", done: 100, frames: 900, seconds: 2, unit: "frames" }],
       ["progress", { stage: "motion", done: 200, frames: 900, seconds: 4, unit: "frames" }],
     ]);
-    expect(seen[4]).toEqual(["plan", { frames: 900, windows: 1 }]); // the plan is in the history
+    expect(seen[5]).toEqual(["plan", { frames: 900, windows: 1 }]); // the plan is in the history
     const later: string[] = [];
     m.events(job.id, (n, d) =>
       later.push(n === "progress" ? `${(d as { stage: string }).stage} ${(d as { done: number }).done}` : n),
     );
     // after the replay: each stage's latest, the running one last
-    expect(later).toEqual(["status", "stage", "plan", "stage", "motion 200", "pass1 50"]);
+    expect(later).toEqual(["status", "stage", "plan", "stage", "motion 200", "pass1 50", "liveon"]);
     workers[0].say({ type: "done", files: new Map(), seconds: 3 });
     await tick();
     const after: string[] = [];
@@ -584,7 +584,7 @@ describe("JobManager and its worker", () => {
     const close = m.events(job.id, (n) => seen.push(n));
     close();
     workers[0].say({ type: "log", message: "x" });
-    expect(seen).toEqual(["status"]);
+    expect(seen).toEqual(["status", "liveon"]);
   });
 });
 
@@ -1406,7 +1406,7 @@ describe("rerun and auto-tune jobs", () => {
     await tick();
     expect(m.get(job.id).status).toBe("done");
     expect(t.calls).toEqual(['autotune {"diameter":7}']);
-    expect(seen).toEqual(["status", "stage pass1", "stage tune_run", "stage tune_run", "status"]);
+    expect(seen).toEqual(["status", "liveon", "stage pass1", "stage tune_run", "stage tune_run", "status"]);
   });
 
   it("refuses bad auto-tune options of a run before any worker is made", async () => {

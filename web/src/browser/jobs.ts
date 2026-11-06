@@ -733,8 +733,8 @@ export class JobManager {
     if (past) {
       for (const [n, d] of past) send(n, d);
       if (!isFinal(job.status)) for (const p of this.latest.get(id)?.values() ?? []) send("progress", p);
-      if (!isFinal(job.status) && job === this.own && this.worker && this.liveOn.has(id)) {
-        send("liveon", { on: true }); // off is the page's default: only an on switch is replayed
+      if (!isFinal(job.status) && job === this.own && this.worker) {
+        send("liveon", { on: this.liveOn.has(id) });
         for (const p of this.latestLive.get(id)?.values() ?? []) send("live", p);
       }
     } else
