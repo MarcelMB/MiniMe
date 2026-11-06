@@ -1,7 +1,7 @@
 import type { Device } from "../gpu/plan";
 import { isFinal, type ProgressEvent, type RunPlan, type StageProgress } from "../launch/params";
 import { workerCount } from "../stream/pool";
-import type { FromWorker, ToWorker } from "../stream/protocol";
+import type { FromWorker, LiveToggle, ToWorker } from "../stream/protocol";
 import { DEFAULTS, unusedParams, WINDOW_FRAMES } from "../stream/session";
 import type { Job } from "../types";
 import { type Indexer, listSegments, openRawVideo, RawVideo } from "./avi";
@@ -160,6 +160,10 @@ export class JobManager {
   private listeners = new Map<string, Set<Emit>>();
   /** Per job, each stage's latest counters (the page's rates for the run's time left). */
   private latest = new Map<string, Map<string, StageProgress>>();
+  /** Jobs whose live view is on (this tab's run only; not saved). */
+  private liveOn = new Set<string>();
+  /** The latest preview of each panel (each stitch window kept) of a running job, for a page opened later. */
+  private latestLive = new Map<string, Map<string, unknown>>();
   private worker: Worker | null = null;
   private wake: WakeLockSentinel | null = null;
   private asking = false;
@@ -616,6 +620,13 @@ export class JobManager {
     } else if (m.type === "progress") {
       const { stage, done, frames, seconds, unit } = m;
       this.live(job.id, { stage, done, frames, seconds, unit } satisfies StageProgress);
+    } else if (m.type === "live") {
+      const { type: _, ...p } = m;
+      const key = p.panel === "stitch" ? `stitch ${p.window}` : p.panel;
+      const panels = this.latestLive.get(job.id) ?? new Map<string, unknown>();
+      this.latestLive.set(job.id, panels);
+      panels.set(key, p);
+      for (const l of this.listeners.get(job.id) ?? []) l("live", p);
     } else if (m.type === "plan") {
       const { type: _, ...plan } = m;
       this.record(job.id, "plan", plan satisfies RunPlan);
@@ -633,6 +644,8 @@ export class JobManager {
   private async chainTune(job: JobRecord): Promise<void> {
     this.worker?.terminate();
     this.worker = null;
+    this.liveOn.delete(job.id);
+    this.latestLive.delete(job.id);
     try {
       const run = await state.registry.open(job.out_dir);
       this.startTune(job, (p) => this.tuneRunner().autotune(run, job.tune_args, p), false);
@@ -654,7 +667,21 @@ export class JobManager {
     this.unlock = null;
     this.dropScratch(job.id);
     this.latest.delete(job.id);
+    this.liveOn.delete(job.id);
+    this.latestLive.delete(job.id);
     this.record(job.id, "status", { ...job });
+  }
+
+  /** The job page's Live view switch: tells this tab's run worker to send previews (or stop). */
+  setLive(id: string, on: boolean): { on: boolean } {
+    const job = this.get(id);
+    if (job !== this.own || !this.worker || isFinal(job.status) || job.kind !== "run")
+      throw new HttpError(400, "this run is not going in this tab");
+    if (on) this.liveOn.add(id);
+    else this.liveOn.delete(id);
+    this.worker.postMessage({ type: "live", on } satisfies LiveToggle);
+    for (const l of this.listeners.get(id) ?? []) l("liveon", { on });
+    return { on };
   }
 
   async cancel(id: string): Promise<JobRecord> {
@@ -706,6 +733,10 @@ export class JobManager {
     if (past) {
       for (const [n, d] of past) send(n, d);
       if (!isFinal(job.status)) for (const p of this.latest.get(id)?.values() ?? []) send("progress", p);
+      if (!isFinal(job.status) && job === this.own && this.worker && this.liveOn.has(id)) {
+        send("liveon", { on: true }); // off is the page's default: only an on switch is replayed
+        for (const p of this.latestLive.get(id)?.values() ?? []) send("live", p);
+      }
     } else
       void this.progress(job).then((stages) => {
         for (const e of stages) send("stage", e);

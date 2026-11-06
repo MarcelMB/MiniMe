@@ -454,6 +454,58 @@ describe("JobManager and its worker", () => {
     expect(job.started).toBe(job.created);
   });
 
+  it("turns the live view on in the worker and relays previews, never in the history", async () => {
+    const { m, workers, body } = await setup();
+    const job = await m.submit(body);
+    const seen: string[] = [];
+    m.events(job.id, (n) => seen.push(n));
+    expect(m.setLive(job.id, true)).toEqual({ on: true });
+    expect(workers[0].sent.at(-1)).toEqual({ type: "live", on: true });
+    const frame = new Uint8Array(4);
+    workers[0].say({ type: "live", panel: "motion", frame, h: 2, w: 2, f: 1, at: 0, shifts: new Float32Array(2) });
+    expect(seen.slice(-2)).toEqual(["liveon", "live"]);
+    const later: string[] = [];
+    m.events(job.id, (n, d) => later.push(n === "live" ? `live ${(d as { panel: string }).panel}` : n));
+    expect(later.slice(-2)).toEqual(["liveon", "live motion"]); // replays switch state and latest previews
+    expect(later.filter((n) => n.startsWith("live ")).length).toBe(1);
+  });
+
+  it("keeps one preview per panel but every stitch window", async () => {
+    const { m, workers, body } = await setup();
+    const job = await m.submit(body);
+    m.setLive(job.id, true);
+    const st = (window: number) =>
+      workers[0].say({ type: "live", panel: "stitch", window, polygons: [], centroids: new Float64Array(0) });
+    st(0);
+    st(1);
+    st(1);
+    const later: unknown[] = [];
+    m.events(job.id, (n, d) => n === "live" && later.push((d as { window: number }).window));
+    expect(later).toEqual([0, 1]);
+  });
+
+  it("ignores live after the end and refuses the switch for a finished job", async () => {
+    const { m, workers, body } = await setup();
+    const job = await m.submit(body);
+    workers[0].say({ type: "done", files: new Map(), seconds: 1 });
+    await tick();
+    workers[0].say({
+      type: "live",
+      panel: "motion",
+      frame: new Uint8Array(1),
+      h: 1,
+      w: 1,
+      f: 1,
+      at: 0,
+      shifts: new Float32Array(0),
+    });
+    const after: string[] = [];
+    m.events(job.id, (n) => after.push(n));
+    expect(after).not.toContain("live");
+    expect(after).not.toContain("liveon");
+    expect(() => m.setLive(job.id, true)).toThrow("not going in this tab");
+  });
+
   it("replays a finished job's events to a late subscriber, final status last", async () => {
     const { m, workers, body } = await setup();
     const job = await m.submit(body);
