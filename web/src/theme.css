@@ -94,8 +94,8 @@ a { color: var(--accent); }
 .brand img { display: block; height: 26px; width: auto; }
 .topbar nav { display: flex; gap: 8px; }
 .topbar .project-links { margin-left: auto; }
-.scheme-toggle { display: inline-flex; align-items: center; gap: 6px; }
-.scheme-toggle svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.scheme-toggle { display: inline-flex; align-items: center; justify-content: center; padding-left: 10px; padding-right: 10px; }
+.scheme-toggle svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
 .page { max-width: 1280px; margin: 0 auto; padding: 20px 16px 48px; display: flex; flex-direction: column; gap: 20px; }
 .page h1 { margin: 0; font-size: 28px; font-weight: 600; letter-spacing: -0.03em; }
