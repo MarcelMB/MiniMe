@@ -47,14 +47,25 @@ and `V` and never reads the movie again.
 </p>
 
 That is what makes long recordings fit. A browser tab gets about 2 GB to work with; a
-2-hour session is far bigger than that. MiniMe reads the videos in pieces, finds the cells
-window by window, joins them, and then streams the whole recording once more for each
-cell's full trace, keeping about 70 MB in memory however long the recording is.
+2-hour session is far bigger than that.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/budget-dark.svg">
     <img alt="A 2-hour 600 × 600 px session at 30 fps is 78 GB as raw video; the browser tab has about 2 GB; MiniMe keeps about 70 MB" src="docs/assets/readme/budget-light.svg" width="880">
+  </picture>
+</p>
+
+So MiniMe never holds the whole movie. The videos stay on disk and are read in pieces: it
+finds the cells window by window (2.5 min each), merges the windows' cell lists into one, and
+then reads every frame once more for each cell's full trace. At any moment only one window,
+or the cell list and some running totals, is in memory: about 70 MB, however long the
+recording is.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/pipeline-dark.svg">
+    <img alt="Motion template, windows, stitch, streaming pass and footprints: one window or the cell list is in memory at a time, never the whole session" src="docs/assets/readme/pipeline-light.svg" width="880">
   </picture>
 </p>
 
@@ -74,15 +85,10 @@ MiniMe gives footprints and fluorescence traces; it does not infer spikes.
 
 ## Try the demo
 
-A synthetic one-photon session through a GRIN lens (600 × 600 px, 20 fps), with known ground
-truth, is on [UCLA Dataverse](https://dataverse.ucla.edu/dataset.xhtml?persistentId=doi:10.25346/S6WHMSXK)
-(CC0). It comes as 36 videos of 50 s; the first six (`0.avi` … `5.avi`, about 2.2 GB) make a
-5-minute demo. Put them in one folder, open MiniMe, choose that folder and press
-**Use the demo settings**.
-
-A real recording (24 segments, about 8.5 GB, CC0) with its behavior video is on
-[UCLA Dataverse](https://dataverse.ucla.edu/dataset.xhtml?persistentId=doi:10.25346/S6SGHPCZ)
-as well.
+MiniMe's start page has a button that downloads a demo session: a synthetic one-photon
+recording through a GRIN lens (600 × 600 px, 20 fps) with known ground truth, as a 5-minute
+or a 30-minute session. It goes straight into a folder you pick or into the browser's own
+storage, and New run opens on it with the demo settings.
 
 ## Python package
 
