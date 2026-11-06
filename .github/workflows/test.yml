@@ -7,7 +7,7 @@ on:
 
 jobs:
   python:
-    # the oldest supported Python (3.11, see README Install) and the newest on every OS,
+    # the oldest supported Python (3.11, see docs/python.md Install) and the newest on every OS,
     # plus the oldest Ubuntu runner and an Intel Mac
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30

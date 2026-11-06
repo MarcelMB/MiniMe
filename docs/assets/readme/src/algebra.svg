@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 330" role="img" aria-label="The tile movie Y is approximated by its mean plus W times V transpose">
+<!-- dimension brackets for Y -->
+<line x1="110" y1="38" x2="390" y2="38" stroke="var(--line)" stroke-width="1"/>
+<line x1="110" y1="33" x2="110" y2="43" stroke="var(--line)" stroke-width="1"/>
+<line x1="390" y1="33" x2="390" y2="43" stroke="var(--line)" stroke-width="1"/>
+<text x="250" y="28" font-size="16" fill="var(--muted)" text-anchor="middle">T frames</text>
+<line x1="98" y1="48" x2="98" y2="188" stroke="var(--line)" stroke-width="1"/>
+<line x1="93" y1="48" x2="103" y2="48" stroke="var(--line)" stroke-width="1"/>
+<line x1="93" y1="188" x2="103" y2="188" stroke="var(--line)" stroke-width="1"/>
+<text transform="rotate(-90 84 118)" x="84" y="118" font-size="16" fill="var(--muted)" text-anchor="middle">P pixels</text>
+<!-- Y -->
+<rect x="110" y="48" width="280" height="140" rx="8" fill="var(--panel)" stroke="var(--ink)" stroke-width="2"/>
+<text x="250" y="116" font-size="24" fill="var(--ink)" text-anchor="middle" font-weight="600">Y</text>
+<text x="250" y="142" font-size="15" fill="var(--muted)" text-anchor="middle">uint8</text>
+<text x="250" y="216" font-size="16" fill="var(--ink)" text-anchor="middle">the movie of one tile:</text>
+<text x="250" y="238" font-size="16" fill="var(--ink)" text-anchor="middle">P pixels × T frames</text>
+<!-- ≈ mean × 1ᵀ -->
+<text x="424" y="126" font-size="28" fill="var(--ink)" text-anchor="middle">≈</text>
+<rect x="452" y="48" width="16" height="140" rx="3" fill="var(--old-soft)" stroke="var(--old)" stroke-width="2"/>
+<text x="460" y="216" font-size="16" fill="var(--ink)" text-anchor="middle">mean</text>
+<text x="486" y="62" font-size="16" fill="var(--ink)" text-anchor="middle">×</text>
+<rect x="502" y="48" width="130" height="16" rx="3" fill="var(--old-soft)" stroke="var(--old)" stroke-width="2"/>
+<text x="567" y="88" font-size="16" fill="var(--ink)" text-anchor="middle">1<tspan font-size="12" dy="-7">T</tspan></text>
+<!-- + W × Vᵀ -->
+<text x="664" y="126" font-size="28" fill="var(--ink)" text-anchor="middle">+</text>
+<rect x="696" y="48" width="52" height="140" rx="8" fill="var(--data-soft)" stroke="var(--data)" stroke-width="2"/>
+<text x="722" y="124" font-size="22" fill="var(--ink)" text-anchor="middle" font-weight="600">W</text>
+<text x="722" y="216" font-size="16" fill="var(--ink)" text-anchor="middle">weights: P × r</text>
+<text x="774" y="126" font-size="20" fill="var(--ink)" text-anchor="middle">×</text>
+<rect x="800" y="48" width="360" height="52" rx="8" fill="var(--data-soft)" stroke="var(--data)" stroke-width="2"/>
+<text x="980" y="82" font-size="22" fill="var(--ink)" text-anchor="middle" font-weight="600">V<tspan font-size="14" dy="-9">T</tspan></text>
+<text x="980" y="128" font-size="16" fill="var(--ink)" text-anchor="middle">time courses: r × T</text>
+<text x="980" y="216" font-size="16" fill="var(--muted)" text-anchor="middle">r ≈ 50 ≪ P, T</text>
+<!-- size and consequence -->
+<text x="600" y="280" font-size="16" fill="var(--ink)" text-anchor="middle">64 × 64 tile, 30 min at 20 Hz: <tspan font-weight="600">147 MB</tspan> of video → about <tspan font-weight="600" fill="var(--data)">8 MB</tspan> of factors</text>
+<text x="600" y="312" font-size="16" fill="var(--muted)" text-anchor="middle">Every later step (finding cells, their footprints and traces) works on W and V and never reads the movie again.</text>
+</svg>

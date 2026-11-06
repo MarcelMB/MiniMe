@@ -1,0 +1,189 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" role="img">
+<title>What is a factor: a few shared time courses plus per-pixel weights</title>
+<defs><marker id="arr" markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L12,6 L0,12 Z" fill="var(--muted)"/></marker></defs>
+<rect x="10" y="10" width="360" height="332" rx="10" fill="var(--panel)" stroke="var(--line)" stroke-width="2"/>
+<text x="28" y="44" font-size="20" font-weight="600" fill="var(--ink)"><tspan fill="var(--acc)">A</tspan>  Every pixel, every frame</text>
+<rect x="410" y="10" width="360" height="332" rx="10" fill="var(--panel)" stroke="var(--line)" stroke-width="2"/>
+<text x="428" y="44" font-size="20" font-weight="600" fill="var(--ink)"><tspan fill="var(--acc)">B</tspan>  Pixels move together</text>
+<rect x="810" y="10" width="380" height="332" rx="10" fill="var(--panel)" stroke="var(--line)" stroke-width="2"/>
+<text x="828" y="44" font-size="20" font-weight="600" fill="var(--ink)"><tspan fill="var(--acc)">C</tspan>  A few time courses + weights</text>
+<line x1="372" y1="176" x2="406" y2="176" stroke="var(--muted)" stroke-width="2.5" marker-end="url(#arr)"/>
+<line x1="772" y1="176" x2="806" y2="176" stroke="var(--muted)" stroke-width="2.5" marker-end="url(#arr)"/>
+<text x="108" y="80" font-size="15" fill="var(--muted)">frame 1, 2, 3, … 36 000 →</text>
+<text x="100" y="104" font-size="15" fill="var(--ink)" text-anchor="end">pixel 1</text>
+<rect x="108" y="92" width="15" height="15" fill="var(--acc)" fill-opacity="0.12" stroke="var(--line)" stroke-width="1"/>
+<rect x="124" y="92" width="15" height="15" fill="var(--acc)" fill-opacity="0.12" stroke="var(--line)" stroke-width="1"/>
+<rect x="140" y="92" width="15" height="15" fill="var(--acc)" fill-opacity="0.77" stroke="var(--line)" stroke-width="1"/>
+<rect x="156" y="92" width="15" height="15" fill="var(--acc)" fill-opacity="0.35" stroke="var(--line)" stroke-width="1"/>
+<rect x="172" y="92" width="15" height="15" fill="var(--acc)" fill-opacity="0.20" stroke="var(--line)" stroke-width="1"/>
+<rect x="188" y="92" width="15" height="15" fill="var(--acc)" fill-opacity="0.15" stroke="var(--line)" stroke-width="1"/>
+<rect x="204" y="92" width="15" height="15" fill="var(--acc)" fill-opacity="0.68" stroke="var(--line)" stroke-width="1"/>
+<rect x="220" y="92" width="15" height="15" fill="var(--acc)" fill-opacity="0.32" stroke="var(--line)" stroke-width="1"/>
+<rect x="236" y="92" width="15" height="15" fill="var(--acc)" fill-opacity="0.19" stroke="var(--line)" stroke-width="1"/>
+<rect x="252" y="92" width="15" height="15" fill="var(--acc)" fill-opacity="0.14" stroke="var(--line)" stroke-width="1"/>
+<rect x="268" y="92" width="15" height="15" fill="var(--acc)" fill-opacity="0.54" stroke="var(--line)" stroke-width="1"/>
+<rect x="284" y="92" width="15" height="15" fill="var(--acc)" fill-opacity="0.27" stroke="var(--line)" stroke-width="1"/>
+<rect x="326" y="92" width="15" height="15" fill="var(--acc)" fill-opacity="0.17" stroke="var(--line)" stroke-width="1"/>
+<text x="314" y="104" font-size="15" fill="var(--muted)" text-anchor="middle">…</text>
+<text x="100" y="124" font-size="15" fill="var(--ink)" text-anchor="end">pixel 2</text>
+<rect x="108" y="112" width="15" height="15" fill="var(--acc)" fill-opacity="0.12" stroke="var(--line)" stroke-width="1"/>
+<rect x="124" y="112" width="15" height="15" fill="var(--acc)" fill-opacity="0.12" stroke="var(--line)" stroke-width="1"/>
+<rect x="140" y="112" width="15" height="15" fill="var(--acc)" fill-opacity="0.57" stroke="var(--line)" stroke-width="1"/>
+<rect x="156" y="112" width="15" height="15" fill="var(--acc)" fill-opacity="0.28" stroke="var(--line)" stroke-width="1"/>
+<rect x="172" y="112" width="15" height="15" fill="var(--acc)" fill-opacity="0.18" stroke="var(--line)" stroke-width="1"/>
+<rect x="188" y="112" width="15" height="15" fill="var(--acc)" fill-opacity="0.14" stroke="var(--line)" stroke-width="1"/>
+<rect x="204" y="112" width="15" height="15" fill="var(--acc)" fill-opacity="0.51" stroke="var(--line)" stroke-width="1"/>
+<rect x="220" y="112" width="15" height="15" fill="var(--acc)" fill-opacity="0.26" stroke="var(--line)" stroke-width="1"/>
+<rect x="236" y="112" width="15" height="15" fill="var(--acc)" fill-opacity="0.17" stroke="var(--line)" stroke-width="1"/>
+<rect x="252" y="112" width="15" height="15" fill="var(--acc)" fill-opacity="0.14" stroke="var(--line)" stroke-width="1"/>
+<rect x="268" y="112" width="15" height="15" fill="var(--acc)" fill-opacity="0.41" stroke="var(--line)" stroke-width="1"/>
+<rect x="284" y="112" width="15" height="15" fill="var(--acc)" fill-opacity="0.22" stroke="var(--line)" stroke-width="1"/>
+<rect x="326" y="112" width="15" height="15" fill="var(--acc)" fill-opacity="0.16" stroke="var(--line)" stroke-width="1"/>
+<text x="314" y="124" font-size="15" fill="var(--muted)" text-anchor="middle">…</text>
+<text x="100" y="144" font-size="15" fill="var(--ink)" text-anchor="end">pixel 3</text>
+<rect x="108" y="132" width="15" height="15" fill="var(--acc)" fill-opacity="0.12" stroke="var(--line)" stroke-width="1"/>
+<rect x="124" y="132" width="15" height="15" fill="var(--acc)" fill-opacity="0.12" stroke="var(--line)" stroke-width="1"/>
+<rect x="140" y="132" width="15" height="15" fill="var(--acc)" fill-opacity="0.41" stroke="var(--line)" stroke-width="1"/>
+<rect x="156" y="132" width="15" height="15" fill="var(--acc)" fill-opacity="0.22" stroke="var(--line)" stroke-width="1"/>
+<rect x="172" y="132" width="15" height="15" fill="var(--acc)" fill-opacity="0.16" stroke="var(--line)" stroke-width="1"/>
+<rect x="188" y="132" width="15" height="15" fill="var(--acc)" fill-opacity="0.13" stroke="var(--line)" stroke-width="1"/>
+<rect x="204" y="132" width="15" height="15" fill="var(--acc)" fill-opacity="0.37" stroke="var(--line)" stroke-width="1"/>
+<rect x="220" y="132" width="15" height="15" fill="var(--acc)" fill-opacity="0.21" stroke="var(--line)" stroke-width="1"/>
+<rect x="236" y="132" width="15" height="15" fill="var(--acc)" fill-opacity="0.15" stroke="var(--line)" stroke-width="1"/>
+<rect x="252" y="132" width="15" height="15" fill="var(--acc)" fill-opacity="0.13" stroke="var(--line)" stroke-width="1"/>
+<rect x="268" y="132" width="15" height="15" fill="var(--acc)" fill-opacity="0.31" stroke="var(--line)" stroke-width="1"/>
+<rect x="284" y="132" width="15" height="15" fill="var(--acc)" fill-opacity="0.19" stroke="var(--line)" stroke-width="1"/>
+<rect x="326" y="132" width="15" height="15" fill="var(--acc)" fill-opacity="0.14" stroke="var(--line)" stroke-width="1"/>
+<text x="314" y="144" font-size="15" fill="var(--muted)" text-anchor="middle">…</text>
+<text x="115" y="162" font-size="16" fill="var(--muted)" text-anchor="middle">⋮</text>
+<text x="100" y="182" font-size="15" fill="var(--ink)" text-anchor="end">pixel 4096</text>
+<rect x="108" y="170" width="15" height="15" fill="var(--acc)" fill-opacity="0.16" stroke="var(--line)" stroke-width="1"/>
+<rect x="124" y="170" width="15" height="15" fill="var(--acc)" fill-opacity="0.22" stroke="var(--line)" stroke-width="1"/>
+<rect x="140" y="170" width="15" height="15" fill="var(--acc)" fill-opacity="0.19" stroke="var(--line)" stroke-width="1"/>
+<rect x="156" y="170" width="15" height="15" fill="var(--acc)" fill-opacity="0.23" stroke="var(--line)" stroke-width="1"/>
+<rect x="172" y="170" width="15" height="15" fill="var(--acc)" fill-opacity="0.23" stroke="var(--line)" stroke-width="1"/>
+<rect x="188" y="170" width="15" height="15" fill="var(--acc)" fill-opacity="0.13" stroke="var(--line)" stroke-width="1"/>
+<rect x="204" y="170" width="15" height="15" fill="var(--acc)" fill-opacity="0.12" stroke="var(--line)" stroke-width="1"/>
+<rect x="220" y="170" width="15" height="15" fill="var(--acc)" fill-opacity="0.27" stroke="var(--line)" stroke-width="1"/>
+<rect x="236" y="170" width="15" height="15" fill="var(--acc)" fill-opacity="0.17" stroke="var(--line)" stroke-width="1"/>
+<rect x="252" y="170" width="15" height="15" fill="var(--acc)" fill-opacity="0.16" stroke="var(--line)" stroke-width="1"/>
+<rect x="268" y="170" width="15" height="15" fill="var(--acc)" fill-opacity="0.30" stroke="var(--line)" stroke-width="1"/>
+<rect x="284" y="170" width="15" height="15" fill="var(--acc)" fill-opacity="0.20" stroke="var(--line)" stroke-width="1"/>
+<rect x="326" y="170" width="15" height="15" fill="var(--acc)" fill-opacity="0.27" stroke="var(--line)" stroke-width="1"/>
+<text x="314" y="182" font-size="15" fill="var(--muted)" text-anchor="middle">…</text>
+<text x="30" y="240" font-size="16" fill="var(--ink)">one 64 × 64 tile, 30 min at 20 Hz:</text>
+<text x="30" y="266" font-size="16" fill="var(--ink)">4096 pixels × 36 000 frames</text>
+<text x="30" y="300" font-size="22" font-weight="600" fill="var(--data)">= 147 million numbers</text>
+<rect x="450" y="86" width="20" height="20" rx="2" fill="var(--acc-soft)" stroke="var(--acc)" stroke-width="1.5"/>
+<rect x="430" y="106" width="20" height="20" rx="2" fill="var(--acc-soft)" stroke="var(--acc)" stroke-width="1.5"/>
+<rect x="450" y="106" width="20" height="20" rx="2" fill="var(--acc-soft)" stroke="var(--acc)" stroke-width="1.5"/>
+<rect x="470" y="106" width="20" height="20" rx="2" fill="var(--acc-soft)" stroke="var(--acc)" stroke-width="1.5"/>
+<rect x="450" y="126" width="20" height="20" rx="2" fill="var(--acc-soft)" stroke="var(--acc)" stroke-width="1.5"/>
+<rect x="470" y="86" width="20" height="20" rx="2" fill="var(--acc-soft)" stroke="var(--acc)" stroke-width="1.5"/>
+<rect x="430" y="126" width="20" height="20" rx="2" fill="var(--acc-soft)" stroke="var(--acc)" stroke-width="1.5"/>
+<text x="460" y="101" font-size="15" fill="var(--ink)" text-anchor="middle">1</text>
+<text x="460" y="121" font-size="15" fill="var(--ink)" text-anchor="middle">2</text>
+<text x="460" y="141" font-size="15" fill="var(--ink)" text-anchor="middle">3</text>
+<text x="460" y="172" font-size="15" fill="var(--muted)" text-anchor="middle">one cell</text>
+<line x1="563.3" y1="70" x2="563.3" y2="226" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 4"/>
+<line x1="634.3" y1="70" x2="634.3" y2="226" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 4"/>
+<line x1="703.2" y1="70" x2="703.2" y2="226" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 4"/>
+<circle cx="512" cy="106" r="10" fill="var(--panel)" stroke="var(--ink)" stroke-width="1.5"/>
+<text x="512" y="111" font-size="15" fill="var(--ink)" text-anchor="middle">1</text>
+<polyline points="530.0,110.9 533.5,112.2 537.0,112.7 540.6,112.9 544.1,112.7 547.6,111.3 551.1,111.9 554.7,110.8 558.2,113.2 561.7,112.5 565.2,79.5 568.8,88.4 572.3,96.7 575.8,100.0 579.3,101.8 582.9,105.7 586.4,108.2 589.9,107.7 593.4,110.2 597.0,109.8 600.5,110.9 604.0,110.2 607.5,112.8 611.0,110.8 614.6,112.0 618.1,112.0 621.6,112.2 625.1,113.9 628.7,110.9 632.2,112.4 635.7,78.1 639.2,88.4 642.8,93.6 646.3,99.5 649.8,101.6 653.3,104.6 656.9,108.0 660.4,107.7 663.9,110.8 667.4,109.4 671.0,111.8 674.5,110.9 678.0,112.1 681.5,112.8 685.0,113.3 688.6,111.3 692.1,110.6 695.6,111.3 699.1,112.3 702.7,113.4 706.2,82.4 709.7,90.6 713.2,98.1 716.8,101.4 720.3,104.2 723.8,106.1 727.3,107.9 730.9,108.1 734.4,110.1 737.9,110.9 741.4,111.0 745.0,109.5 748.5,112.4 752.0,111.8" fill="none" stroke="var(--acc)" stroke-width="2"/>
+<circle cx="512" cy="160" r="10" fill="var(--panel)" stroke="var(--ink)" stroke-width="1.5"/>
+<text x="512" y="165" font-size="15" fill="var(--ink)" text-anchor="middle">2</text>
+<polyline points="530.0,167.2 533.5,166.4 537.0,165.2 540.6,167.4 544.1,166.9 547.6,165.9 551.1,166.7 554.7,166.0 558.2,167.0 561.7,166.5 565.2,144.7 568.8,150.2 572.3,153.5 575.8,158.2 579.3,160.0 582.9,161.7 586.4,163.2 589.9,163.1 593.4,165.9 597.0,164.3 600.5,164.4 604.0,166.0 607.5,164.4 611.0,165.5 614.6,164.9 618.1,165.2 621.6,164.5 625.1,164.6 628.7,165.1 632.2,165.9 635.7,142.9 639.2,148.7 642.8,153.1 646.3,159.2 649.8,158.5 653.3,161.2 656.9,163.4 660.4,163.6 663.9,164.0 667.4,164.6 671.0,164.2 674.5,164.5 678.0,166.5 681.5,166.0 685.0,164.6 688.6,166.1 692.1,165.1 695.6,166.9 699.1,165.9 702.7,165.8 706.2,147.3 709.7,152.0 713.2,156.1 716.8,158.2 720.3,159.4 723.8,162.2 727.3,162.7 730.9,164.5 734.4,164.1 737.9,165.6 741.4,164.6 745.0,165.0 748.5,164.6 752.0,166.6" fill="none" stroke="var(--acc)" stroke-width="2"/>
+<circle cx="512" cy="214" r="10" fill="var(--panel)" stroke="var(--ink)" stroke-width="1.5"/>
+<text x="512" y="219" font-size="15" fill="var(--ink)" text-anchor="middle">3</text>
+<polyline points="530.0,221.0 533.5,220.2 537.0,219.9 540.6,219.3 544.1,220.2 547.6,221.4 551.1,220.0 554.7,220.5 558.2,218.9 561.7,220.5 565.2,208.0 568.8,211.3 572.3,212.6 575.8,216.4 579.3,215.0 582.9,218.0 586.4,218.5 589.9,219.3 593.4,218.0 597.0,217.9 600.5,218.9 604.0,219.8 607.5,220.4 611.0,220.5 614.6,220.4 618.1,221.2 621.6,220.2 625.1,219.5 628.7,219.7 632.2,221.4 635.7,205.8 639.2,209.2 642.8,212.7 646.3,215.2 649.8,215.9 653.3,218.7 656.9,217.9 660.4,219.3 663.9,218.2 667.4,219.7 671.0,217.9 674.5,220.6 678.0,219.7 681.5,219.9 685.0,221.4 688.6,219.3 692.1,220.8 695.6,219.9 699.1,221.7 702.7,219.4 706.2,208.8 709.7,213.0 713.2,214.5 716.8,214.6 720.3,216.1 723.8,217.6 727.3,218.0 730.9,219.2 734.4,220.1 737.9,219.8 741.4,219.2 745.0,221.1 748.5,221.4 752.0,220.3" fill="none" stroke="var(--acc)" stroke-width="2"/>
+<text x="430" y="258" font-size="15" fill="var(--muted)">background: all pixels, slowly</text>
+<polyline points="530.0,286.3 533.5,285.7 537.0,285.1 540.6,284.4 544.1,283.7 547.6,283.0 551.1,282.3 554.7,281.6 558.2,280.9 561.7,280.2 565.2,279.5 568.8,278.8 572.3,278.1 575.8,277.4 579.3,276.8 582.9,276.2 586.4,275.6 589.9,275.0 593.4,274.5 597.0,274.0 600.5,273.6 604.0,273.2 607.5,272.9 611.0,272.6 614.6,272.4 618.1,272.2 621.6,272.1 625.1,272.0 628.7,272.0 632.2,272.1 635.7,272.2 639.2,272.3 642.8,272.6 646.3,272.8 649.8,273.2 653.3,273.5 656.9,274.0 660.4,274.4 663.9,274.9 667.4,275.5 671.0,276.1 674.5,276.7 678.0,277.3 681.5,278.0 685.0,278.7 688.6,279.4 692.1,280.1 695.6,280.8 699.1,281.5 702.7,282.3 706.2,283.0 709.7,283.7 713.2,284.3 716.8,285.0 720.3,285.6 723.8,286.2 727.3,286.8 730.9,287.3 734.4,287.8 737.9,288.3 741.4,288.7 745.0,289.0 748.5,289.3 752.0,289.6" fill="none" stroke="var(--old)" stroke-width="2.5" stroke-dasharray="7 5"/>
+<text x="430" y="316" font-size="16" fill="var(--ink)">the table repeats a few time courses,</text>
+<text x="430" y="336" font-size="16" fill="var(--ink)">plus noise</text>
+<text x="830" y="76" font-size="15" fill="var(--muted)">weights</text>
+<text x="830" y="94" font-size="15" fill="var(--muted)">(per pixel)</text>
+<text x="950" y="76" font-size="15" fill="var(--muted)">time courses (per frame)</text>
+<rect x="838" y="106" width="52" height="52" rx="3" fill="var(--panel)" stroke="var(--line)" stroke-width="1"/>
+<rect x="848" y="108" width="8" height="8" fill="var(--data)" fill-opacity="0.14"/>
+<rect x="856" y="108" width="8" height="8" fill="var(--data)" fill-opacity="0.20"/>
+<rect x="864" y="108" width="8" height="8" fill="var(--data)" fill-opacity="0.08"/>
+<rect x="840" y="116" width="8" height="8" fill="var(--data)" fill-opacity="0.11"/>
+<rect x="848" y="116" width="8" height="8" fill="var(--data)" fill-opacity="0.54"/>
+<rect x="856" y="116" width="8" height="8" fill="var(--data)" fill-opacity="0.78"/>
+<rect x="864" y="116" width="8" height="8" fill="var(--data)" fill-opacity="0.32"/>
+<rect x="840" y="124" width="8" height="8" fill="var(--data)" fill-opacity="0.12"/>
+<rect x="848" y="124" width="8" height="8" fill="var(--data)" fill-opacity="0.61"/>
+<rect x="856" y="124" width="8" height="8" fill="var(--data)" fill-opacity="0.88"/>
+<rect x="864" y="124" width="8" height="8" fill="var(--data)" fill-opacity="0.37"/>
+<rect x="872" y="124" width="8" height="8" fill="var(--data)" fill-opacity="0.04"/>
+<rect x="848" y="132" width="8" height="8" fill="var(--data)" fill-opacity="0.20"/>
+<rect x="856" y="132" width="8" height="8" fill="var(--data)" fill-opacity="0.29"/>
+<rect x="864" y="132" width="8" height="8" fill="var(--data)" fill-opacity="0.12"/>
+<text x="904" y="138" font-size="20" fill="var(--ink)">w<tspan font-size="15" dy="5">1</tspan></text>
+<text x="932" y="138" font-size="20" fill="var(--muted)">·</text>
+<text x="947" y="138" font-size="20" fill="var(--ink)">v<tspan font-size="15" dy="5">1</tspan></text>
+<polyline points="975.0,150.0 978.1,150.0 981.2,150.0 984.3,150.0 987.4,150.0 990.5,150.0 993.6,150.0 996.7,150.0 999.8,150.0 1002.9,150.0 1006.0,121.4 1009.0,129.2 1012.1,134.9 1015.2,139.0 1018.3,142.0 1021.4,144.2 1024.5,145.7 1027.6,146.9 1030.7,147.7 1033.8,148.4 1036.9,148.8 1040.0,149.1 1043.1,149.4 1046.2,149.5 1049.3,149.7 1052.4,149.8 1055.5,149.8 1058.6,149.9 1061.7,149.9 1064.8,149.9 1067.9,119.9 1071.0,128.1 1074.0,134.1 1077.1,138.4 1080.2,141.5 1083.3,143.8 1086.4,145.5 1089.5,146.7 1092.6,147.6 1095.7,148.3 1098.8,148.7 1101.9,149.1 1105.0,149.3 1108.1,149.5 1111.2,149.6 1114.3,149.7 1117.4,149.8 1120.5,149.9 1123.6,149.9 1126.7,149.9 1129.8,124.1 1132.9,131.1 1136.0,136.3 1139.0,140.0 1142.1,142.7 1145.2,144.7 1148.3,146.1 1151.4,147.2 1154.5,148.0 1157.6,148.5 1160.7,148.9 1163.8,149.2 1166.9,149.4 1170.0,149.6" fill="none" stroke="var(--acc)" stroke-width="2.5"/>
+<rect x="838" y="168" width="52" height="52" rx="3" fill="var(--panel)" stroke="var(--line)" stroke-width="1"/>
+<rect x="840" y="170" width="8" height="8" fill="var(--data)" fill-opacity="0.35"/>
+<rect x="848" y="170" width="8" height="8" fill="var(--data)" fill-opacity="0.43"/>
+<rect x="856" y="170" width="8" height="8" fill="var(--data)" fill-opacity="0.51"/>
+<rect x="864" y="170" width="8" height="8" fill="var(--data)" fill-opacity="0.59"/>
+<rect x="872" y="170" width="8" height="8" fill="var(--data)" fill-opacity="0.67"/>
+<rect x="880" y="170" width="8" height="8" fill="var(--data)" fill-opacity="0.75"/>
+<rect x="840" y="178" width="8" height="8" fill="var(--data)" fill-opacity="0.43"/>
+<rect x="848" y="178" width="8" height="8" fill="var(--data)" fill-opacity="0.51"/>
+<rect x="856" y="178" width="8" height="8" fill="var(--data)" fill-opacity="0.59"/>
+<rect x="864" y="178" width="8" height="8" fill="var(--data)" fill-opacity="0.67"/>
+<rect x="872" y="178" width="8" height="8" fill="var(--data)" fill-opacity="0.75"/>
+<rect x="880" y="178" width="8" height="8" fill="var(--data)" fill-opacity="0.83"/>
+<rect x="840" y="186" width="8" height="8" fill="var(--data)" fill-opacity="0.51"/>
+<rect x="848" y="186" width="8" height="8" fill="var(--data)" fill-opacity="0.59"/>
+<rect x="856" y="186" width="8" height="8" fill="var(--data)" fill-opacity="0.67"/>
+<rect x="864" y="186" width="8" height="8" fill="var(--data)" fill-opacity="0.75"/>
+<rect x="872" y="186" width="8" height="8" fill="var(--data)" fill-opacity="0.83"/>
+<rect x="880" y="186" width="8" height="8" fill="var(--data)" fill-opacity="0.91"/>
+<rect x="840" y="194" width="8" height="8" fill="var(--data)" fill-opacity="0.59"/>
+<rect x="848" y="194" width="8" height="8" fill="var(--data)" fill-opacity="0.67"/>
+<rect x="856" y="194" width="8" height="8" fill="var(--data)" fill-opacity="0.75"/>
+<rect x="864" y="194" width="8" height="8" fill="var(--data)" fill-opacity="0.83"/>
+<rect x="872" y="194" width="8" height="8" fill="var(--data)" fill-opacity="0.91"/>
+<rect x="880" y="194" width="8" height="8" fill="var(--data)" fill-opacity="0.99"/>
+<rect x="840" y="202" width="8" height="8" fill="var(--data)" fill-opacity="0.67"/>
+<rect x="848" y="202" width="8" height="8" fill="var(--data)" fill-opacity="0.75"/>
+<rect x="856" y="202" width="8" height="8" fill="var(--data)" fill-opacity="0.83"/>
+<rect x="864" y="202" width="8" height="8" fill="var(--data)" fill-opacity="0.91"/>
+<rect x="872" y="202" width="8" height="8" fill="var(--data)" fill-opacity="0.99"/>
+<rect x="880" y="202" width="8" height="8" fill="var(--data)" fill-opacity="1.00"/>
+<rect x="840" y="210" width="8" height="8" fill="var(--data)" fill-opacity="0.75"/>
+<rect x="848" y="210" width="8" height="8" fill="var(--data)" fill-opacity="0.83"/>
+<rect x="856" y="210" width="8" height="8" fill="var(--data)" fill-opacity="0.91"/>
+<rect x="864" y="210" width="8" height="8" fill="var(--data)" fill-opacity="0.99"/>
+<rect x="872" y="210" width="8" height="8" fill="var(--data)" fill-opacity="1.00"/>
+<rect x="880" y="210" width="8" height="8" fill="var(--data)" fill-opacity="1.00"/>
+<text x="904" y="200" font-size="20" fill="var(--ink)">w<tspan font-size="15" dy="5">2</tspan></text>
+<text x="932" y="200" font-size="20" fill="var(--muted)">·</text>
+<text x="947" y="200" font-size="20" fill="var(--ink)">v<tspan font-size="15" dy="5">2</tspan></text>
+<polyline points="975.0,205.8 978.1,204.8 981.2,203.8 984.3,202.7 987.4,201.6 990.5,200.4 993.6,199.2 996.7,198.0 999.8,196.9 1002.9,195.7 1006.0,194.5 1009.0,193.3 1012.1,192.2 1015.2,191.0 1018.3,190.0 1021.4,188.9 1024.5,187.9 1027.6,187.0 1030.7,186.2 1033.8,185.4 1036.9,184.6 1040.0,184.0 1043.1,183.5 1046.2,183.0 1049.3,182.6 1052.4,182.3 1055.5,182.1 1058.6,182.0 1061.7,182.0 1064.8,182.1 1067.9,182.3 1071.0,182.6 1074.0,182.9 1077.1,183.4 1080.2,183.9 1083.3,184.6 1086.4,185.3 1089.5,186.1 1092.6,186.9 1095.7,187.8 1098.8,188.8 1101.9,189.8 1105.0,190.9 1108.1,192.0 1111.2,193.2 1114.3,194.3 1117.4,195.5 1120.5,196.7 1123.6,197.9 1126.7,199.1 1129.8,200.3 1132.9,201.4 1136.0,202.5 1139.0,203.6 1142.1,204.7 1145.2,205.7 1148.3,206.6 1151.4,207.5 1154.5,208.3 1157.6,209.1 1160.7,209.8 1163.8,210.3 1166.9,210.9 1170.0,211.3" fill="none" stroke="var(--old)" stroke-width="2.5" stroke-dasharray="7 5"/>
+<rect x="838" y="230" width="52" height="52" rx="3" fill="var(--panel)" stroke="var(--line)" stroke-width="1"/>
+<rect x="864" y="248" width="8" height="8" fill="var(--data)" fill-opacity="0.04"/>
+<rect x="872" y="248" width="8" height="8" fill="var(--data)" fill-opacity="0.05"/>
+<rect x="856" y="256" width="8" height="8" fill="var(--data)" fill-opacity="0.08"/>
+<rect x="864" y="256" width="8" height="8" fill="var(--data)" fill-opacity="0.38"/>
+<rect x="872" y="256" width="8" height="8" fill="var(--data)" fill-opacity="0.44"/>
+<rect x="880" y="256" width="8" height="8" fill="var(--data)" fill-opacity="0.12"/>
+<rect x="856" y="264" width="8" height="8" fill="var(--data)" fill-opacity="0.16"/>
+<rect x="864" y="264" width="8" height="8" fill="var(--data)" fill-opacity="0.77"/>
+<rect x="872" y="264" width="8" height="8" fill="var(--data)" fill-opacity="0.89"/>
+<rect x="880" y="264" width="8" height="8" fill="var(--data)" fill-opacity="0.25"/>
+<rect x="856" y="272" width="8" height="8" fill="var(--data)" fill-opacity="0.08"/>
+<rect x="864" y="272" width="8" height="8" fill="var(--data)" fill-opacity="0.38"/>
+<rect x="872" y="272" width="8" height="8" fill="var(--data)" fill-opacity="0.44"/>
+<rect x="880" y="272" width="8" height="8" fill="var(--data)" fill-opacity="0.12"/>
+<text x="904" y="262" font-size="20" fill="var(--ink)">w<tspan font-size="15" dy="5">3</tspan></text>
+<text x="932" y="262" font-size="20" fill="var(--muted)">·</text>
+<text x="947" y="262" font-size="20" fill="var(--ink)">v<tspan font-size="15" dy="5">3</tspan></text>
+<polyline points="975.0,274.0 978.1,274.0 981.2,274.0 984.3,274.0 987.4,274.0 990.5,274.0 993.6,274.0 996.7,274.0 999.8,274.0 1002.9,274.0 1006.0,274.0 1009.0,274.0 1012.1,274.0 1015.2,274.0 1018.3,274.0 1021.4,274.0 1024.5,274.0 1027.6,274.0 1030.7,274.0 1033.8,241.1 1036.9,250.0 1040.0,256.5 1043.1,261.3 1046.2,264.7 1049.3,267.3 1052.4,269.1 1055.5,270.4 1058.6,271.4 1061.7,272.1 1064.8,272.6 1067.9,273.0 1071.0,273.3 1074.0,273.5 1077.1,273.6 1080.2,273.7 1083.3,273.8 1086.4,273.9 1089.5,273.9 1092.6,273.9 1095.7,273.9 1098.8,274.0 1101.9,246.6 1105.0,254.0 1108.1,259.5 1111.2,263.4 1114.3,266.3 1117.4,268.4 1120.5,269.9 1123.6,271.0 1126.7,271.8 1129.8,272.4 1132.9,272.9 1136.0,273.2 1139.0,273.4 1142.1,273.6 1145.2,273.7 1148.3,273.8 1151.4,273.8 1154.5,273.9 1157.6,273.9 1160.7,273.9 1163.8,274.0 1166.9,274.0 1170.0,274.0" fill="none" stroke="var(--acc)" stroke-width="2.5"/>
+<text x="1000" y="318" font-size="19" fill="var(--ink)" text-anchor="middle">pixel ≈ mean + w<tspan font-size="15" dy="5">1</tspan><tspan dy="-5">·v</tspan><tspan font-size="15" dy="5">1</tspan><tspan dy="-5"> + w</tspan><tspan font-size="15" dy="5">2</tspan><tspan dy="-5">·v</tspan><tspan font-size="15" dy="5">2</tspan><tspan dy="-5"> + w</tspan><tspan font-size="15" dy="5">3</tspan><tspan dy="-5">·v</tspan><tspan font-size="15" dy="5">3</tspan></text>
+<text x="600" y="380" font-size="18" fill="var(--ink)" text-anchor="middle">~50 time courses: about <tspan font-weight="600" fill="var(--acc)">2 million</tspan> numbers instead of <tspan font-weight="600" fill="var(--data)">147 million</tspan>. <tspan fill="var(--muted)">What is left out is noise.</tspan></text>
+</svg>

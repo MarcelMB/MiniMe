@@ -12,308 +12,83 @@
   </picture>
 </h1>
 
-Factor-first CNMF pipeline for one-photon miniscope calcium imaging.
+Finds the cells and their calcium traces in one-photon miniscope recordings, inside your
+browser. Nothing to install, nothing to upload.
 
-The raw video is first preprocessed and motion corrected, then compressed tile by tile with a
-truncated SVD (singular value decomposition), which splits each tile's movie into a few
-components, each a spatial pattern times a time course. Stacked, these are the factors: a
-spatial factor `W` and a temporal factor `V`. Only components that carry signal are kept, so
-what is dropped is mostly noise. CNMF-E (seeds, correlations, spatial update, background)
-then runs on these factors and never rereads the movie: the stored factors are about
-50-100 MB instead of the full recording, and parameters can be changed without another pass
-over the video.
+<p align="center"><b><a href="https://marcelbrosch.com/MiniMe/">Open MiniMe →</a></b></p>
 
-## Install
-Released versions: `pip install minime-cnmf` (the import and the command are `minime`).
+Works in a recent Chrome, Edge, Firefox or Safari. Your videos are read from your own disk
+and every step runs on your computer; the page never sends your videos or results anywhere.
 
-Supported: Python 3.11 and newer, on Linux and macOS (Windows support is in progress).
-Older Python versions stay supported as long as numpy, numba and opencv ship wheels for
-them, so lab PCs with an IT-managed Python keep working; that is longer than
-[SPEC 0](https://scientific-python.org/specs/spec-0000/) asks for. Dependency minimums
-follow SPEC 0: any core dependency release from the last two years works. Intel Macs need
-Python 3.11-3.13: numba stopped building for them after 0.62.1, so MiniMe pins that there.
+## Why it fits in a browser tab
 
-Development:
+A miniscope movie stores every pixel in every frame, but most of that is repetition: the
+pixels of one cell brighten and fade together, and the background drifts across all of them
+at once. So a stretch of movie is well described by a few shared time courses plus, for
+every pixel, a weight saying how much of each it shows.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/factors-dark.svg">
+    <img alt="Every pixel, every frame; pixels of a cell move together; so a few time courses plus weights describe the movie" src="docs/assets/readme/factors-light.svg" width="880">
+  </picture>
+</p>
 
-    uv venv -p 3.11 && uv pip install -e ".[dev,tune]"
-    .venv/bin/pytest
+MiniMe cuts the movie into 64 × 64 px tiles and compresses each tile into its mean, the
+weights `W` and the time courses `V` (a truncated SVD that keeps only the components that
+carry signal). Finding cells, their footprints and their traces (CNMF) then works on `W`
+and `V` and never reads the movie again.
 
-## Fits your machine
-MiniMe is meant to tune itself to the computer it runs on instead of shipping one setting
-for everyone: an 8 GB lab laptop and a 64 GB workstation should each finish a session as
-fast as that machine allows, without running out of memory or disk.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/algebra-dark.svg">
+    <img alt="Y ≈ mean · 1ᵀ + W · Vᵀ: a tile movie becomes a mean, weights and time courses" src="docs/assets/readme/algebra-light.svg" width="880">
+  </picture>
+</p>
 
-Today:
-- The window-2 stages (background, seeds) use all CPU cores.
-- Each pass-1 worker runs one math-library thread, so many workers don't overload the CPU.
-- You set the number of workers with `--workers` (default 1); each run's peak RAM is in
-  `report.json` and on the viewer's Overview page.
+That is what makes long recordings fit. A browser tab gets about 2 GB to work with; a
+2-hour session is far bigger than that. MiniMe reads the videos in pieces, finds the cells
+window by window, joins them, and then streams the whole recording once more for each
+cell's full trace, keeping about 70 MB in memory however long the recording is.
 
-In progress:
-- Choose the number of workers from your CPU cores and free RAM (roughly 1 GB per worker
-  for a 200 x 200 px session, up to 3 GB at 600 x 600 px, plus the main process).
-- Check free disk before pass 1 (the temporary tile store is about the size of the raw
-  videos and is deleted after pass 2).
-- Stop early with a clear message instead of slowing to a crawl when memory runs out.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/budget-dark.svg">
+    <img alt="A 2-hour 600 × 600 px session at 30 fps is 78 GB as raw video; the browser tab has about 2 GB; MiniMe keeps about 70 MB" src="docs/assets/readme/budget-light.svg" width="880">
+  </picture>
+</p>
 
-## Demo data
-A real session (24 raw `N.avi` segments, ~8.5 GB, CC0) is on
-[UCLA Dataverse](https://dataverse.ucla.edu/dataset.xhtml?persistentId=doi:10.25346/S6SGHPCZ).
-This fetches only the raw videos and checks each one's MD5; run it again to resume:
+## How to use it
 
-    minime demo ~/minime-demo          # -> ~/minime-demo/raw/0.avi ... 23.avi
-    minime demo ~/minime-grin --dataset grin   # synthetic GRIN V4 with truth: raw/ + truth.npz
-    minime run ~/minime-demo/raw       # -> ~/minime-demo/processed/minime
+You set up the run; the rest is automatic.
 
-The behavior video and the Minian/ezTrack outputs are in the same dataset if you want them.
+| Step | | What happens |
+| --- | --- | --- |
+| 1. Choose the folder with the raw videos | you | Grayscale `.avi` files whose names start with a number (`0.avi`, `1.avi`, … as the Miniscope DAQ writes them), read as one recording in that order. Set the frame rate if there is no `meta.json` / `metaData.json`. |
+| 2. Look at the frames and the preprocessing | you | Drag the circle onto a cell: its size sets the cell diameter and the parameters that follow from it. Check the median filter and background removal (tophat) on a few frames. |
+| 3. Name the run and check the parameters | you | Start from the defaults, or from the demo settings for the demo session. |
+| 4. Run | automatic | Motion correction, compression into `W` and `V`, finding cells window by window, joining the windows, and the full traces. Each stage shows its progress. |
+| 5. Look at the results | you | Overview, motion, compression, seeds, units (footprints) and traces, next to the raw and preprocessed frames. Results are saved to a folder you pick or to the browser's own storage. |
 
-## Run
+MiniMe gives footprints and fluorescence traces; it does not infer spikes.
 
-    .venv/bin/minime run RAW_DIR --workers 6 --name NAME [--params p.json] [--fps 20] [--keep-store] [--overwrite]
-    .venv/bin/minime score RAW_DIR/../processed/NAME     # synthetic sessions only
+## Try the demo
 
-**Input:** `RAW_DIR` = a folder of grayscale uint8 `.avi` videos, read-only. **Each file name
-must start with a number** (`0.avi`, `1.avi`, ... as the Miniscope DAQ writes them, or
-`0_session.avi`, `01-part.avi`). The videos are read as one recording in the order of that
-number, compared as integers, so `2.avi` comes before `10.avi`. `.avi` files whose name does
-not start with a number (`behavior.avi`) are ignored, and two files with the same number
-(`1.avi`, `01.avi`) are an error. `minime run` and the launcher list the order and the
-ignored files before they start. A single long AVI works too (`0.avi` or `0_whole.avi`).
+A synthetic one-photon session through a GRIN lens (600 × 600 px, 20 fps), with known ground
+truth, is on [UCLA Dataverse](https://dataverse.ucla.edu/dataset.xhtml?persistentId=doi:10.25346/S6WHMSXK)
+(CC0). It comes as 36 videos of 50 s; the first six (`0.avi` … `5.avi`, about 2.2 GB) make a
+5-minute demo. Put them in one folder, open MiniMe, choose that folder and press
+**Use the demo settings**.
 
-**Frame rate:** read from `RAW_DIR/../meta.json` (`fps`) or a Miniscope `metaData.json`
-(`frameRate`) in `RAW_DIR`; `--fps` (or the field in the launcher) sets or replaces it. It
-is stored in `params.json` and only used for display (time axes, durations), not for the
-analysis.
+A real recording (24 segments, about 8.5 GB, CC0) with its behavior video is on
+[UCLA Dataverse](https://dataverse.ucla.edu/dataset.xhtml?persistentId=doi:10.25346/S6SGHPCZ)
+as well.
 
-Pass-1 workers stream each segment in 1000-frame batches, so worker
-memory does not grow with the file (about 3 x 1000 frames, ~1.1 GB at 600 x 600). A single
-file is still processed by one pass-1 worker, and the last segment (here: the whole file) is
-decoded once more at startup to count its frames.
+## Python package
 
-**Output:** `RAW_DIR/../processed/NAME/`
-
-| path | content |
-|---|---|
-| `params.json` | every parameter used, raw folder and content hash, frame rate given with `--fps`, package version |
-| `motion/` | shifts (T, 2), template (the prepared half-resolution image, about H/2 x W/2), per-frame quality, the fill image (H x W uint8, with `motion_fill: "template"`); reused on a rerun with the same raw data and motion params |
-| `factors/` | per-tile factors `W, V, mean, sigma, energy`, max projection, block maxima |
-| `cnmf/A.npz` | footprints, scipy CSR (K, H*W) float32; row maximum 1, except units merged after the last spatial update (mean of the merged rows, maximum can be below 1) |
-| `cnmf/C.npy`, `cnmf/YrA.npy` | (K, T) float32: trace fed to the last spatial update; final residual trace |
-| `cnmf/b.npy`, `cnmf/f.npy` | background footprint (H, W) and trace (T,) |
-| `cnmf/units.csv` | unit_id, centroid_h, centroid_w, size_px, peak |
-| `report.json` | wall seconds per stage, seed/unit counts per stage, bytes, peak RSS; `motion` holds the largest shift, the median quality, the frames at `motion_max_shift` and a `warning` when they are more than 0.1 % (also printed by `minime run`) |
-
-The temporary tile store (`tiles/`, same size as the raw data) is deleted after pass 2.
-
-## Tuning window 2
-
-Seeds, initialisation and CNMF run on the saved factors, so their parameters can be changed
-without rereading the movie (WL25, 200 x 200 px, 39,822 frames: 16 s instead of 49 s).
-
-    .venv/bin/minime cnmf RUN_DIR [--params p.json] [--name NAME]
-    .venv/bin/minime tune RUN_DIR [--minian minian_units.npz] [--port 8765]
-
-**`minime cnmf`**: `RUN_DIR` = a finished run. `--params` may hold only the keys to change;
-the rest come from `RUN_DIR/params.json`. Output: `RUN_DIR/reruns/NAME/` with `params.json`,
-`report.json` and `cnmf/` as in a full run, `stages/` (seed tables after init / PNR / merge,
-footprints after initA, init merge and every spatial update and merge) and symlinks
-`factors`, `motion` to the source run, so the tools that read a run work on it.
-Parameters that shaped the factors (`median_ksize`, `tophat_wnd`, `motion_*`,
-`template_*`, `tile`, `svd_*`, `rank_*`, `noise_freq`) are refused; `seeds_wnd` / `seeds_stp` only
-if their windows fall on the block edges pass 1 stored. Same parameters give the same result
-as the full run (tested).
-
-**`minime tune`**: a page on `http://127.0.0.1:8765/` (standard library server, matplotlib
-PNGs; needs the `tune` extra). On start it reruns the run's own parameters as `base`. The
-form holds the window-2 parameters; *Rerun window 2* writes `reruns/tNNN/` and draws its
-figures: seeds after init / PNR / merge with the PNR histogram, initA and init merge
-footprints, footprints after each spatial update and merge (red: more than one piece above
-10 % of peak), size and fragmentation histograms, example traces, and with `--minian` the
-final overlay (Minian npz with `A`, `C`, `max_proj`; aligned by phase correlation and
-matched by centroid). Shared figures: max projection, motion, per-pixel noise and mean.
-The run list compares every rerun (changed parameters, counts, median size, units in pieces,
-Minian matches); *view* / *cmp* stack two reruns' figures. Click a units-table row for that
-unit's footprint and trace. *Save params* writes the full set to `RUN_DIR/tune/FILE.json` for
-`minime run --params`. *Pass-1 preview* shows raw / median / registration image / tophat on
-the first 300 frames for `median_ksize`, `tophat_wnd`, `motion_bandpass` (these need a full
-`minime run`).
-
-### Auto-tune
-
-`minime autotune RUN_DIR [--diameter D]` (or "Propose parameters" on `minime tune`) sweeps the
-window-2 parameters stage by stage (~2 min on a 30-min session), scores each setting with
-label-free unit checks (trace PNR, one piece, cell size from D, no duplicates; score = good -
-flagged) and writes the proposal to `RUN_DIR/reruns/auto/` with `sweep.csv` (the map),
-`unit_flags.csv` and `autotune.json`. D is the cell diameter in px of the factor frame;
-without `--diameter` it is estimated from the run's footprints (shown, and prefilled on the
-page where drag-to-measure overrides it). The two thresholds behind the checks are options
-with visible defaults, `--dup-corr 0.6` (a unit with a neighbour within D whose trace
-correlates above this is a duplicate, i.e. a split cell) and `--min-dist-frac 0.4` (units
-closer than this x D always merge); the page shows them against the data: the correlation of
-unit pairs within D (far pairs as the null) and the nearest-neighbour distances, for the run
-and the proposal, so a user can see whether they fit the recording. Settings that yield more
-than 5x the run's seeds or init units fail fast.
-The grids are built around the run's own values (thresholds x 0.5 ... 2, correlations
-+-0.1, `pnr_thres` also "auto") and extended outward while the best value sits at an edge,
-so any run's values are inside its grids. The run's own parameters are the first setting
-tried; the proposal is never worse than them (the page and the CLI say when the search found
-nothing better). Size parameters (`seeds_max_wnd`, `inita_wnd`, `dl_wnd`, `merge_dist`,
-`merge_min_dist` = 0.4 D, `size_thres`) are derived from D only where the run still uses the
-built-in default (`merge_min_dist` merges units whose centroids are closer than that whatever
-their traces do: no two cells sit that close, only a split one; 0 = off in a plain run). The
-init-level scores only prune within a step: the best init settings of every distinct
-`merge_corr` go through CNMF before the choice. `bench/autotune_synth.py` checks the search
-on synthetic sessions with ground truth (proposal vs. a default and a detuned start).
-
-## Browser viewer
-
-    minime serve [FOLDER]
-
-starts a local server on 127.0.0.1 and opens the browser. It lists the runs under FOLDER
-(default: the folder of the last `minime demo` download or run, else your home folder; the
-others are one click away under "Recent folders"), shows every stage of a run, and starts
-new runs, with the videos of the last demo or run already chosen. Runs are only
-read; results it has to compute for older runs go to `~/.cache/minime/` (or
-`$MINIME_CACHE`). On a remote machine, start it with `--no-browser --port 8765` and open
-an SSH tunnel: `ssh -L 8765:127.0.0.1:8765 host`, then the printed URL (a different local
-port works too, e.g. `ssh -L 9000:127.0.0.1:8765 host` and the URL with `:9000`). Stopping
-the server (Ctrl+C) also stops a run it started; only one server runs per cache folder.
-
-### Building the front end
-
-The browser app lives in `web/` (React + TypeScript, Vite). `minime serve` serves the
-build in `src/minime/serve/static/`, which is not in git:
-
-    cd web && npm install && npm run build
-
-During development run the back end and Vite's dev server side by side:
-
-    minime serve FOLDER --no-browser --port 8765 --token dev
-    cd web && npm run dev      # then open http://localhost:5173/?token=dev
-
-Checks: `npm run typecheck`, `npm test` (unit tests), `npm run e2e` (smoke test in Chromium
-against a tiny synthetic run; run `npx playwright install chromium` once first; set `MINIME_PYTHON` if the venv is not `../.venv`). The e2e run has 300 frames, so it exercises the full-resolution trace path, not the overview bands.
-
-## Parameters
-
-`src/minime/params.py` holds every parameter with its default (Minian notebook values).
-To change some, write a JSON file with only those keys and pass `--params`:
-
-    {"pnr_thres": 2.5, "gmm_refine": true, "workers": 6}
-
-A run's own `params.json` can be passed back to `--params` to reproduce it (its `raw_dir`,
-`raw_hash` and `minime_version` entries are ignored; `--workers` still overrides). A run from
-before Nov 2026 has no `template_source` / `motion_fill`: it is read back with the values it
-used, `"first"` and `"zero"`.
-
-Defaults that differ from the Minian notebook: `gmm_refine` is off (Minian's reference run also skipped
-it), and `motion_before_tophat` is on: shifts are estimated on a band-passed copy of the
-denoised frame, then the frame is warped and tophat-filtered (on a real session the tophat
-removed the vessels registration needs). The motion template is built from frames spread
-over the session (`template_source: "spread"`: 10 runs of 20 frames, aligned twice, put at
-their median position) instead of the first 200 frames, and the border a shifted frame has
-no data for gets the template frames' mean corrected image (`motion_fill: "template"`)
-instead of 0: a first-frames template sits where the field was in the first seconds, often
-pixels away from where it is for the rest of the session, and a zero band that comes and goes
-with the motion turned into false units along the edges. `"first"` and `"zero"` give the
-runs from before Nov 2026. Other defaults were checked on synthetic data only.
-
-Minian's `sparse_penal` is `sparse_snr` here, with `sparse_snr = sparse_penal * sqrt(T)` for
-the session length `T` it was tuned on (0.01 on a 10,000-frame session is `sparse_snr: 1`,
-the default); a params file with `sparse_penal` is rejected with that hint. Unlike Minian's,
-the penalty does not grow with the length of the recording (see "Known differences").
-
-`median_ksize: 1` / `tophat_wnd: 0` skip that step, for input preprocessed upstream.
-
-## Results (synthetic, 600 x 600 px, 421 true cells, M1 Max)
-
-| session | pipeline | workers | wall | units | recall | precision | F1 | trace corr (median) |
-|---|---|---|---|---|---|---|---|---|
-| 5 min (9000 fr) | Minian 2.0.2 | 4 x 2 thr | 471 s | 508 | 0.914 | 0.758 | 0.829 | 0.964 |
-| 5 min | minime | 6 | 43.4 s | 404 | 0.933 | 0.973 | **0.953** | **0.995** |
-| 5 min | minime, `fix/rank-vs-T` (sparse_snr, tree seed merge) | 6 | 46.1 s | 407 | 0.948 | 0.980 | **0.964** | 0.994 |
-| 10 min (18000 fr) | minime* | 6 | 68.5 s | 400 | 0.924 | 0.973 | 0.948 | 0.995 |
-| 10 min | minime* | 1 | 147.3 s | 400 | 0.924 | 0.973 | 0.948 | 0.995 |
-
-\* 10-min rows: commit 16f6ac8, before the background footprint `b` was recomputed on the
-last CNMF iteration (that adds one background pass, +3.8 s on 5 min); not rerun.
-
-Gate (spec section 7): F1 >= 0.809 and trace corr >= 0.944 on the 5-min session: passed.
-Peak disk = raw size (tile store) + factors (52 MB / 93 MB).
-
-## Synthetic data
-
-`minime synth OUT --minutes 5 --side 600 --scenario realistic` writes a session with known
-truth (`meta.json`, `truth.npz`); `minime score RUN` scores a run against it, with recall
-per category of hard cells (overlapping, near a vessel, late-active, small, dim, edge, under
-an out-of-focus cell), the false units on out-of-focus cells and the false units within
-15 px of a frame edge (`false_edge_units`). Scenarios
-(`minime.testing.synth.SCENARIOS`): `clean`, one per effect (`background`, `neuropil`,
-`overlap`, `late_active`, `bleach`, `vessels`, `large_motion`, `nonrigid`, `dropped`,
-`cell_variation`, `low_snr`, `bursts`, `hemo`, `edge`, `out_of_focus`), `realistic` (all
-tier-1 effects) and `hard` (every effect, sized for a 600 x 600 session of ~30 min:
-`--minutes 30 --scenario hard`, 19 GB) and `grin_v4` (a V4 recording through a GRIN
-lens: lens vignetting, shot noise, dim and mostly quiet cells, fitted to a real V4 session;
-`--minutes 30 --fps 20 --scenario grin_v4`, 13 GB). `truth.npz` holds the scoring arrays and the
-footprints, so a downloaded session scores without regenerating it.
-In Python, `SynthOptions` sets any combination; the defaults reproduce the legacy session
-byte for byte. `write_session(..., shifts=...)` replaces the random walk with a given integer
-(T, 2) motion trace, same cells; `minime.testing.motion_traces` has an offset, a drift and
-sustained jumps (`tests/test_motion_scenarios.py` counts their false edge units). The truth (`synth_setup`) has per-cell size, amplitude, spikes, first active
-frame and overlap group, the background and neuropil components, the vessel mask, the warp,
-the bleaching envelope and the frame map; `detectable` marks the cells a pipeline can be
-expected to find. `tests/test_synth_effects.py` shows what the pipeline does with each
-effect; its `xfail` marks are known weaknesses. The effect models follow
-[minisim](https://github.com/miniscope/minisim).
-
-## Out of scope
-
-- Temporal update (OASIS deconvolution). `C` is the clipped residual trace (`YrA`) instead.
-- `ks_refine` (dropped), non-rigid motion, browser UI, PyPI packaging.
-- Real-data parameter tuning (one real session run so far).
-
-## Known differences from Minian
-
-- Seeds, correlations and the spatial update use the denoised factor reconstruction, not
-  the raw movie.
-- Noise `sigma` (spatial penalty and PNR): Minian's `noise_fft(..., "logmexp")` over
-  (noise_freq, 0.5), computed in pass 2 on the uint8 tile, so it is 0.75 x the white-noise sd.
-  It replaced 1.4826 x MAD of first differences / sqrt 2, which on uint8 tophat frames was
-  quantized (WL25: 0 / 1.05 / 2.10, 10 % of pixels 0 and so unpenalized). PNR divides by
-  `6.18 sigma`, so it reads 1.33x the white-noise-calibrated value (WL25: 1459 -> 1639 seeds).
-- Background: rank-1 fit of the unclipped residual `Y - A C` on the factors
-  (`b = clip(mean_t (Y - A C), 0)`), not Minian's mean of `clip(Y - A C, 0)`. `b` differs by
-  up to 6 % of its maximum; scores and traces do not change (worst unit trace corr 0.998) and
-  `cnmf` is ~2x faster. `background_clip: true` restores Minian's definition.
-- Footprints carry a long tail of tiny weights: median 1029 px > 0 vs Minian 509 px, but
-  329 px > 1 % of the maximum in both, and 5.7 % (ours) vs 5.5 % (Minian) of the footprint
-  mass lies outside the true 15 x 15 cell patch.
-- Spatial penalty: `lam = sqrt(T) * sparse_snr * sn` per pixel (on unit-norm traces), so a
-  pixel keeps a unit where its std along the unit's trace exceeds `sparse_snr * sn`, whatever
-  `T`. Minian's `LassoLars(alpha = sparse_penal * sn)` amounts to `lam = T * sparse_penal * sn`,
-  a threshold that grows as `sqrt(T)`: on a 2 h session it dropped 149 of 632 units and
-  shrank footprints to 30 px. Minian's value converts as `sparse_snr = sparse_penal * sqrt(T)`.
-- `seeds_merge` joins each seed to its brightest correlated neighbour (correlation above
-  `merge_corr` within `merge_dist`, brighter than itself) and keeps the roots, instead of
-  Minian's connected components of the same links. With 280 rolling windows a 2 h session
-  seeds almost every pixel of a cell halo (48k seeds); the components then run through the
-  dim pixels between cells and merged 32k seeds into 166. The tree rule stops at the valley
-  between two cells: 490 units on that session, F1 0.959 -> 0.964 on the 5-min synthetic
-  session.
-- Per-tile rank cap 300 (was 100): a 64 x 64 tile dense with cells passed 176 components
-  of the autocorrelation cut at 140k frames (124 at 10k), and the cap at 100 left 76 of
-  them (capture < 0.5) out of the factors.
-
-## Releasing
-
-Bump `version` in `pyproject.toml`, commit, then tag and push:
-
-    git tag v0.0.1 && git push origin v0.0.1
-
-`.github/workflows/release.yml` builds the web front end and the wheel, publishes to
-TestPyPI, and then to PyPI once the `pypi` environment is approved on GitHub. Both use
-Trusted Publishing, so no tokens are stored. `test.yml` runs ruff and the tests on every push.
+MiniMe started as a Python package (`pip install minime-cnmf`), which stays the reference
+the browser app is checked against. Its install, command line, parameters and differences
+from Minian are in [docs/python.md](docs/python.md).
 
 ## License
 
