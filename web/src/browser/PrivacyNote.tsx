@@ -14,8 +14,8 @@ export function PrivacyNote() {
           <p>
             MiniMe runs entirely inside this browser tab. Your videos are read from your own disk, every step of the
             analysis runs on this machine, and the results are saved to a folder you pick or to this browser's own
-            storage. Nothing is uploaded: the page only loads its own code and never sends your videos or results
-            anywhere.
+            storage. Nothing is uploaded: the page only loads its own code (and the demo recording, if you download it)
+            and never sends your videos or results anywhere.
           </p>
         </div>
       </section>

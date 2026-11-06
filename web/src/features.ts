@@ -19,7 +19,7 @@ export type Features = {
   SpeedPanel: ComponentType<SpeedPanelProps> | null;
   /** Home's banner on where the data goes (the browser build: it stays on this computer). */
   PrivacyNote: ComponentType | null;
-  /** Home's card that downloads the synthetic demo session (the browser build: from UCLA Dataverse). */
+  /** Home's card that downloads the synthetic demo session (the browser build: from its Hugging Face mirror). */
   DemoCard: ComponentType | null;
   /** The landing page at the root URL (the browser build); without it the root shows the Runs list. */
   Landing: ComponentType | null;
