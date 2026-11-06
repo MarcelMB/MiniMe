@@ -19,7 +19,7 @@ const PARAMS = {
 
 /** Open the browser build with the e2e hooks and copy `n` AVIs (100 frames each) into storage. */
 async function openApp(page: Page, n = 45): Promise<string> {
-  await page.goto("/?e2e=1#/");
+  await page.goto("/?e2e=1#/runs");
   await page.waitForFunction(() => "__minimeAddFolder" in window && "__minimeApi" in window);
   const files = readdirSync(RAW).map((name) => readFileSync(join(RAW, name)).toString("base64"));
   return page.evaluate(

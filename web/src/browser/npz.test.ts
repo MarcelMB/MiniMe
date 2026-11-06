@@ -1,15 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { readNpy } from "./npy";
 import { csrNpz, readCsr, readNpz } from "./npz";
 import { readZip, zipBlob } from "./zip";
 
 const fx = (n: string) => new Blob([readFileSync(join(__dirname, "__fixtures__", n))]);
-const PY =
-  process.env.MINIME_PYTHON ?? "/Users/mbrosch/Documents/GitKraken_mac/03_analysis-tools/MiniMe/.venv/bin/python";
+const PY = process.env.MINIME_PYTHON ?? resolve("../.venv/bin/python");
 
 describe("npz", () => {
   for (const name of ["csr_compressed.npz", "csr_stored.npz"])

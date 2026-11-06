@@ -95,7 +95,7 @@ test.afterAll(() => rmSync(LOOK, { recursive: true, force: true }));
 
 /** The browser build with the look folder added to it (as a picked folder, raw videos remembered). */
 async function openBrowserBuild(page: Page, entries: [string, string][]): Promise<void> {
-  await page.goto(`${BR}/?e2e=1#/`);
+  await page.goto(`${BR}/?e2e=1#/runs`);
   await page.waitForFunction(() => "__minimeAddTree" in window);
   await page.evaluate(
     ({ name, entries }) => {
@@ -110,7 +110,7 @@ async function openBrowserBuild(page: Page, entries: [string, string][]): Promis
     },
     { name: ROOT, entries },
   );
-  await page.goto(`${BR}/?e2e=1&root=${ROOT}#/`); // reload: Home lists the folder just added
+  await page.goto(`${BR}/?e2e=1&root=${ROOT}#/runs`); // reload: Home lists the folder just added
 }
 
 /** Wait until the page has drawn what it will draw: requests done, no computing note, fonts in. */

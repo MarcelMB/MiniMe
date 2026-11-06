@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 
 import { cssVar, fullExtent, resolveSeries } from "./chartUtil";
+import { useScheme } from "./scheme";
 
 export { cssVar };
 
@@ -24,17 +25,10 @@ export function Chart(p: ChartProps) {
   const plot = useRef<uPlot | null>(null);
   const props = useRef(p);
   props.current = p;
-  const [theme, setTheme] = useState(0);
+  const theme = useScheme();
   const pinned = useRef(false);
   const lo = p.xRange?.[0];
   const hi = p.xRange?.[1];
-
-  useEffect(() => {
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const on = () => setTheme((n) => n + 1);
-    mq.addEventListener("change", on);
-    return () => mq.removeEventListener("change", on);
-  }, []);
 
   useEffect(() => {
     const el = host.current!;
