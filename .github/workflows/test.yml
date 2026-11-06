@@ -38,12 +38,28 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@v4
+      # the wasm core (web/src/stream/pkg) is not in git; typecheck, tests and build import it
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/minime-core
+      - run: cargo install wasm-pack --locked
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: web/package-lock.json
+      # the browser tests read a tiny Python run and main's answers on it (web/e2e/.data, not in git)
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+      - run: uv venv --clear && uv pip install -e ".[dev,tune]"
+        working-directory: .
       - run: npm ci
+      - run: npm run wasm
+      - run: npm run fixtures
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
