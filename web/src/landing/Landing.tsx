@@ -141,6 +141,9 @@ export function Landing() {
           <a className="btn primary" href={href({ name: "new" })}>
             Start a new run
           </a>
+          <a className="btn" href={href({ name: "home" })}>
+            Your runs and the demo
+          </a>
         </div>
       </section>
 
