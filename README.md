@@ -94,10 +94,10 @@ MiniMe gives footprints and fluorescence traces; it does not infer spikes.
 
 ## Try the demo
 
-MiniMe's start page has a button that downloads a demo session: a synthetic one-photon
-recording through a GRIN lens (600 × 600 px, 20 fps) with known ground truth, as a 5-minute
-or a 30-minute session. It goes straight into a folder you pick or into the browser's own
-storage, and New run opens on it with the demo settings.
+A synthetic one-photon recording through a GRIN lens (600 × 600 px, 20 fps) with known ground
+truth is on [Hugging Face](https://huggingface.co/datasets/MarcelMB/minime-demo) (CC0), as 36
+videos of 50 s. The first six (`0.avi` … `5.avi`, about 2.2 GB) make a 5-minute demo: put them
+in one folder, open MiniMe, choose that folder and press **Use the demo settings**.
 
 ## Python package
 
