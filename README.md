@@ -47,7 +47,16 @@ and `V` and never reads the movie again.
 </p>
 
 That is what makes long recordings fit. A browser tab gets about 2 GB to work with; a
-2-hour session is far bigger than that.
+2-hour session is far bigger than that. Drawn to scale, with area standing for size:
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/size-area-dark.svg">
+    <img alt="Drawn to scale: the 78 GB movie is a large square, the 2 GB tab limit a small square in its corner, MiniMe's 70 MB a dot inside that" src="docs/assets/readme/size-area-light.svg" width="880">
+  </picture>
+</p>
+
+The same numbers on a log scale, where each step is 10×:
 
 <p align="center">
   <picture>

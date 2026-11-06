@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" role="img">
+<text x="40" y="30" font-size="18" fill="var(--ink)">Example: a 2-hour session, 600 × 600 pixels, 30 fps · area = size</text>
+<rect x="40" y="50" width="340" height="340" fill="var(--data-soft)" stroke="var(--data)" stroke-width="2"/>
+<text x="60" y="84" font-size="17" fill="var(--ink)">raw movie (uint8)</text>
+<text x="60" y="110" font-size="22" font-weight="600" fill="var(--data)">78 GB</text>
+<rect x="40" y="335.6" width="54.4" height="54.4" fill="none" stroke="var(--warn)" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="40" y="379.8" width="10.2" height="10.2" fill="var(--acc)"/>
+<line x1="94.4" y1="335.6" x2="560" y2="120" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 4"/>
+<line x1="94.4" y1="390" x2="560" y2="390" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 4"/>
+<text x="560" y="110" font-size="15" fill="var(--muted)">zoomed in 5×</text>
+<rect x="560" y="120" width="270" height="270" fill="var(--panel)" stroke="var(--warn)" stroke-width="2.5" stroke-dasharray="9 5"/>
+<text x="578" y="150" font-size="17" font-weight="600" fill="var(--warn)">browser tab: ~2 GB</text>
+<text x="578" y="173" font-size="15" fill="var(--warn)">past it the tab crashes</text>
+<rect x="560" y="339" width="51" height="51" fill="var(--acc)"/>
+<text x="624" y="360" font-size="17" font-weight="600" fill="var(--acc)">MiniMe: ~70 MB</text>
+<text x="624" y="382" font-size="15" fill="var(--acc)">same for any length</text>
+<g font-size="17" fill="var(--ink)">
+<text x="880" y="200">MiniMe keeps about</text>
+<text x="880" y="224"><tspan font-weight="600">1/1000</tspan> of the raw movie</text>
+<text x="880" y="270">The tab can hold only</text>
+<text x="880" y="294"><tspan font-weight="600">1/40</tspan> of it</text>
+</g>
+</svg>
