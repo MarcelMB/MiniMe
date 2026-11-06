@@ -4,6 +4,8 @@ import { NewRun } from "./launch/NewRun";
 import { href, useRoute } from "./router";
 import { RunPage } from "./run/RunPage";
 
+const REPO = "https://github.com/MarcelMB/MiniMe";
+
 export function App() {
   const route = useRoute();
   return (
@@ -21,6 +23,14 @@ export function App() {
           </a>
           <a className="btn" href={href({ name: "new" })}>
             New run
+          </a>
+        </nav>
+        <nav className="project-links" aria-label="Project">
+          <a className="btn" href={REPO} target="_blank" rel="noopener noreferrer">
+            GitHub
+          </a>
+          <a className="btn" href={`${REPO}/issues/new`} target="_blank" rel="noopener noreferrer">
+            Found an issue?
           </a>
         </nav>
       </header>
