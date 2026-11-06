@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 
+import { tileGrid } from "../browser/derived/tiles";
 import { HandleDir, walk } from "../browser/dir";
 import { checkTraceRoom } from "../browser/support";
 import {
@@ -14,6 +15,16 @@ import {
 import type { Device } from "../gpu/plan";
 import type { ProgressUnit } from "../launch/params";
 import { cachedSpeedTest, type DeviceReport, selfTest, setupDevice } from "./device";
+import { live, liveTransfer, makeThrottle, meanImage, tileOf } from "./live";
+import {
+  guard,
+  motionPanel,
+  Pass2Live,
+  seedsPanel,
+  stitchFinalPanel,
+  stitchWindowPanel,
+  unitsPanel,
+} from "./livePanels";
 import { readNpy } from "./npy";
 import { orderAvis } from "./order";
 import init, {
@@ -45,11 +56,27 @@ import {
   tileCrcs,
   tilesAsFiles,
 } from "./poolStages";
-import type { FromWorker, Stage, ToWorker } from "./protocol";
+import type { FromWorker, LivePayload, LiveToggle, Stage, ToWorker } from "./protocol";
 import { DEFAULTS, motionParams, sessionFor } from "./session";
 import { fillTemplate, localRunner, poolRunner, spreadTemplate } from "./spread";
 
 const post = (m: FromWorker, transfer: Transferable[] = []) => self.postMessage(m, transfer);
+// the live view (only while `live.on`, the job page's switch)
+const postLive = (p: LivePayload) => post({ type: "live", ...p }, liveTransfer(p));
+const motionOk = makeThrottle(4);
+/** The frame workers' motion previews, forwarded at most 4 times a second in all (each worker throttles
+ * its own; with many workers they add up). A chunk's last preview always passes. */
+const forwardMotion = makeThrottle(4);
+/** The window's frame size and mean image for the single-thread seeds / init / CNMF previews. */
+let liveWindow: { h: number; w: number; mean: () => Float32Array; label: string } | null = null;
+/** A pool's workers send their previews through this worker; they get the switch's state now. */
+function liveOn(p: Pool): void {
+  p.onLive = (m) => {
+    if (m.panel === "motion" && !forwardMotion(m.last === true)) return;
+    post(m, liveTransfer(m));
+  };
+  if (live.on) p.send({ type: "live", on: true });
+}
 const BLOCK = 64; // frames per File.slice read
 const TRACE_DIR = "stream_out";
 const SCRATCH = "scratch";
@@ -625,8 +652,10 @@ async function withPool<T>(
   if (n > 1 || (gpuMaybe && "gpu" in navigator)) {
     try {
       pool = await Pool.create(n, avis, scratchId);
+      liveOn(pool);
       log(`${n} frame workers`);
       windowPool = await Pool.create(1, avis, scratchId);
+      liveOn(windowPool);
       windowChain = Promise.resolve();
     } catch (e) {
       pool?.close();
@@ -726,9 +755,14 @@ async function runSession(
     stages: Record<string, number>;
     units?: Promise<W1Result>;
     ready: boolean;
+    /** The window's first unit over all windows' units in the stitch (as its `edges.npy` numbers them). */
+    first: number;
   };
   /** Windows through pass 2 whose seeds, init and CNMF may still be on the window worker, oldest first. */
   const pending: Pending[] = [];
+  /** Units added to the stitch so far (the next window's first unit index): add_window / add_cnmf's counts. */
+  let stitchUnits = 0;
+  let localFirst = 0;
   /** A window's units and outputs, in window order: the stitch, its report entry, its run-folder files. */
   const finishWindow = async (p: Pending) => {
     if (p.units) {
@@ -736,11 +770,14 @@ async function runSession(
       const u = await p.units;
       total += (performance.now() - s) / 1e3; // the run's own time: only the wait shows
       for (const [name, bytes] of u.files) p.files.set(name, bytes);
-      stitch.add_window(u.window, p.t0, p.t1);
+      p.first = stitchUnits;
+      stitchUnits += stitch.add_window(u.window, p.t0, p.t1);
       (["seeds", "init", "cnmf"] as const).forEach((stage, j) => {
         p.stages[stage] = u.seconds[j];
       });
     }
+    // the window's files are complete here on both paths (window worker or this thread)
+    if (live.on) guard("stitch", () => stitchWindowPanel(p.i, p.first, p.files, H, W), postLive, log);
     const tag = `win_${String(p.i).padStart(2, "0")}_`;
     for (const [name, bytes] of p.files)
       if (name.startsWith("summary") || (opts.params.tile_crc && name === "tile_crc.npy")) out.set(tag + name, bytes);
@@ -773,7 +810,10 @@ async function runSession(
           ahead = beginPass1(pool, windowFiles(i + 1), tilesDir(i + 1), log);
         }
       },
-      onCnmf: (engine) => stitch.add_cnmf(engine, t0, t1),
+      onCnmf: (engine) => {
+        localFirst = stitchUnits;
+        stitchUnits += stitch.add_cnmf(engine, t0, t1);
+      },
     });
     total += w.seconds;
     if (ownMotion) {
@@ -786,7 +826,7 @@ async function runSession(
       const d = seconds - (before.get(stage) ?? 0);
       if (d > 0 && (!w.units || stage === "pass1" || stage === "pass2")) stages[stage] = d;
     }
-    const p: Pending = { i, t0, t1, files: w.files, stages, units: w.units, ready: !w.units };
+    const p: Pending = { i, t0, t1, files: w.files, stages, units: w.units, ready: !w.units, first: localFirst };
     p.units?.then(
       () => {
         p.ready = true;
@@ -827,6 +867,7 @@ async function runSession(
     );
   }
   const st = runStitchEngine(stitch, log, memory);
+  if (live.on) guard("stitch", () => stitchFinalPanel(st.files), postLive, log);
   for (const [name, bytes] of st.files) out.set(name, bytes);
   total += st.seconds;
   const res: Map<string, Uint8Array | Blob> = out;
@@ -1097,6 +1138,23 @@ async function windowPass1(
     const s = performance.now();
     const n = engine.buffered();
     const packed = engine.take_tiles();
+    if (live.on && motionOk(engine.done() === t1 - t0))
+      guard(
+        "motion",
+        () =>
+          motionPanel(
+            packed,
+            n,
+            tileGrid(H, W, tileOf(files)),
+            H,
+            W,
+            engine.chunk_shifts(),
+            t0,
+            engine.done() === t1 - t0,
+          ),
+        postLive,
+        log,
+      );
     let o = 0;
     for (let k = 0; k < nTiles; k++) {
       const len = n * tileBytes[k];
@@ -1186,8 +1244,13 @@ async function runPass2(
   start("pass2", n, 0, 0, 0);
   const began = performance.now();
   let [tRead, rankTotal] = [0, 0];
+  // the live view's tile previews (a switch turned on during pass 2 shows from the next window's)
+  const p2Live = live.on ? pass2Live(files, pass1, n, log) : null;
+  const onTile = p2Live
+    ? (k: number, rank: number, f: Uint8Array) => guard("pass2", () => p2Live.tile(k, rank, f), postLive, log)
+    : undefined;
   if (pool) {
-    const r = await pass2Pooled(pool, engine, files, store, { progress, log });
+    const r = await pass2Pooled(pool, engine, files, store, { progress, log, onTile });
     [tRead, rankTotal] = [r.readMs, r.rankTotal];
   } else
     for (let k = 0; k < n; k++) {
@@ -1195,7 +1258,9 @@ async function runPass2(
       const buf = new Uint8Array(handles[k].getSize());
       handles[k].read(buf, { at: 0 });
       tRead += performance.now() - s;
-      rankTotal += engine.compress(buf);
+      const rank = engine.compress(buf);
+      rankTotal += rank;
+      onTile?.(k, rank, engine.tile_bytes(k));
       progress(k + 1, n, (performance.now() - began) / 1e3);
     }
   const seconds = (performance.now() - began) / 1e3;
@@ -1209,12 +1274,41 @@ async function runPass2(
   let units: Promise<W1Result> | undefined;
   if (files.has("seeds.json") && windowPool) units = windowUnits(windowPool, files, pass1, engine);
   else if (files.has("seeds.json")) {
+    if (live.on) {
+      // the mean image only when a units preview asks for it (inside its guard), while `engine` is alive
+      const [h, w] = [pass1.height(), pass1.width()];
+      let mean: Float32Array | null = null;
+      const tiles = () => Array.from({ length: n }, (_, k) => engine.tile_bytes(k));
+      liveWindow = {
+        h,
+        w,
+        label: stageLabel,
+        mean: () => (mean ??= meanImage(tiles(), tileGrid(h, w, tileOf(files)), h, w)),
+      };
+    } else liveWindow = null;
     const s = runSeeds(files, pass1, engine, log, memory, opts);
+    liveWindow = null;
     for (const [name, bytes] of s.files) out.set(name, bytes);
     total += s.seconds;
   }
   engine.free();
   return { files: out, seconds: total, units };
+}
+
+/** The live view's pass 2 previews of a window of `n` tiles (null, said once in the log, when the
+ * tile size cannot be read). */
+function pass2Live(files: Map<string, Uint8Array>, pass1: Pass1Engine, n: number, log: (what: string) => void) {
+  let out: Pass2Live | null = null;
+  guard(
+    "pass2",
+    () => {
+      out = new Pass2Live(stageLabel, { h: pass1.height(), w: pass1.width(), tile: tileOf(files) }, n);
+      return null;
+    },
+    postLive,
+    log,
+  );
+  return out as Pass2Live | null;
 }
 
 /** The window's seeds, init and CNMF on the window worker (the same engines, on pass 1's maxima and
@@ -1231,6 +1325,7 @@ function windowUnits(
     name.endsWith(".json") || name === "template.npy" || name === "shifts.npy" || name === "fill.npy";
   const msg = {
     type: "w1" as const,
+    label: stageLabel,
     files: new Map([...files].filter(([name]) => keep(name))),
     maxProj: pass1.chunk_max_proj(),
     blockMax: pass1.chunk_block_max(),
@@ -1282,6 +1377,10 @@ function runSeeds(
   end(`${merged} merged seeds`);
   const timing = { where: "browser", seeds: seconds, build_factors: tBuild, wasm_heap_mb: mb };
   const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
+  if (live.on && liveWindow) {
+    const lw = liveWindow;
+    guard("seeds", () => seedsPanel(lw.label, out, pass1.chunk_max_proj(), lw.h, lw.w), postLive, log);
+  }
   let total = seconds;
   if (files.has("init.json")) {
     const i = runInit(files, engine, log, memory, opts);
@@ -1312,6 +1411,10 @@ function runInit(
   end(`${units} units after the merge`);
   const timing = { where: "browser", init: seconds, wasm_heap_mb: mb };
   const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
+  if (live.on && liveWindow) {
+    const lw = liveWindow;
+    guard("units", () => unitsPanel(lw.label, "init", out, lw.mean(), lw.h, lw.w), postLive, log);
+  }
   let total = seconds;
   if (files.has("cnmf.json")) {
     const c = runCnmf(files, seeds, engine, log, memory, opts);
@@ -1344,12 +1447,23 @@ function runCnmf(
   end(`${units} units`);
   const timing = { where: "browser", cnmf: seconds, wasm_heap_mb: mb };
   const out = engine.finish(JSON.stringify(timing)) as Map<string, Uint8Array>;
+  if (live.on && liveWindow) {
+    const lw = liveWindow;
+    guard("units", () => unitsPanel(lw.label, "cnmf", out, lw.mean(), lw.h, lw.w), postLive, log);
+  }
   engine.free();
   return { files: out, seconds };
 }
 
-self.onmessage = (e: MessageEvent<ToWorker>) => {
-  run(e.data).catch(async (err: unknown) => {
+self.onmessage = (e: MessageEvent<ToWorker | LiveToggle>) => {
+  // the job page's live-view switch: to this worker and every frame worker, at once
+  if ("type" in e.data && e.data.type === "live") {
+    live.on = e.data.on;
+    pool?.send(e.data);
+    windowPool?.send(e.data);
+    return;
+  }
+  run(e.data as ToWorker).catch(async (err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     end(message, true);
     await progressLog.close(); // the failed stage reaches the run folder before the worker is stopped

@@ -128,6 +128,8 @@ test("streams raw AVIs in the browser and saves the outputs", async ({ page }) =
   const keepStore = Boolean(process.env.STREAM_KEEP_STORE);
   const workers = Number(process.env.STREAM_WORKERS ?? 0) || undefined;
   const tileCrc = Boolean(process.env.STREAM_TILE_CRC);
+  // STREAM_LIVE: switch the live view on and check that every panel sent something
+  const live = Boolean(process.env.STREAM_LIVE);
   // STREAM_DEVICE: auto (default), cpu, gpu or both; STREAM_GPU_TEST: the GPU test hooks (nogpu, mismatch, lost)
   const device = (process.env.STREAM_DEVICE || undefined) as "auto" | "cpu" | "gpu" | "both" | undefined;
   const gpuTest = process.env.STREAM_GPU_TEST || undefined;
@@ -135,7 +137,7 @@ test("streams raw AVIs in the browser and saves the outputs", async ({ page }) =
   const params = process.env.STREAM_PARAMS ? JSON.parse(readFileSync(process.env.STREAM_PARAMS, "utf8")) : undefined;
   // resolves when the run is done (hours on a long session); a failed run rejects with its message
   const done = await page.evaluate(
-    ({ keepStore, workers, tileCrc, device, gpuTest, params }) => {
+    ({ keepStore, workers, tileCrc, device, gpuTest, params, live }) => {
       const files = (id: string) => [...((document.getElementById(id) as HTMLInputElement | null)?.files ?? [])];
       return window.__minimeStream!(files("avis"), files("inputs"), {
         keepStore,
@@ -144,9 +146,10 @@ test("streams raw AVIs in the browser and saves the outputs", async ({ page }) =
         device,
         gpuTest,
         params,
+        live,
       });
     },
-    { keepStore, workers, tileCrc, device, gpuTest, params },
+    { keepStore, workers, tileCrc, device, gpuTest, params, live },
   );
   await saveOutputs(page, done.files, out!);
   console.log(`done in ${done.seconds.toFixed(0)} s: ${done.files.length} output files -> ${out}`);
@@ -154,6 +157,13 @@ test("streams raw AVIs in the browser and saves the outputs", async ({ page }) =
     const written = await exportRun(page, join(out!, "run"));
     console.log(`run folder: ${written.length} files -> ${join(out!, "run")}`);
     expect(written).toEqual(expect.arrayContaining(["params.json", "report.json", "cnmf/A.npz", "cnmf/C.npy"]));
+  }
+  if (live) {
+    const l = done.live;
+    console.log(
+      `live view: ${l.messages} messages, ${(l.bytes / 2 ** 20).toFixed(1)} MB, panels ${l.panels.join(", ")}`,
+    );
+    expect(l.panels).toEqual(expect.arrayContaining(["motion", "pass2", "seeds", "units", "stitch"]));
   }
   expect(errors).toEqual([]);
 });

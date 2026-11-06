@@ -72,6 +72,11 @@ router.add("GET", "/jobs/:jid", async (_q, p) => {
   return { json: m.get(p.jid) };
 });
 router.add("POST", "/jobs/:jid/cancel", async (_q, p) => ({ json: await (await jobs()).cancel(p.jid) }));
+router.add("POST", "/jobs/:jid/live", async (q, p) => {
+  const on = (q.body as { on?: unknown } | undefined)?.on;
+  if (typeof on !== "boolean") throw new HttpError(422, "on must be true or false");
+  return { json: (await jobs()).setLive(p.jid, on) };
+});
 
 /** `/jobs/<id>/events`. The events reach the page after `openEvents` has returned (the manager
  * loads first), so `JobPage` has its `close` by the time the final status arrives. */

@@ -8,6 +8,7 @@
 // of the results waiting).
 
 import type { FromFrameWorker, ToFrameWorker } from "./poolProtocol";
+import type { LiveToggle } from "./protocol";
 
 type Task = Extract<ToFrameWorker, { id: number }>;
 type TaskKind = "p1" | "s1" | "p2" | "t1" | "t2" | "u1" | "f0" | "f1" | "f2" | "w1" | "g0" | "gt" | "gb";
@@ -73,6 +74,8 @@ export class Pool {
   readonly gpuFrames: Record<string, number> = {};
   /** The workers' notes for the run's log (a worker's GPU went off). */
   onNote: ((message: string) => void) | null = null;
+  /** The workers' live-view previews (only while the switch is on). */
+  onLive?: (m: Extract<FromFrameWorker, { type: "live" }>) => void;
   private constructor(private readonly slots: Slot[]) {}
 
   /** `n` workers, each with the session's AVIs indexed; rejects (and stops them) when one fails to start in `timeoutMs`. */
@@ -82,7 +85,11 @@ export class Pool {
       const w = new Worker(new URL("./frame.worker.ts", import.meta.url), { type: "module" });
       const s: Slot = { w, busy: false, heapMb: 0, handler: null, fail: null };
       w.onmessage = (e: MessageEvent<FromFrameWorker>) =>
-        e.data.type === "note" ? pool.onNote?.(e.data.message) : s.handler?.(e.data);
+        e.data.type === "note"
+          ? pool.onNote?.(e.data.message)
+          : e.data.type === "live"
+            ? pool.onLive?.(e.data)
+            : s.handler?.(e.data);
       w.onerror = (e) => s.fail?.(new Error(`a frame worker failed: ${e.message || "could not start"}`));
       w.onmessageerror = () => s.fail?.(new Error("a frame worker sent a message that could not be read"));
       return s;
@@ -132,6 +139,11 @@ export class Pool {
           }),
       ),
     ).then(() => undefined);
+  }
+
+  /** A message every worker takes at once, outside its task queue and without an answer. */
+  send(msg: LiveToggle): void {
+    for (const s of this.slots) s.w.postMessage(msg);
   }
 
   /** Run tasks `0..count` of `kind`; `make(i)` is task `i`'s message (without its `id`). Resolves

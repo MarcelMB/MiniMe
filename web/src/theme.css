@@ -119,6 +119,12 @@ a { color: var(--accent); }
   display: flex; flex-direction: column; gap: 12px; min-width: 0;
 }
 .card.dim { opacity: 0.6; }
+.liverow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 720px) { .liverow { grid-template-columns: 1fr; } }
+.livecanvas { width: 100%; max-width: 512px; image-rendering: pixelated; border-radius: 6px; }
+.liverow .row .livecanvas { width: 30%; }
+.rankgrid { display: grid; gap: 2px; max-width: 512px; } /* aspect ratio inline: the frame's w / h */
+.rankgrid span { background: var(--accent); border-radius: 2px; }
 .privacy { flex-direction: row; align-items: center; gap: 20px; border: 2px solid var(--ok); }
 .privacy-icon { flex: none; width: 56px; height: 56px; fill: none; stroke: var(--ok); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .privacy-text h2 { margin: 0 0 6px; font-size: 28px; font-weight: 700; letter-spacing: -0.03em; line-height: 1.15; }
