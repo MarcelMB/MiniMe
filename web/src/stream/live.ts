@@ -136,10 +136,11 @@ export function brightest(c: ArrayLike<number>, k: number, t: number, n: number)
     .map(([, u]) => u);
 }
 
-/** The tile size of the run (`pass1.json`'s "tile"). */
+/** The tile size of the run: pass 1's "tile" (a window's pass 1 params are `params.json`, as
+ * `window_inputs` names them; `pass1.json` in a reference folder). */
 export function tileOf(files: Map<string, Uint8Array>): number {
-  const b = files.get("pass1.json");
-  if (!b) throw new Error("no pass1.json");
+  const b = files.get("params.json") ?? files.get("pass1.json");
+  if (!b) throw new Error("no pass 1 params");
   return Number(JSON.parse(new TextDecoder().decode(b)).tile);
 }
 

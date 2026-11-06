@@ -17,6 +17,8 @@ const STREAM_CHUNK = 16; // frames per streaming task: a worker's 0.2 s, 6 MB of
 export type Ctx = {
   progress: (done: number, frames: number, seconds: number, stateMb?: number) => void;
   log: (what: string) => void;
+  /** Pass 2's tile `k` is in (its rank and factors): the live view's preview. */
+  onTile?: (k: number, rank: number, factors: Uint8Array) => void;
 };
 
 const pick = (files: FileMap, keep: (name: string) => boolean): FileMap =>
@@ -165,7 +167,9 @@ export async function pass2Pooled(
   await pool.run("p2", n, (k) => ({ type: "p2", k }), {
     ordered: true,
     onResult: (k, r) => {
-      rankTotal += engine.set_tile(k, r.factors);
+      const rank = engine.set_tile(k, r.factors);
+      rankTotal += rank;
+      ctx.onTile?.(k, rank, r.factors);
       readMs += r.readMs;
       ctx.progress(k + 1, n, (performance.now() - began) / 1e3);
     },

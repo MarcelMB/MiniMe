@@ -2,8 +2,11 @@
 // A frame worker of the pool (`pool.ts`): its own wasm instance, its own AVI index, and one task at
 // a time from the run's worker. It never holds more than a chunk of frames or one tile.
 
+import { type Tile, tileGrid } from "../browser/derived/tiles";
 import { forFrames, indexSegments, type Segment } from "./frames";
 import { benchPass1, pass1Gpu, selfTest, streamGpu, templateGpu, WorkerGpu } from "./gpuStages";
+import { live, liveTransfer, makeThrottle, meanImage, tileOf } from "./live";
+import { guard, motionPanel, seedsPanel, unitsPanel } from "./livePanels";
 import init, {
   CnmfEngine,
   InitEngine,
@@ -15,11 +18,25 @@ import init, {
   StreamSolver,
   TemplateWorker,
 } from "./pkg/minime_core.js";
-import type { FromFrameWorker, ToFrameWorker } from "./poolProtocol";
+import type { FileMap, FromFrameWorker, ToFrameWorker } from "./poolProtocol";
+import type { LivePayload } from "./protocol";
 import { FLUSH, readTile, slabName } from "./slabs";
 import { spreadFrames } from "./spread";
 
 const post = (m: FromFrameWorker, transfer: Transferable[] = []) => self.postMessage(m, transfer);
+
+// the live view (only while `live.on`): previews go out as `live` messages, problems as notes
+const motionOk = makeThrottle(2); // several frame workers each send: ~2 Hz each
+const postLive = (p: LivePayload) => post({ type: "live", ...p }, liveTransfer(p));
+const say = (message: string) => post({ type: "note", message });
+let grid: { key: string; tiles: Tile[] } | null = null;
+/** The tile grid of `h` x `w` frames at the run's tile size (kept while it stays the same). */
+const gridFor = (files: FileMap, h: number, w: number): Tile[] => {
+  const tile = tileOf(files);
+  const key = `${h}x${w}/${tile}`;
+  if (grid?.key !== key) grid = { key, tiles: tileGrid(h, w, tile) };
+  return grid.tiles;
+};
 
 let memory: WebAssembly.Memory | null = null;
 let segs: Segment[] = [];
@@ -203,8 +220,16 @@ async function pass1Chunk(m: Extract<ToFrameWorker, { type: "p1" }>): Promise<vo
   try {
     let bytes = 0;
     const flush = () => {
-      if (!engine.buffered()) return;
+      const n = engine.buffered();
+      if (!n) return;
       const block = engine.take_tiles();
+      if (live.on && motionOk(engine.done() === m.b))
+        guard(
+          "motion",
+          () => motionPanel(block, n, gridFor(m.files, H, W), H, W, engine.chunk_shifts(), t0 + m.a),
+          postLive,
+          say,
+        );
       slab.write(block, { at: bytes });
       bytes += block.length;
     };
@@ -369,6 +394,15 @@ function windowUnits(m: Extract<ToFrameWorker, { type: "w1" }>): void {
   const p1 = new Pass1Engine(m.files);
   const p2 = new Pass2Engine(m.files);
   const engines: { free(): void }[] = [p1, p2];
+  // the live view's frame size and mean image (from the tiles' factors, read only: they go back with
+  // `done`), only once a preview asks
+  let lv: { h: number; w: number; mean: Float32Array | null } | null = null;
+  const dims = () => (lv ??= { h: p1.height(), w: p1.width(), mean: null });
+  const meanOf = () => {
+    const d = dims();
+    d.mean ??= meanImage(m.tiles, gridFor(m.files, d.h, d.w), d.h, d.w);
+    return d.mean;
+  };
   try {
     p1.set_maxima(m.maxProj, m.blockMax);
     for (const [k, b] of m.tiles.entries()) p2.set_tile(k, b);
@@ -387,17 +421,23 @@ function windowUnits(m: Extract<ToFrameWorker, { type: "w1" }>): void {
     engines.push(seeds);
     const merged = seeds.run();
     step(`${merged} merged seeds`, 1);
-    take(seeds.finish(JSON.stringify({ where: "browser", seeds: seconds[0], wasm_heap_mb: heapMb() })));
+    const sOut = seeds.finish(JSON.stringify({ where: "browser", seeds: seconds[0], wasm_heap_mb: heapMb() }));
+    take(sOut);
+    if (live.on) guard("seeds", () => seedsPanel(m.label, sOut, m.maxProj, dims().h, dims().w), postLive, say);
     const initE = new InitEngine(m.files);
     engines.push(initE);
     const units = initE.run(seeds);
     step(`${units} units after the merge`, 2);
-    take(initE.finish(JSON.stringify({ where: "browser", init: seconds[1], wasm_heap_mb: heapMb() })));
+    const iOut = initE.finish(JSON.stringify({ where: "browser", init: seconds[1], wasm_heap_mb: heapMb() }));
+    take(iOut);
+    if (live.on) guard("units", () => unitsPanel(m.label, "init", iOut, meanOf(), dims().h, dims().w), postLive, say);
     const cnmf = new CnmfEngine(m.files);
     engines.push(cnmf);
     const final = cnmf.run(seeds, initE);
     step(`${final} units`, 3);
-    take(cnmf.finish(JSON.stringify({ where: "browser", cnmf: seconds[2], wasm_heap_mb: heapMb() })));
+    const cOut = cnmf.finish(JSON.stringify({ where: "browser", cnmf: seconds[2], wasm_heap_mb: heapMb() }));
+    take(cOut);
+    if (live.on) guard("units", () => unitsPanel(m.label, "cnmf", cOut, meanOf(), dims().h, dims().w), postLive, say);
     const window = cnmf.window_bytes();
     const r = { files, window, seconds, notes };
     post({ type: "done", kind: "w1", id: m.id, ms: performance.now() - began, heapMb: heapMb(), ...r }, [
@@ -410,6 +450,12 @@ function windowUnits(m: Extract<ToFrameWorker, { type: "w1" }>): void {
 }
 
 self.onmessage = (e: MessageEvent<ToFrameWorker>) => {
+  // the live-view switch: taken at once, outside the queue, without an answer (a CPU pass 1 chunk
+  // runs synchronously, so a switch flipped during it takes effect at the next chunk)
+  if (e.data.type === "live") {
+    live.on = e.data.on;
+    return;
+  }
   const id = "id" in e.data ? e.data.id : -1;
   queue = queue
     .then(() => handle(e.data))

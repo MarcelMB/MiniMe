@@ -107,4 +107,17 @@ describe("live helpers", () => {
     const files = new Map([["pass1.json", new TextEncoder().encode(JSON.stringify({ tile: 64 }))]]);
     expect(tileOf(files)).toBe(64);
   });
+
+  it("reads the tile size from a window's pass 1 params.json first", () => {
+    const enc = (tile: number) => new TextEncoder().encode(JSON.stringify({ tile }));
+    expect(tileOf(new Map([["params.json", enc(32)]]))).toBe(32);
+    expect(
+      tileOf(
+        new Map([
+          ["params.json", enc(32)],
+          ["pass1.json", enc(64)],
+        ]),
+      ),
+    ).toBe(32);
+  });
 });
