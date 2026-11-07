@@ -237,12 +237,15 @@ def test_list_and_get_survive_concurrent_submits(tmp_path, raw):
             except Exception as e:  # noqa: BLE001
                 errors.append(e)
 
-    t = threading.Thread(target=reader)
+    # daemon + finally: a failing submit must not leave the reader spinning (pytest never exits)
+    t = threading.Thread(target=reader, daemon=True)
     t.start()
-    for i in range(20):
-        jm.submit(str(raw), f"n{i}", {})
-    stop.set()
-    t.join()
+    try:
+        for i in range(20):
+            jm.submit(str(raw), f"n{i}", {})
+    finally:
+        stop.set()
+        t.join()
     assert errors == []
     jm.shutdown()
 
