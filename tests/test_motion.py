@@ -253,6 +253,10 @@ def test_fill_outside_sets_exactly_the_pixels_read_from_outside():
     rng = np.random.default_rng(1)
     h, w, n = 37, 53, 200
     sh = rng.uniform(-9, 9, (n, 2))
+    # OpenCV < 5 (the Intel-Mac pin) rounds the source position to 1/32 px, so a shift within
+    # 1/64 px of a whole one reads the edge pixel as inside; keep the fractions clear of that
+    frac = sh - np.round(sh)
+    sh += np.where(np.abs(frac) < 1 / 16, np.sign(frac) * 1 / 16, 0)
     sh[:10] = np.round(sh[:10])  # whole-pixel shifts: the far tap has weight 0
     outside = motion.apply_shifts(np.full((n, h, w), 255, np.uint8), sh) < 255
     f = rng.integers(40, 60, (n, h, w)).astype(np.uint8)
