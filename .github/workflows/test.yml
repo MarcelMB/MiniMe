@@ -76,8 +76,20 @@ jobs:
       - run: uv venv --clear && uv pip install -e ".[dev,tune]"
         working-directory: .
       - run: npm ci
+      - run: npm run check
       - run: npm run wasm
       - run: npm run fixtures
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - run: npm run build:browser
+      # end to end: main's smoke test serves the build above; browser.spec builds and serves its own copy
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test
+      - run: npx playwright test -c playwright.browser.config.ts browser.spec
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: web/test-results
+          if-no-files-found: ignore

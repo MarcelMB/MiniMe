@@ -377,7 +377,7 @@ test("a run in Browser storage downloads as a zip that minime score reads and th
   await page2.goto("/#/runs");
   await page2.getByRole("button", { name: "Change folder" }).click();
   await expect(page2.getByText("This browser opens folders read-only")).toBeVisible();
-  await page2.locator('input[type="file"]').setInputFiles(unzipped);
+  await page2.getByLabel("Show runs here").setInputFiles(unzipped);
   await page2.getByRole("link", { name: "Open run download" }).click();
   await expect(page2.getByRole("group", { name: "Stage" })).toBeVisible(); // the run page, not Home's card of the same name
   await expectEveryPage(page2, "download");
