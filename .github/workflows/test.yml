@@ -31,6 +31,24 @@ jobs:
       - run: uv run --no-sync ruff check src tests
       - run: uv run --no-sync python -m pytest -q
 
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust/minime-core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/minime-core
+      - run: cargo fmt --check
+      # clippy is left out until `cargo clippy --all-targets -- -D warnings` is clean
+      # tests/real_frames.rs needs local AVIs ($MINIME_RAW) and skips without them
+      - run: cargo test --release
+
   web:
     runs-on: ubuntu-latest
     defaults:
