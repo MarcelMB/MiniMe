@@ -985,6 +985,9 @@ pub fn window_inputs(session: &[u8], shifts: &[u8], t0: usize, t1: usize) -> Res
 #[wasm_bindgen]
 pub struct StitchEngine {
     p: StitchParams,
+    /// Keep every linked pair (`pairs`, `pair_cos`, `edges` in `finish`): only for a check of
+    /// `ref_stitch.py`'s inputs (`stitch.json`); a session's stitch keeps their counts only.
+    keep_pairs: bool,
     pub(crate) windows: Vec<Window>,
     mean_noise: stitch::MeanNoise,
     res: Option<stitch::StitchResult>,
@@ -996,6 +999,7 @@ impl StitchEngine {
     /// its `pass1`).
     #[wasm_bindgen(constructor)]
     pub fn new(files: &Map) -> Result<StitchEngine, JsError> {
+        let from_inputs = map_bytes(files, "stitch.json").is_ok();
         let p: StitchParams = match map_bytes(files, "stitch.json") {
             Ok(b) => serde_json::from_slice(&b).map_err(|e| JsError::new(&format!("stitch.json: {e}")))?,
             Err(_) => {
@@ -1009,6 +1013,7 @@ impl StitchEngine {
             }
         };
         Ok(StitchEngine {
+            keep_pairs: p.keep_pairs.unwrap_or(from_inputs),
             p,
             windows: Vec::new(),
             mean_noise: stitch::MeanNoise::default(),
@@ -1066,6 +1071,7 @@ impl StitchEngine {
             self.p.min_dist,
             self.p.w,
             self.p.h * self.p.w,
+            self.keep_pairs,
         )
         .map_err(|e| JsError::new(&e))?;
         let n = r.a.k;

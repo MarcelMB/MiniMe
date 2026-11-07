@@ -8,7 +8,7 @@
 //!     minime-core seeds --inputs INPUTS_DIR --out OUT_DIR
 //!     minime-core init --inputs INPUTS_DIR --out OUT_DIR
 //!     minime-core cnmf --inputs INPUTS_DIR --out OUT_DIR
-//!     minime-core stitch --inputs INPUTS_DIR --out OUT_DIR
+//!     minime-core stitch --inputs INPUTS_DIR --out OUT_DIR [--no-pairs]
 //!
 //! The first is one streaming pass (`ref_dump.py`), the second the motion stage on one
 //! window (`ref_motion.py`), the third pass 1 on one window (`ref_pass1.py`), with the
@@ -455,7 +455,9 @@ fn run_stitch(args: &[String]) -> Result<(), String> {
         .collect::<Result<Vec<_>, _>>()?;
     let load = s0.elapsed().as_secs_f64();
     let s1 = Instant::now();
-    let res = stitch::stitch_with(&windows, p.cos_thres, p.min_dist, p.w, p.h * p.w)?;
+    // --no-pairs: as a session run, without the pair lists (quadratic in the window count)
+    let keep_pairs = !args.iter().any(|a| a == "--no-pairs") && p.keep_pairs.unwrap_or(true);
+    let res = stitch::stitch_with(&windows, p.cos_thres, p.min_dist, p.w, p.h * p.w, keep_pairs)?;
     let seconds = s1.elapsed().as_secs_f64();
     let summary =
         serde_json::json!({"stage": "stitch", "windows": windows.len(), "load": load, "seconds": seconds});

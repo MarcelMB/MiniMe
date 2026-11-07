@@ -13,7 +13,7 @@
 //! cosines, and with them the edges, come out bit for bit.
 
 use crate::compress::TileFactors;
-use crate::corr::brightest_parent;
+use crate::corr::{brightest_parent, link_brighter};
 use crate::gmm::pairwise_sum;
 use crate::init::Csr;
 use crate::npy;
@@ -168,6 +168,10 @@ pub struct StitchParams {
     pub w: usize,
     #[serde(default)]
     pub windows: Vec<[usize; 2]>,
+    /// Keep every linked pair in the outputs (`stitch_with`'s `keep_pairs`); unset: kept for
+    /// `ref_stitch.py`'s inputs (`stitch.json`), not for a session's window loop.
+    #[serde(default)]
+    pub keep_pairs: Option<bool>,
 }
 
 /// The final units of one window: footprints (any row order) and the peak of each unit's
@@ -193,6 +197,29 @@ fn scale_rows(rows: &[Row], d: &[f64]) -> Vec<Row> {
                 .collect()
         })
         .collect()
+}
+
+/// Float64 sparse rows in one flat, exactly sized store (pixel indices as u32): the stacked
+/// window footprints, 12 bytes per entry instead of a `Row` per unit.
+struct FlatRows {
+    ptr: Vec<usize>,
+    idx: Vec<u32>,
+    val: Vec<f64>,
+}
+
+impl FlatRows {
+    fn len(&self) -> usize {
+        self.ptr.len() - 1
+    }
+
+    /// Row `i` in stored order.
+    fn row(&self, i: usize) -> impl DoubleEndedIterator<Item = (usize, f64)> + '_ {
+        let r = self.ptr[i]..self.ptr[i + 1];
+        self.idx[r.clone()]
+            .iter()
+            .zip(&self.val[r])
+            .map(|(&j, &v)| (j as usize, v))
+    }
 }
 
 /// `_row_max_one`: `1 / max(row, 0)` per row (1 for an all-zero row).
@@ -228,12 +255,15 @@ pub struct StitchResult {
     pub a: Csr, // (groups, P) float32, rows with maximum 1, indices ascending
     pub bright: Vec<f64>,
     pub n_windows: Vec<usize>,
-    pub joined: usize, // groups the `min_dist` rule joined into another group
+    pub joined: usize,    // groups the `min_dist` rule joined into another group
+    pub kept_pairs: bool, // `pairs`, `pair_cos` and `edges` hold every pair (else they are empty)
+    pub n_pairs: usize,
+    pub n_edges: usize,
 }
 
 /// `M @ A`: each group's mean, members in order (scipy's `csr_matmat` order: one value per
 /// pixel per member, each row in reverse order of first appearance, zero sums dropped).
-fn group_means(a: &[Row], members: &[Vec<usize>], p: usize) -> Vec<Row> {
+fn group_means(a: &FlatRows, members: &[Vec<usize>], p: usize) -> Vec<Row> {
     let mut mean: Vec<Row> = Vec::with_capacity(members.len());
     let mut sums = vec![0f64; p];
     let mut used = vec![false; p];
@@ -241,7 +271,7 @@ fn group_means(a: &[Row], members: &[Vec<usize>], p: usize) -> Vec<Row> {
         let v = 1.0 / m.len() as f64;
         let mut order = Vec::new();
         for &i in m {
-            for &(px, x) in &a[i] {
+            for (px, x) in a.row(i) {
                 if !used[px] {
                     used[px] = true;
                     sums[px] = 0.0;
@@ -323,20 +353,34 @@ fn close_groups(means: &[Row], bright: &[f64], w: usize, min_dist: f64) -> Vec<u
 
 /// `stream.stitch` of `windows` (in time order).
 pub fn stitch(windows: &[Window], cos_thres: f64, p: usize) -> Result<StitchResult, String> {
-    stitch_with(windows, cos_thres, 0.0, 0, p)
+    stitch_with(windows, cos_thres, 0.0, 0, p, true)
 }
 
 /// `stream.stitch` of `windows` (in time order) with `min_dist` (px; 0 = off) on frames `w`
-/// pixels wide.
+/// pixels wide. `keep_pairs` keeps every linked pair, its cosine and the edges (for checks
+/// against `ref_stitch.py`); they grow with the square of the number of windows (a cell is
+/// paired with itself in every other window: 27 M pairs at 8 h), so a session run leaves them
+/// out and keeps only their counts.
 pub fn stitch_with(
     windows: &[Window],
     cos_thres: f64,
     min_dist: f64,
     w: usize,
     p: usize,
+    keep_pairs: bool,
 ) -> Result<StitchResult, String> {
-    let mut rows: Vec<Row> = Vec::new();
+    // A = _row_max_one(vstack(...).astype(float64)), built row by row into one flat store
+    let nnz: usize = windows.iter().map(|u| u.a.indices.len()).sum();
+    let mut a = FlatRows {
+        ptr: vec![0],
+        idx: Vec::with_capacity(nnz),
+        val: Vec::with_capacity(nnz),
+    };
+    if p > u32::MAX as usize {
+        return Err(format!("{p} pixels: more than u32 indices hold"));
+    }
     let (mut win, mut bright) = (Vec::new(), Vec::new());
+    let mut r: Row = Vec::new();
     for (w, u) in windows.iter().enumerate() {
         if u.a.p != p || u.bright.len() != u.a.k {
             return Err(format!(
@@ -350,28 +394,36 @@ pub fn stitch_with(
             let (idx, val) = u.a.row(i);
             // `vstack(...).astype(float64)` sorts the rows (scipy canonicalises a stack
             // whose rows are not all sorted, and the windows' rows come in any order)
-            let mut r: Row = idx.iter().zip(val).map(|(&j, &x)| (j, f64::from(x))).collect();
+            r.clear();
+            r.extend(idx.iter().zip(val).map(|(&j, &x)| (j, f64::from(x))));
             r.sort_unstable_by_key(|&(j, _)| j);
             if r.windows(2).any(|q| q[0].0 == q[1].0) {
                 return Err(format!("window {w}, unit {i}: a pixel appears twice"));
             }
-            rows.push(r);
+            // `diags(1 / max) @ rows` as `scale_rows` does it: reversed, zeros dropped
+            let s = inv_row_max(std::slice::from_ref(&r))[0];
+            for &(j, x) in r.iter().rev() {
+                let v = s.mul_add(x, 0.0);
+                if v != 0.0 {
+                    a.idx.push(j as u32);
+                    a.val.push(v);
+                }
+            }
+            a.ptr.push(a.idx.len());
             win.push(w);
         }
         bright.extend_from_slice(&u.bright);
     }
+    drop(r);
     if let Some(i) = bright.iter().position(|b| !b.is_finite()) {
         return Err(format!("unit {i}: brightness {}", bright[i]));
     }
-    let n = rows.len();
-    // A = _row_max_one(vstack)
-    let a = scale_rows(&rows, &inv_row_max(&rows));
+    let n = a.len();
     // norms = sqrt((A * A).sum(axis=1))
-    let increasing = a.iter().all(|r| r.windows(2).all(|w| w[0].0 < w[1].0));
-    let norms: Vec<f64> = a
-        .iter()
-        .map(|r| {
-            let mut sq: Vec<f64> = r.iter().map(|&(_, v)| v * v).filter(|&v| v != 0.0).collect();
+    let increasing = (0..n).all(|i| a.idx[a.ptr[i]..a.ptr[i + 1]].windows(2).all(|w| w[0] < w[1]));
+    let norms: Vec<f64> = (0..n)
+        .map(|i| {
+            let mut sq: Vec<f64> = a.row(i).map(|(_, v)| v * v).filter(|&v| v != 0.0).collect();
             if !increasing {
                 sq.reverse();
             }
@@ -388,44 +440,79 @@ pub fn stitch_with(
         })
         .collect();
     let inv_norm: Vec<f64> = norms.iter().map(|&v| 1.0 / v).collect();
-    let an = scale_rows(&a, &inv_norm);
-    // S = triu(An @ An^T, 1): per row i, sums over its pixels in An's row order
-    let mut by_px: Vec<Vec<(usize, f64)>> = vec![Vec::new(); p];
-    for (i, r) in an.iter().enumerate() {
-        for &(j, v) in r {
-            by_px[j].push((i, v));
+    // An = diags(1 / norms) @ A, row i in An's order (`scale_rows`), made on the fly from A
+    let an_row = |i: usize| {
+        let s = inv_norm[i];
+        a.row(i)
+            .rev()
+            .map(move |(j, x)| (j, s.mul_add(x, 0.0)))
+            .filter(|&(_, v)| v != 0.0)
+    };
+    // S = triu(An @ An^T, 1): per row i, sums over its pixels in An's row order. An by pixel
+    // (its transpose), units ascending per pixel, as flat arrays
+    let mut start = vec![0usize; p + 1];
+    for i in 0..n {
+        for (j, _) in an_row(i) {
+            start[j + 1] += 1;
         }
     }
+    for j in 0..p {
+        start[j + 1] += start[j];
+    }
+    let mut fill = start.clone();
+    let mut px_unit = vec![0u32; start[p]];
+    let mut px_val = vec![0f64; start[p]];
+    for i in 0..n {
+        for (j, v) in an_row(i) {
+            px_unit[fill[j]] = i as u32;
+            px_val[fill[j]] = v;
+            fill[j] += 1;
+        }
+    }
+    drop(fill);
+    // each unit joins its brightest brighter linked unit as the links are found; the pairs and
+    // edges themselves (quadratic in the number of windows) are kept only when asked for
+    let mut parent: Vec<usize> = (0..n).collect();
     let (mut pairs, mut pair_cos, mut edges) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut n_pairs, mut n_edges) = (0usize, 0usize);
     let mut acc = vec![0f64; n];
     let mut seen = vec![false; n];
-    for (i, r) in an.iter().enumerate() {
-        let mut touched = Vec::new();
-        for &(px, v) in r {
-            for &(j, x) in &by_px[px] {
+    let mut touched = Vec::new();
+    for i in 0..n {
+        for (px, v) in an_row(i) {
+            for e in start[px]..start[px + 1] {
+                let j = px_unit[e] as usize;
                 if j > i && win[j] != win[i] {
                     if !seen[j] {
                         seen[j] = true;
                         acc[j] = 0.0;
                         touched.push(j);
                     }
-                    acc[j] = v.mul_add(x, acc[j]);
+                    acc[j] = v.mul_add(px_val[e], acc[j]);
                 }
             }
         }
         touched.sort_unstable();
-        for j in touched {
+        for &j in &touched {
             seen[j] = false;
             if acc[j] != 0.0 {
-                pairs.push([i, j]);
-                pair_cos.push(acc[j]);
+                n_pairs += 1;
+                if keep_pairs {
+                    pairs.push([i, j]);
+                    pair_cos.push(acc[j]);
+                }
                 if acc[j] > cos_thres {
-                    edges.push([i, j]);
+                    n_edges += 1;
+                    if keep_pairs {
+                        edges.push([i, j]);
+                    }
+                    link_brighter(&mut parent, i, j, &bright);
                 }
             }
         }
+        touched.clear();
     }
-    let parent = brightest_parent(n, &edges, &bright);
+    drop((start, px_unit, px_val, acc, seen));
     let root = roots(&parent);
     let compact = |labels: &[usize]| -> Vec<usize> {
         let mut uniq = labels.to_vec();
@@ -497,6 +584,9 @@ pub fn stitch_with(
         bright: bright_g,
         n_windows,
         joined,
+        kept_pairs: keep_pairs,
+        n_pairs,
+        n_edges,
     })
 }
 
@@ -571,14 +661,16 @@ pub fn window_files(windows: &[Window], p: &StitchParams) -> Vec<(String, Vec<u8
 
 /// The files `ref_stitch.py` writes to `ref/`, under the same names.
 pub fn outputs(r: &StitchResult, mut summary: serde_json::Value) -> Vec<(String, Vec<u8>)> {
-    let mut out = vec![
-        ("norms.npy".to_string(), npy::write(&[r.norms.len()], &r.norms)),
-        pair_array("pairs", &r.pairs),
-        (
+    let mut out = vec![("norms.npy".to_string(), npy::write(&[r.norms.len()], &r.norms))];
+    if r.kept_pairs {
+        out.push(pair_array("pairs", &r.pairs));
+        out.push((
             "pair_cos.npy".into(),
             npy::write(&[r.pair_cos.len()], &r.pair_cos),
-        ),
-        pair_array("edges", &r.edges),
+        ));
+        out.push(pair_array("edges", &r.edges));
+    }
+    out.extend([
         (
             "parent.npy".into(),
             npy::write(&[r.parent.len()], &ints(&r.parent)),
@@ -590,15 +682,15 @@ pub fn outputs(r: &StitchResult, mut summary: serde_json::Value) -> Vec<(String,
             "n_windows.npy".into(),
             npy::write(&[r.n_windows.len()], &ints(&r.n_windows)),
         ),
-    ];
+    ]);
     csr_files("A", &r.a, &mut out);
     let mut found = vec![0usize; r.n_windows.iter().max().map_or(1, |&m| m + 1)];
     for &w in &r.n_windows {
         found[w] += 1;
     }
     summary["units_in"] = r.group.len().into();
-    summary["pairs"] = r.pairs.len().into();
-    summary["edges"] = r.edges.len().into();
+    summary["pairs"] = r.n_pairs.into();
+    summary["edges"] = r.n_edges.into();
     summary["units_out"] = r.a.k.into();
     summary["joined_min_dist"] = r.joined.into();
     summary["found_in_n_windows"] = found.into();
@@ -725,7 +817,7 @@ mod tests {
         let off = stitch(&ws, 0.7, 16).unwrap();
         assert_eq!((off.a.k, off.joined), (3, 0));
         // centres (0, 0.5) and (0.5, 1): 0.71 px apart; the far unit is 3.5 px from both
-        let on = stitch_with(&ws, 0.7, 1.0, 4, 16).unwrap();
+        let on = stitch_with(&ws, 0.7, 1.0, 4, 16, true).unwrap();
         assert_eq!((on.a.k, on.joined), (2, 1));
         assert_eq!(on.group, vec![0, 0, 1]);
         assert_eq!(on.n_windows, vec![2, 1]);
@@ -736,7 +828,52 @@ mod tests {
             (&[px(0, 0), px(0, 1), px(1, 1)][..], &[0.5f32, 1.0, 0.5][..])
         );
         // a threshold below the distance changes nothing
-        assert_eq!(stitch_with(&ws, 0.7, 0.7, 4, 16).unwrap().group, off.group);
-        assert!(stitch_with(&ws, 0.7, 1.0, 0, 16).is_err());
+        assert_eq!(stitch_with(&ws, 0.7, 0.7, 4, 16, true).unwrap().group, off.group);
+        assert!(stitch_with(&ws, 0.7, 1.0, 0, 16, true).is_err());
+    }
+
+    #[test]
+    fn stitch_without_pairs_gives_the_same_units() {
+        // three windows of the same two cells (one dimmer copy per window) plus a stray unit
+        let win = |t: usize, b: [f64; 3]| Window {
+            t: [t, t + 10],
+            a: csr(
+                &[
+                    &[(1, 0.5), (0, 1.0)], // rows in any order
+                    &[(5, 1.0), (6, 0.8)],
+                    &[(10, 1.0), (11, 0.2)],
+                ],
+                16,
+            ),
+            bright: b.to_vec(),
+        };
+        let ws = [
+            win(0, [2.0, 1.0, 0.5]),
+            win(10, [3.0, 0.5, 0.4]),
+            win(20, [1.0, 4.0, 0.3]),
+        ];
+        let full = stitch_with(&ws, 0.7, 1.0, 4, 16, true).unwrap();
+        let lean = stitch_with(&ws, 0.7, 1.0, 4, 16, false).unwrap();
+        assert!(lean.pairs.is_empty() && lean.pair_cos.is_empty() && lean.edges.is_empty());
+        assert_eq!((lean.n_pairs, lean.n_edges), (full.pairs.len(), full.edges.len()));
+        assert_eq!(lean.parent, full.parent);
+        assert_eq!(
+            lean.parent,
+            brightest_parent(9, &full.edges, &[2.0, 1.0, 0.5, 3.0, 0.5, 0.4, 1.0, 4.0, 0.3])
+        );
+        assert_eq!(lean.group, full.group);
+        assert_eq!(
+            (&lean.a.indptr, &lean.a.indices, &lean.a.data),
+            (&full.a.indptr, &full.a.indices, &full.a.data)
+        );
+        assert_eq!(lean.bright, full.bright);
+        let names = |r: &StitchResult| -> Vec<String> {
+            outputs(r, serde_json::json!({}))
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect()
+        };
+        assert!(names(&full).contains(&"pairs.npy".to_string()));
+        assert!(!names(&lean).contains(&"pairs.npy".to_string()));
     }
 }
